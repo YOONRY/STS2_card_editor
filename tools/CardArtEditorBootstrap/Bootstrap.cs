@@ -14,6 +14,9 @@ namespace CardArtEditorBootstrap;
 public static class Bootstrap
 {
     private static readonly Harmony Harmony = new("ysg05.card_art_editor");
+    private static bool _loggedManagerLoadFailure;
+    private static bool _loggedManagerInstantiateFailure;
+    private static bool _loggedOverlayLoadFailure;
     private const string ManagerNodeName = "CardArtOverrideManager";
     private const string ManagerScriptPath = "res://mods/card_art_editor/card_art_override_manager.gd";
     private const string OverlayScenePath = "res://mods/card_art_editor/inspect_card_art_editor.tscn";
@@ -81,17 +84,27 @@ public static class Bootstrap
         var script = ResourceLoader.Load(ManagerScriptPath) as GDScript;
         if (script is null)
         {
-            Log($"Failed to load manager script at '{ManagerScriptPath}'.");
+            if (!_loggedManagerLoadFailure)
+            {
+                Log($"Failed to load manager script at '{ManagerScriptPath}'.");
+                _loggedManagerLoadFailure = true;
+            }
             return null;
         }
 
         var manager = script.New().AsGodotObject() as Node;
         if (manager is null)
         {
-            Log("Manager script did not instantiate a Node.");
+            if (!_loggedManagerInstantiateFailure)
+            {
+                Log("Manager script did not instantiate a Node.");
+                _loggedManagerInstantiateFailure = true;
+            }
             return null;
         }
 
+        _loggedManagerLoadFailure = false;
+        _loggedManagerInstantiateFailure = false;
         manager.Name = ManagerNodeName;
         root.AddChild(manager);
         Log("Manager node added to /root.");
@@ -140,10 +153,15 @@ public static class Bootstrap
         var overlayScene = ResourceLoader.Load(OverlayScenePath) as PackedScene;
         if (overlayScene is null)
         {
-            Log($"Failed to load overlay scene at '{OverlayScenePath}'.");
+            if (!_loggedOverlayLoadFailure)
+            {
+                Log($"Failed to load overlay scene at '{OverlayScenePath}'.");
+                _loggedOverlayLoadFailure = true;
+            }
             return;
         }
 
+        _loggedOverlayLoadFailure = false;
         var overlay = overlayScene.Instantiate<Control>();
         overlay.Name = "CardArtEditorOverlay";
         screen.AddChild(overlay);

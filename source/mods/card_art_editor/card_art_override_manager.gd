@@ -6,6 +6,8 @@ const STORAGE_EDIT_SOURCE_DIR := STORAGE_ROOT + "/edit_sources"
 const STORAGE_GIF_TEMP_DIR := STORAGE_ROOT + "/gif_temp"
 const STORAGE_PCK_TEMP_DIR := STORAGE_ROOT + "/pck_temp"
 const STORAGE_MANIFEST_PATH := STORAGE_ROOT + "/manifest.json"
+const STORAGE_ART_PACK_DIR := STORAGE_ROOT + "/art_packs"
+const STORAGE_ART_PACK_REGISTRY_PATH := STORAGE_ROOT + "/art_pack_registry.json"
 const GIF_TOOL_RES_PATH := "res://mods/card_art_editor/extract_gif_frames.ps1"
 const GIF_TOOL_USER_PATH := STORAGE_ROOT + "/tools/extract_gif_frames.ps1"
 const PICTURES_EXTRACT_SUBDIR := "card_art_editor_extracted"
@@ -41,9 +43,11 @@ const FULL_ART_INSET_ANIMATED := 0
 const STARTUP_RESCAN_FRAMES := 180
 
 signal overrides_changed(source_path)
+signal art_packs_changed()
 
 var _portrait_refs := []
 var _manifest := {}
+var _art_pack_registry := {"packs": {}}
 var _override_texture_cache := {}
 var _refresh_accumulator := 0.0
 var _session_api_key := ""
@@ -55,6 +59,7 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_ensure_storage()
 	_load_manifest()
+	_load_art_pack_registry()
 	get_tree().node_added.connect(_on_node_added)
 	_register_existing(get_tree().root)
 
@@ -260,6 +265,171 @@ func get_adjustable_override_payload(source_path: String) -> Dictionary:
 
 func get_override_count() -> int:
 	return _manifest.size()
+
+
+func get_art_pack_list() -> Array:
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary):
+		return []
+	var result: Array = []
+	for pack_id in packs.keys():
+		var pack = packs[pack_id]
+		if !(pack is Dictionary):
+			continue
+		result.append({
+			"id": String(pack.get("id", pack_id)),
+			"name": String(pack.get("name", pack_id)),
+			"count": int(pack.get("count", 0)),
+			"imported_at": String(pack.get("imported_at", "")),
+			"source_file": String(pack.get("source_file", ""))
+		})
+	result.sort_custom(func(a, b): return String(a.get("imported_at", "")) > String(b.get("imported_at", "")))
+	return result
+
+
+func get_art_pack_variants_for_source(source_path: String) -> Array:
+	if source_path == "":
+		return []
+	var active_pack_id = ""
+	var active_entry = _manifest.get(source_path, null)
+	if active_entry is Dictionary:
+		active_pack_id = String(active_entry.get("provider_pack_id", ""))
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary):
+		return []
+	var result: Array = []
+	for pack_id in packs.keys():
+		var pack = packs[pack_id]
+		if !(pack is Dictionary):
+			continue
+		var cards = pack.get("cards", {})
+		if !(cards is Dictionary) or !cards.has(source_path):
+			continue
+		var card_entry = cards[source_path]
+		if !(card_entry is Dictionary):
+			continue
+		result.append({
+			"pack_id": String(pack.get("id", pack_id)),
+			"pack_name": String(pack.get("name", pack_id)),
+			"display_mode": String(card_entry.get("display_mode", DISPLAY_MODE_DEFAULT)),
+			"type": String(card_entry.get("type", "static")),
+			"active": String(pack.get("id", pack_id)) == active_pack_id
+		})
+	result.sort_custom(func(a, b): return String(a.get("pack_name", "")).naturalnocasecmp_to(String(b.get("pack_name", ""))) < 0)
+	return result
+
+
+func apply_art_pack_variant(source_path: String, pack_id: String) -> Dictionary:
+	if source_path == "":
+		return {
+			"ok": false,
+			"message": "No card art is selected."
+		}
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary) or !packs.has(pack_id):
+		return {
+			"ok": false,
+			"message": "The selected art pack could not be found."
+		}
+	var pack = packs[pack_id]
+	if !(pack is Dictionary):
+		return {
+			"ok": false,
+			"message": "The selected art pack could not be read."
+		}
+	var cards = pack.get("cards", {})
+	if !(cards is Dictionary) or !cards.has(source_path):
+		return {
+			"ok": false,
+			"message": "That art pack does not contain the current card."
+		}
+	var card_entry = cards[source_path]
+	if !(card_entry is Dictionary):
+		return {
+			"ok": false,
+			"message": "The selected card entry in the art pack is invalid."
+	}
+	return _activate_registered_art_pack_entry(source_path, card_entry, pack_id, String(pack.get("name", pack_id)))
+
+
+func apply_art_pack_to_all(pack_id: String, progress_callback: Callable = Callable()) -> Dictionary:
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary) or !packs.has(pack_id):
+		return {
+			"ok": false,
+			"message": "The selected art pack could not be found."
+		}
+	var pack = packs[pack_id]
+	if !(pack is Dictionary):
+		return {
+			"ok": false,
+			"message": "The selected art pack could not be read."
+		}
+	var cards = pack.get("cards", {})
+	if !(cards is Dictionary) or cards.is_empty():
+		return {
+			"ok": false,
+			"message": "That art pack does not contain any card entries."
+		}
+	var applied_count: int = 0
+	var total: int = cards.size()
+	var processed: int = 0
+	await _report_import_progress(progress_callback, 0, total, "Applying art pack...")
+	for source_path in cards.keys():
+		var card_entry = cards[source_path]
+		processed += 1
+		if !(card_entry is Dictionary):
+			await _report_import_progress(progress_callback, processed, total, String(source_path).get_file())
+			continue
+		var result = _activate_registered_art_pack_entry(String(source_path), card_entry, pack_id, String(pack.get("name", pack_id)))
+		if bool(result.get("ok", false)):
+			applied_count += 1
+		await _report_import_progress(progress_callback, processed, total, String(source_path).get_file())
+	if applied_count == 0:
+		return {
+			"ok": false,
+			"message": "No cards from that art pack could be applied."
+		}
+	refresh_all_portraits()
+	return {
+		"ok": true,
+		"message": "Applied %d cards from \"%s\"." % [applied_count, String(pack.get("name", pack_id))]
+	}
+
+
+func remove_art_pack(pack_id: String) -> Dictionary:
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary) or !packs.has(pack_id):
+		return {
+			"ok": false,
+			"message": "The selected art pack could not be found."
+		}
+	var pack = packs[pack_id]
+	var pack_name = String(pack.get("name", pack_id)) if pack is Dictionary else pack_id
+	var pack_dir = _get_art_pack_dir(pack_id)
+	if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(pack_dir)):
+		_delete_directory_recursive(pack_dir)
+	packs.erase(pack_id)
+	_art_pack_registry["packs"] = packs
+
+	for source_path in _manifest.keys():
+		var entry = _manifest.get(source_path, null)
+		if !(entry is Dictionary):
+			continue
+		if String(entry.get("provider_pack_id", "")) != pack_id:
+			continue
+		entry["provider_type"] = ""
+		entry["provider_pack_id"] = ""
+		entry["provider_pack_name"] = ""
+		_manifest[source_path] = entry
+
+	_save_manifest()
+	_save_art_pack_registry()
+	art_packs_changed.emit()
+	return {
+		"ok": true,
+		"message": "Removed \"%s\" from the art pack list." % pack_name
+	}
 
 
 func get_source_path_for_texture_rect(texture_rect) -> String:
@@ -1170,6 +1340,100 @@ func save_override_from_file(source_path: String, import_path: String) -> Dictio
 	return save_override_image(source_path, image)
 
 
+func _build_art_pack_id(pack_name: String) -> String:
+	var base = _safe_file_stem(pack_name if pack_name != "" else "art_pack")
+	return "%s_%s" % [base, str(Time.get_unix_time_from_system())]
+
+
+func _get_art_pack_dir(pack_id: String) -> String:
+	return "%s/%s" % [STORAGE_ART_PACK_DIR, pack_id]
+
+
+func _register_art_pack_static_entry(pack_id: String, source_path: String, image, display_mode: String) -> Dictionary:
+	var pack_dir = _get_art_pack_dir(pack_id)
+	var safe_stem = _safe_file_stem(source_path)
+	var override_path = "%s/%s.png" % [pack_dir, safe_stem]
+	var edit_source_path = "%s/%s_source.png" % [pack_dir, safe_stem]
+	var absolute_override_path = ProjectSettings.globalize_path(override_path)
+	var absolute_edit_source_path = ProjectSettings.globalize_path(edit_source_path)
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(pack_dir))
+	if image.save_png(absolute_override_path) != OK:
+		return {}
+	if image.save_png(absolute_edit_source_path) != OK:
+		return {}
+	return {
+		"type": "static",
+		"override_path": override_path,
+		"edit_source_path": edit_source_path,
+		"display_mode": display_mode,
+		"updated_at": Time.get_datetime_string_from_system()
+	}
+
+
+func _register_art_pack_animated_entry(pack_id: String, source_path: String, images: Array, delays: Array, display_mode: String) -> Dictionary:
+	var pack_dir = _get_art_pack_dir(pack_id)
+	var safe_stem = _safe_file_stem(source_path)
+	var frame_paths: Array = []
+	var source_frame_paths: Array = []
+	var frame_delays: Array = []
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(pack_dir))
+	for index in range(images.size()):
+		var image = images[index]
+		if image == null:
+			continue
+		var frame_path = "%s/%s_anim_%03d.png" % [pack_dir, safe_stem, index]
+		var source_frame_path = "%s/%s_anim_source_%03d.png" % [pack_dir, safe_stem, index]
+		if image.save_png(ProjectSettings.globalize_path(frame_path)) != OK:
+			continue
+		if image.save_png(ProjectSettings.globalize_path(source_frame_path)) != OK:
+			continue
+		frame_paths.append(frame_path)
+		source_frame_paths.append(source_frame_path)
+		frame_delays.append(max(0.02, float(delays[index]) if index < delays.size() else 0.1))
+	if frame_paths.is_empty():
+		return {}
+	return {
+		"type": "animated_gif",
+		"frame_paths": frame_paths,
+		"source_frame_paths": source_frame_paths,
+		"frame_delays": frame_delays,
+		"display_mode": display_mode,
+		"updated_at": Time.get_datetime_string_from_system()
+	}
+
+
+func _activate_registered_art_pack_entry(source_path: String, card_entry: Dictionary, pack_id: String, pack_name: String) -> Dictionary:
+	var result := {}
+	var display_mode = String(card_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+	if String(card_entry.get("type", "static")) == "animated_gif":
+		var frame_paths = card_entry.get("frame_paths", [])
+		var frame_delays = card_entry.get("frame_delays", [])
+		var images: Array = []
+		for frame_path in frame_paths:
+			var image = load_image_from_file(ProjectSettings.globalize_path(String(frame_path)))
+			if image != null:
+				images.append(image)
+		result = save_animated_override_images(source_path, images, frame_delays, display_mode)
+	else:
+		var edit_source_path = String(card_entry.get("edit_source_path", card_entry.get("override_path", "")))
+		var source_image = load_image_from_file(ProjectSettings.globalize_path(edit_source_path))
+		if source_image == null:
+			return {
+				"ok": false,
+				"message": "The selected art pack image could not be loaded."
+			}
+		result = save_override_image(source_path, source_image, display_mode)
+	if bool(result.get("ok", false)) and _manifest.has(source_path):
+		var manifest_entry = _manifest.get(source_path, null)
+		if manifest_entry is Dictionary:
+			manifest_entry["provider_type"] = "art_pack"
+			manifest_entry["provider_pack_id"] = pack_id
+			manifest_entry["provider_pack_name"] = pack_name
+			_manifest[source_path] = manifest_entry
+			_save_manifest()
+	return result
+
+
 func export_bundle_to_file(export_path: String) -> Dictionary:
 	if _manifest.is_empty():
 		return {
@@ -1281,6 +1545,9 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 			"message": "The art pack does not contain any card images."
 		}
 
+	var pack_name = normalized_import_path.get_file().get_basename().trim_suffix(".cardartpack")
+	var pack_id = _build_art_pack_id(pack_name)
+	var pack_cards := {}
 	var imported_count := 0
 	var processed_count := 0
 	await _report_import_progress(progress_callback, 0, overrides.size(), "Reading art pack...")
@@ -1312,12 +1579,24 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 					continue
 				imported_images.append(image)
 				imported_delays.append(float(frame_entry.get("delay", 0.1)))
-			var animated_result = save_animated_override_images(
+			var registered_entry = _register_art_pack_animated_entry(
+				pack_id,
 				source_path,
 				imported_images,
 				imported_delays,
 				String(override_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
 			)
+			if !registered_entry.is_empty():
+				pack_cards[source_path] = registered_entry
+			var animated_result = _activate_registered_art_pack_entry(
+				source_path,
+				registered_entry,
+				pack_id,
+				pack_name
+			) if !registered_entry.is_empty() else {
+				"ok": false,
+				"message": "The animated art pack entry could not be registered."
+			}
 			if bool(animated_result.get("ok", false)):
 				imported_count += 1
 			await _report_import_progress(progress_callback, processed_count, overrides.size(), source_path.get_file())
@@ -1331,25 +1610,51 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 			var image = Image.new()
 			if image.load_png_from_buffer(image_bytes) != OK:
 				continue
-			var result = save_override_image(
+			var registered_entry = _register_art_pack_static_entry(
+				pack_id,
 				source_path,
 				image,
 				String(override_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
 			)
+			if !registered_entry.is_empty():
+				pack_cards[source_path] = registered_entry
+			var result = _activate_registered_art_pack_entry(
+				source_path,
+				registered_entry,
+				pack_id,
+				pack_name
+			) if !registered_entry.is_empty() else {
+				"ok": false,
+				"message": "The art pack entry could not be registered."
+			}
 			if bool(result.get("ok", false)):
 				imported_count += 1
 			await _report_import_progress(progress_callback, processed_count, overrides.size(), source_path.get_file())
 
-	if imported_count == 0:
+	if pack_cards.is_empty():
 		return {
 			"ok": false,
 			"message": "No card images from the art pack could be imported."
 		}
 
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary):
+		packs = {}
+	packs[pack_id] = {
+		"id": pack_id,
+		"name": pack_name,
+		"source_file": normalized_import_path,
+		"imported_at": Time.get_datetime_string_from_system(),
+		"count": pack_cards.size(),
+		"cards": pack_cards
+	}
+	_art_pack_registry["packs"] = packs
+	_save_art_pack_registry()
+	art_packs_changed.emit()
 	refresh_all_portraits()
 	return {
 		"ok": true,
-		"message": "Imported %d card images from the shared art pack." % imported_count
+		"message": "Imported %d card images from the shared art pack and registered \"%s\"." % [imported_count, pack_name]
 	}
 
 
@@ -1431,6 +1736,13 @@ func import_mod_images_from_path(import_path: String, progress_callback: Callabl
 	var ambiguous_count := 0
 	var unmatched_count := 0
 	var imported_sources := {}
+	var pack_name = import_path.get_file().get_basename()
+	if pack_name == "":
+		pack_name = mod_root.get_file().get_basename()
+	if pack_name == "":
+		pack_name = "Imported Mod Pack"
+	var pack_id = _build_art_pack_id(pack_name)
+	var pack_cards := {}
 	var debug_matches: Array = []
 	await _report_import_progress(progress_callback, 0, image_paths.size(), "Matching extracted images...")
 	for image_path in image_paths:
@@ -1455,7 +1767,38 @@ func import_mod_images_from_path(import_path: String, progress_callback: Callabl
 			continue
 		if debug_matches.size() < 10:
 			debug_matches.append("%s -> %s" % [String(image_path).get_file(), source_path.get_file()])
-		var result = save_override_from_file(source_path, String(image_path))
+		var result := {}
+		var extension = String(image_path).get_extension().to_lower()
+		if extension == "gif":
+			var extract_result = _extract_gif_frames(String(image_path))
+			if bool(extract_result.get("ok", false)):
+				var registered_entry = _register_art_pack_animated_entry(
+					pack_id,
+					source_path,
+					Array(extract_result.get("images", [])),
+					Array(extract_result.get("delays", [])),
+					DISPLAY_MODE_DEFAULT
+				)
+				if !registered_entry.is_empty():
+					pack_cards[source_path] = registered_entry
+					result = _activate_registered_art_pack_entry(source_path, registered_entry, pack_id, pack_name)
+				var temp_dir = String(extract_result.get("temp_dir", ""))
+				if temp_dir != "":
+					_delete_directory_recursive(temp_dir)
+		else:
+			var image = load_image_from_file(String(image_path))
+			if image != null:
+				var registered_entry = _register_art_pack_static_entry(
+					pack_id,
+					source_path,
+					image,
+					DISPLAY_MODE_DEFAULT
+				)
+				if !registered_entry.is_empty():
+					pack_cards[source_path] = registered_entry
+					result = _activate_registered_art_pack_entry(source_path, registered_entry, pack_id, pack_name)
+		if result.is_empty():
+			result = save_override_from_file(source_path, String(image_path))
 		if bool(result.get("ok", false)):
 			imported_sources[source_path] = true
 			imported_count += 1
@@ -1470,14 +1813,31 @@ func import_mod_images_from_path(import_path: String, progress_callback: Callabl
 				"%s%s" % [
 					" Extracted files saved to: %s" % extracted_saved_dir if extracted_saved_dir != "" else " Import source: direct PCK mode.",
 					" %s" % extract_save_notice if extract_save_notice != "" else ""
-				]
+			]
 			] + ("\nMatches:\n%s" % "\n".join(debug_matches) if !debug_matches.is_empty() else "")
 		}
 
+	if !pack_cards.is_empty():
+		var packs = _art_pack_registry.get("packs", {})
+		if !(packs is Dictionary):
+			packs = {}
+		packs[pack_id] = {
+			"id": pack_id,
+			"name": pack_name,
+			"source_file": import_path,
+			"imported_at": Time.get_datetime_string_from_system(),
+			"count": pack_cards.size(),
+			"cards": pack_cards
+		}
+		_art_pack_registry["packs"] = packs
+		_save_art_pack_registry()
+		art_packs_changed.emit()
+
 	return {
 		"ok": true,
-		"message": "Imported %d card images from the selected mod folder. Unmatched: %d, ambiguous: %d.%s" % [
+		"message": "Imported %d card images from the selected mod folder and registered \"%s\". Unmatched: %d, ambiguous: %d.%s" % [
 			imported_count,
+			pack_name,
 			unmatched_count,
 			ambiguous_count,
 			"%s%s" % [
@@ -1669,6 +2029,9 @@ func save_animated_override_images(source_path: String, images: Array, delays: A
 		"width": target_size.x,
 		"height": target_size.y,
 		"display_mode": display_mode,
+		"provider_type": "",
+		"provider_pack_id": "",
+		"provider_pack_name": "",
 		"updated_at": Time.get_datetime_string_from_system()
 	}
 	_override_texture_cache.erase(source_path)
@@ -1714,6 +2077,9 @@ func _save_static_override_data(source_path: String, normalized_image, edit_sour
 		"adjust_zoom": zoom,
 		"adjust_offset_x": offset_x,
 		"adjust_offset_y": offset_y,
+		"provider_type": "",
+		"provider_pack_id": "",
+		"provider_pack_name": "",
 		"updated_at": Time.get_datetime_string_from_system()
 	}
 	_override_texture_cache.erase(source_path)
@@ -2238,7 +2604,10 @@ func _restore_full_art_portrait_mask(portrait_canvas_group) -> void:
 	if !(portrait_canvas_group is CanvasGroup):
 		return
 	var canvas_group := portrait_canvas_group as CanvasGroup
-	var original_material = canvas_group.get_meta(META_PORTRAIT_GROUP_ORIGINAL_MATERIAL, null) if canvas_group.has_meta(META_PORTRAIT_GROUP_ORIGINAL_MATERIAL) else null
+	if !canvas_group.has_meta(META_PORTRAIT_GROUP_ORIGINAL_MATERIAL):
+		canvas_group.material = null
+		return
+	var original_material = canvas_group.get_meta(META_PORTRAIT_GROUP_ORIGINAL_MATERIAL, null)
 	canvas_group.material = original_material if original_material is Material else null
 	canvas_group.remove_meta(META_PORTRAIT_GROUP_ORIGINAL_MATERIAL)
 
@@ -2856,6 +3225,7 @@ func _ensure_storage() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_EDIT_SOURCE_DIR))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_GIF_TEMP_DIR))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_PCK_TEMP_DIR))
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_ART_PACK_DIR))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(GIF_TOOL_USER_PATH.get_base_dir()))
 
 
@@ -2877,12 +3247,36 @@ func _load_manifest() -> void:
 		_manifest = {}
 
 
+func _load_art_pack_registry() -> void:
+	var absolute_registry_path = ProjectSettings.globalize_path(STORAGE_ART_PACK_REGISTRY_PATH)
+	if !FileAccess.file_exists(absolute_registry_path):
+		_art_pack_registry = {"packs": {}}
+		return
+	var file = FileAccess.open(absolute_registry_path, FileAccess.READ)
+	if file == null:
+		_art_pack_registry = {"packs": {}}
+		return
+	var parsed = JSON.parse_string(file.get_as_text())
+	if parsed is Dictionary and parsed.has("packs") and parsed["packs"] is Dictionary:
+		_art_pack_registry = parsed
+	else:
+		_art_pack_registry = {"packs": {}}
+
+
 func _save_manifest() -> void:
 	var absolute_manifest_path = ProjectSettings.globalize_path(STORAGE_MANIFEST_PATH)
 	var file = FileAccess.open(absolute_manifest_path, FileAccess.WRITE)
 	if file == null:
 		return
 	file.store_string(JSON.stringify(_manifest, "\t"))
+
+
+func _save_art_pack_registry() -> void:
+	var absolute_registry_path = ProjectSettings.globalize_path(STORAGE_ART_PACK_REGISTRY_PATH)
+	var file = FileAccess.open(absolute_registry_path, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_string(JSON.stringify(_art_pack_registry, "\t"))
 
 
 func _safe_file_stem(source_path: String) -> String:
