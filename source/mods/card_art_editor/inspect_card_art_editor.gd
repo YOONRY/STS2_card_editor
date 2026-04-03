@@ -172,6 +172,7 @@ var _adjust_cancel_button: Button
 var _adjust_reset_button: Button
 var _progress_bar: ProgressBar
 var _adjust_source_image = null
+var _adjust_source_path := ""
 var _adjust_drag_active := false
 
 
@@ -581,6 +582,8 @@ func _on_restore_pressed() -> void:
 	_current_source_path = source_path
 	var result = manager.remove_override(source_path)
 	_set_status(String(result.get("message", "Unknown restore result.")), !bool(result.get("ok", false)))
+	if bool(result.get("ok", false)):
+		_refresh_inspect_card_after_restore()
 	_update_context(true)
 
 
@@ -591,7 +594,18 @@ func _on_restore_all_pressed() -> void:
 		return
 	var result = manager.remove_all_overrides()
 	_set_status(String(result.get("message", "Unknown restore-all result.")), !bool(result.get("ok", false)))
+	if bool(result.get("ok", false)):
+		_refresh_inspect_card_after_restore()
 	_update_context(true)
+
+
+func _refresh_inspect_card_after_restore() -> void:
+	var inspect_card = _get_inspect_card()
+	if inspect_card != null and inspect_card.has_method("Reload"):
+		inspect_card.call_deferred("Reload")
+	var screen = get_parent()
+	if screen != null and screen.has_method("UpdateCardDisplay"):
+		screen.call_deferred("UpdateCardDisplay")
 
 
 func _on_choose_image_pressed() -> void:
@@ -734,8 +748,10 @@ func _on_adjust_pressed() -> void:
 		return
 
 	_current_source_path = source_path
+	_adjust_source_path = source_path
 	_adjust_source_image = manager.get_adjustable_override_image(source_path)
 	if _adjust_source_image == null:
+		_adjust_source_path = ""
 		_set_status("The current custom image could not be prepared for adjustment.", true)
 		return
 
@@ -776,7 +792,7 @@ func _on_adjust_apply_pressed() -> void:
 	if manager == null:
 		_set_status("The card art manager is not available.", true)
 		return
-	var source_path = _get_effective_source_path()
+	var source_path = _adjust_source_path if _adjust_source_path != "" else _get_effective_source_path()
 	var result = manager.save_adjusted_override(
 		source_path,
 		_adjust_zoom_slider.value / 100.0,
@@ -835,13 +851,19 @@ func _close_adjust_panel() -> void:
 		_adjust_preview_label.text = "Drag the preview to reposition it. Use zoom to crop tighter."
 	_adjust_drag_active = false
 	_adjust_source_image = null
+	_adjust_source_path = ""
 
 
 func _apply_adjust_preview_frame_style() -> void:
 	if _adjust_preview_frame == null:
 		return
 	var manager = _manager()
-	var is_full_art = manager != null and _current_source_path != "" and manager.is_full_art_mode(_current_source_path)
+	var preview_source_path = _adjust_source_path if _adjust_source_path != "" else _current_source_path
+	var is_full_art = manager != null and preview_source_path != "" and manager.is_full_art_mode(preview_source_path)
+	if _adjust_preview != null:
+		var preview_size = Vector2(300, 424) if is_full_art else Vector2(520, 260)
+		_adjust_preview_frame.custom_minimum_size = preview_size
+		_adjust_preview.custom_minimum_size = preview_size
 	var style = StyleBoxFlat.new()
 	style.bg_color = Color(0.07, 0.07, 0.09, 0.92)
 	style.border_color = Color(0.92, 0.92, 0.96, 0.95)
@@ -862,11 +884,12 @@ func _apply_adjust_preview_frame_style() -> void:
 
 func _update_adjust_preview() -> void:
 	var manager = _manager()
-	if manager == null or _adjust_source_image == null or _current_source_path == "":
+	var preview_source_path = _adjust_source_path if _adjust_source_path != "" else _current_source_path
+	if manager == null or _adjust_source_image == null or preview_source_path == "":
 		return
 	_apply_adjust_preview_frame_style()
 	var preview_image = manager.build_adjusted_preview(
-		_current_source_path,
+		preview_source_path,
 		_adjust_source_image,
 		_adjust_zoom_slider.value / 100.0,
 		_adjust_x_slider.value / 100.0,
@@ -1041,7 +1064,8 @@ func _update_context(force_refresh: bool) -> void:
 		_current_source_path = next_source_path
 		_current_target_size = manager.get_target_size_for_source_path(_current_source_path) if _current_source_path != "" else Vector2i.ZERO
 		if source_changed:
-			_close_adjust_panel()
+			if _adjust_panel == null or !_adjust_panel.visible:
+				_close_adjust_panel()
 			_selected_upload_path = ""
 			_selected_file_label.text = _tr("no_image_selected")
 		_refresh_card_label()

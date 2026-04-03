@@ -2493,6 +2493,8 @@ func _restore_full_art_state(texture_rect) -> void:
 	if full_art_layer is TextureRect:
 		full_art_layer.visible = false
 		full_art_layer.texture = null
+		full_art_layer.set_meta(META_FULL_ART_ACTIVE, false)
+		full_art_layer.remove_meta(META_FULL_ART_OWNER_PATH)
 	if portrait_canvas_group is CanvasItem:
 		portrait_canvas_group.visible = true
 	_restore_full_art_portrait_mask(portrait_canvas_group)
@@ -2519,7 +2521,7 @@ func _restore_full_art_state(texture_rect) -> void:
 		(portrait as TextureRect).set_meta(META_FULL_ART_ACTIVE, false)
 	else:
 		texture_rect.visible = true
-		texture_rect.set_meta(META_FULL_ART_ACTIVE, false)
+	texture_rect.set_meta(META_FULL_ART_ACTIVE, false)
 
 
 func _on_node_added(node) -> void:
