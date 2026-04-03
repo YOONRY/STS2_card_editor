@@ -1,0 +1,13 @@
+; Engine configuration file.
+; Minimal sandbox project for validating the card art editor scripts.
+
+config_version=5
+
+[application]
+
+config/name="card_art_editor_sandbox"
+run/main_scene="res://mods/card_art_editor/inspect_card_art_editor.tscn"
+
+[autoload]
+
+CardArtOverrideManager="*res://mods/card_art_editor/card_art_override_manager.gd"

@@ -1,0 +1,11 @@
+{
+  "id": "RegentFemPortraits",
+  "name": "尖塔储君卡图娘化",
+  "author": "LingEnd，失地骑士HATK",
+  "description": "储君卡图替换 mod",
+  "version": "v0.1",
+  "has_pck": true,
+  "has_dll": true,
+  "dependencies": [],
+  "affects_gameplay": false
+}

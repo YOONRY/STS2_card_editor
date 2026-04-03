@@ -1,0 +1,75 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>card_art_editor</AssemblyName>
+    <RootNamespace>CardArtEditorBootstrap</RootNamespace>
+    <TargetFramework>net8.0</TargetFramework>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Sts2InstallDir Condition="'$(Sts2InstallDir)' == '' and '$(SLAY_THE_SPIRE_2_DIR)' != ''">$(SLAY_THE_SPIRE_2_DIR)</Sts2InstallDir>
+    <Sts2InstallDir Condition="'$(Sts2InstallDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2</Sts2InstallDir>
+    <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2InstallDir)\data_sts2_windows_x86_64</Sts2DataDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="0Harmony">
+      <HintPath>$(Sts2DataDir)\0Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="GodotSharp">
+      <HintPath>$(Sts2DataDir)\GodotSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="sts2">
+      <HintPath>$(Sts2DataDir)\sts2.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Private.CoreLib">
+      <HintPath>$(Sts2DataDir)\System.Private.CoreLib.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Runtime">
+      <HintPath>$(Sts2DataDir)\System.Runtime.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Runtime.Loader">
+      <HintPath>$(Sts2DataDir)\System.Runtime.Loader.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Runtime.Extensions">
+      <HintPath>$(Sts2DataDir)\System.Runtime.Extensions.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Runtime.InteropServices">
+      <HintPath>$(Sts2DataDir)\System.Runtime.InteropServices.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Collections">
+      <HintPath>$(Sts2DataDir)\System.Collections.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Collections.Concurrent">
+      <HintPath>$(Sts2DataDir)\System.Collections.Concurrent.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Linq">
+      <HintPath>$(Sts2DataDir)\System.Linq.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Console">
+      <HintPath>$(Sts2DataDir)\System.Console.dll</HintPath>
+    </Reference>
+    <Reference Include="System.IO.FileSystem">
+      <HintPath>$(Sts2DataDir)\System.IO.FileSystem.dll</HintPath>
+    </Reference>
+    <Reference Include="System.IO.FileSystem.Primitives">
+      <HintPath>$(Sts2DataDir)\System.IO.FileSystem.Primitives.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Memory">
+      <HintPath>$(Sts2DataDir)\System.Memory.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Threading">
+      <HintPath>$(Sts2DataDir)\System.Threading.dll</HintPath>
+    </Reference>
+    <Reference Include="System.ObjectModel">
+      <HintPath>$(Sts2DataDir)\System.ObjectModel.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Private.Uri">
+      <HintPath>$(Sts2DataDir)\System.Private.Uri.dll</HintPath>
+    </Reference>
+    <Reference Include="netstandard">
+      <HintPath>$(Sts2DataDir)\netstandard.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>

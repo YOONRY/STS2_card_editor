@@ -1,0 +1,26 @@
+<Project Sdk="Godot.NET.Sdk/4.5.1">
+  <PropertyGroup>
+    <AssemblyName>AnimeWaifuSilent</AssemblyName>
+    <EnableDynamicLoading>True</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <TargetFramework>net90</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>13.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <CheckForOverflowUnderflow>False</CheckForOverflowUnderflow>
+  </PropertyGroup>
+  <PropertyGroup />
+  <ItemGroup />
+  <ItemGroup>
+    <Reference Include="System.Runtime.InteropServices" />
+    <Reference Include="sts2" />
+    <Reference Include="System.Collections" />
+    <Reference Include="0Harmony" />
+    <Reference Include="System.Console" />
+    <!--The following references were not added to the project file because they are automatically added by the Godot SDK.-->
+    <!--
+<Reference Include="GodotSharp" />
+-->
+  </ItemGroup>
+</Project>

@@ -1,0 +1,21 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 14
+VisualStudioVersion = 14.0.24720.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AnimeWaifuSilent", "AnimeWaifuSilent.csproj", "{9B8D688F-A143-80BC-A35D-64E09E20A463}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|AnyCPU = Debug|AnyCPU
+		Release|AnyCPU = Release|AnyCPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{9B8D688F-A143-80BC-A35D-64E09E20A463}.Debug|AnyCPU.ActiveCfg = Debug|AnyCPU
+		{9B8D688F-A143-80BC-A35D-64E09E20A463}.Debug|AnyCPU.Build.0 = Debug|AnyCPU
+		{9B8D688F-A143-80BC-A35D-64E09E20A463}.Release|AnyCPU.ActiveCfg = Release|AnyCPU
+		{9B8D688F-A143-80BC-A35D-64E09E20A463}.Release|AnyCPU.Build.0 = Release|AnyCPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

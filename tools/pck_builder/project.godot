@@ -1,0 +1,8 @@
+; Engine configuration file.
+; Minimal project used only to build the mod PCK in headless mode.
+
+config_version=5
+
+[application]
+config/name="Card Art Editor PCK Builder"
+run/main_scene=""

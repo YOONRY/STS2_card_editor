@@ -1,0 +1,51 @@
+{
+  "formatVersion": 1,
+  "modId": "ExportedCardArtMod",
+  "exportedAtUtc": "2026-03-26T13:41:44.0914446Z",
+  "entries": [
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.CrushUnder",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.CrushUnder.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.GammaBlast",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.GammaBlast.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.Charge",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.Charge.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.Terraforming",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.Terraforming.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.MakeItSo",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.MakeItSo.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.MonarchsGaze",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.MonarchsGaze.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.RoyalGamble",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.RoyalGamble.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.Radiate",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.Radiate.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.CrashLanding",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.CrashLanding.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.Bulwark",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.Bulwark.png"
+    },
+    {
+      "cardId": "MegaCrit.Sts2.Core.Models.Cards.DefendRegent",
+      "image": "res://generated/images/regent/MegaCrit.Sts2.Core.Models.Cards.DefendRegent.png"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+_custom_features="dotnet"
+
+[application]
+
+config/name="AnimeWaifuSilent"
+config/features=PackedStringArray("4.5", "C#", "Mobile")
+config/icon="res://icon.svg"
+
+[dotnet]
+
+project/assembly_name="AnimeWaifuSilent"
+
+[editor_overrides]
+
+text_editor/behavior/indent/type=1
+
+[rendering]
+
+renderer/rendering_method="mobile"

@@ -1,0 +1,23 @@
+/.vs/
+/.idea/
+/.git-credentials
+
+/Slay the Spire 2/
+/Godot_v4.6.1-stable_mono_win64/
+
+/build/card_art_editor_mod/
+/build/releases/
+/build/*_extracted/
+
+/modfile/**/.godot/
+/modfile/**/packages/
+/modfile/**/bin/
+/modfile/**/obj/
+
+/tools/CardArtEditorBootstrap/bin/
+/tools/CardArtEditorBootstrap/obj/
+/tools/pck_builder/.godot/
+
+*.user
+*.tmp
+*.log
