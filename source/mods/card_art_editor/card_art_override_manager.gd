@@ -4,6 +4,7 @@ const STORAGE_ROOT := "user://card_art_editor"
 const STORAGE_IMAGE_DIR := STORAGE_ROOT + "/overrides"
 const STORAGE_EDIT_SOURCE_DIR := STORAGE_ROOT + "/edit_sources"
 const STORAGE_GIF_TEMP_DIR := STORAGE_ROOT + "/gif_temp"
+const STORAGE_GIF_CACHE_DIR := STORAGE_ROOT + "/gif_cache"
 const STORAGE_PCK_TEMP_DIR := STORAGE_ROOT + "/pck_temp"
 const STORAGE_MANIFEST_PATH := STORAGE_ROOT + "/manifest.json"
 const STORAGE_ART_PACK_DIR := STORAGE_ROOT + "/art_packs"
@@ -19,7 +20,7 @@ const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
 const FULL_ART_TARGET_SIZE := Vector2i(600, 847)
 const MOD_IMPORT_IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
 const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "colorless", "status", "token", "curse", "event", "necrobinder"]
-const REFRESH_INTERVAL := 0.0
+const REFRESH_INTERVAL := 0.15
 const DISPLAY_MODE_DEFAULT := "default"
 const DISPLAY_MODE_FULL_ART := "full_art"
 const FULL_ART_STATIC_ZOOM_BOOST := 1.12
@@ -37,10 +38,13 @@ const META_FULL_ART_ACTIVE := "_card_art_full_art_active"
 const META_FULL_ART_OWNER_PATH := "_card_art_full_art_owner_path"
 const META_INSPECT_SOURCE_PATH := "_card_art_inspect_source_path"
 const META_PORTRAIT_GROUP_ORIGINAL_MATERIAL := "_card_art_portrait_group_original_material"
+const META_REFRESH_SIGNATURE := "_card_art_refresh_signature"
+const META_NAMED_NODE_CACHE := "_card_art_named_node_cache"
 const FULL_ART_LAYER_NAME := "CardArtFullArtLayer"
 const FULL_ART_INSET_STATIC := 0
 const FULL_ART_INSET_ANIMATED := 0
 const STARTUP_RESCAN_FRAMES := 180
+const STARTUP_RESCAN_STEP_INTERVAL := 6
 
 signal overrides_changed(source_path)
 signal art_packs_changed()
@@ -53,6 +57,21 @@ var _refresh_accumulator := 0.0
 var _session_api_key := ""
 var _overlay_scene := preload("res://mods/card_art_editor/inspect_card_art_editor.tscn")
 var _startup_rescan_frames_remaining := STARTUP_RESCAN_FRAMES
+var _infection_effect_hidden_enabled := true
+var _needs_full_refresh := true
+var _startup_rescan_tick := 0
+var _gif_processing_settings := {
+	"use_cache": true,
+	"skip_duplicate_frames": true,
+	"use_frame_limit": false,
+	"max_frames": 36
+}
+var _batch_update_depth := 0
+var _batch_manifest_dirty := false
+var _batch_registry_dirty := false
+var _batch_refresh_requested := false
+var _batch_art_packs_changed := false
+var _batched_override_sources := {}
 
 
 func _ready() -> void:
@@ -66,16 +85,24 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	if _startup_rescan_frames_remaining > 0:
-		_register_existing(get_tree().root)
+		_startup_rescan_tick += 1
+		if _startup_rescan_tick >= STARTUP_RESCAN_STEP_INTERVAL:
+			_startup_rescan_tick = 0
+			_register_existing(get_tree().root)
 		_startup_rescan_frames_remaining -= 1
+		_needs_full_refresh = true
+	if !_needs_full_refresh:
+		return
 	if REFRESH_INTERVAL <= 0.0:
 		_refresh_tracked_portraits()
+		_needs_full_refresh = false
 		return
 	_refresh_accumulator += delta
 	if _refresh_accumulator < REFRESH_INTERVAL:
 		return
 	_refresh_accumulator = 0.0
 	_refresh_tracked_portraits()
+	_needs_full_refresh = false
 
 
 func get_session_api_key() -> String:
@@ -84,6 +111,19 @@ func get_session_api_key() -> String:
 
 func set_session_api_key(api_key: String) -> void:
 	_session_api_key = api_key.strip_edges()
+
+
+func get_gif_processing_settings() -> Dictionary:
+	return _gif_processing_settings.duplicate(true)
+
+
+func set_gif_processing_settings(settings: Dictionary) -> void:
+	if !(settings is Dictionary):
+		return
+	_gif_processing_settings["use_cache"] = bool(settings.get("use_cache", true))
+	_gif_processing_settings["skip_duplicate_frames"] = bool(settings.get("skip_duplicate_frames", true))
+	_gif_processing_settings["use_frame_limit"] = bool(settings.get("use_frame_limit", false))
+	_gif_processing_settings["max_frames"] = clamp(int(settings.get("max_frames", 36)), 1, 300)
 
 
 func has_override(source_path: String) -> bool:
@@ -267,6 +307,14 @@ func get_override_count() -> int:
 	return _manifest.size()
 
 
+func is_infection_effect_hidden_enabled() -> bool:
+	return _infection_effect_hidden_enabled
+
+
+func set_infection_effect_hidden_enabled(enabled: bool) -> void:
+	_infection_effect_hidden_enabled = enabled
+
+
 func get_art_pack_list() -> Array:
 	var packs = _art_pack_registry.get("packs", {})
 	if !(packs is Dictionary):
@@ -374,6 +422,7 @@ func apply_art_pack_to_all(pack_id: String, progress_callback: Callable = Callab
 	var applied_count: int = 0
 	var total: int = cards.size()
 	var processed: int = 0
+	_begin_batch_updates()
 	await _report_import_progress(progress_callback, 0, total, "Applying art pack...")
 	for source_path in cards.keys():
 		var card_entry = cards[source_path]
@@ -386,11 +435,12 @@ func apply_art_pack_to_all(pack_id: String, progress_callback: Callable = Callab
 			applied_count += 1
 		await _report_import_progress(progress_callback, processed, total, String(source_path).get_file())
 	if applied_count == 0:
+		_end_batch_updates()
 		return {
 			"ok": false,
 			"message": "No cards from that art pack could be applied."
 		}
-	refresh_all_portraits()
+	_end_batch_updates()
 	return {
 		"ok": true,
 		"message": "Applied %d cards from \"%s\"." % [applied_count, String(pack.get("name", pack_id))]
@@ -425,7 +475,7 @@ func remove_art_pack(pack_id: String) -> Dictionary:
 
 	_save_manifest()
 	_save_art_pack_registry()
-	art_packs_changed.emit()
+	_notify_art_packs_changed()
 	return {
 		"ok": true,
 		"message": "Removed \"%s\" from the art pack list." % pack_name
@@ -1434,6 +1484,48 @@ func _activate_registered_art_pack_entry(source_path: String, card_entry: Dictio
 	return result
 
 
+func _begin_batch_updates() -> void:
+	_batch_update_depth += 1
+
+
+func _end_batch_updates() -> void:
+	if _batch_update_depth <= 0:
+		return
+	_batch_update_depth -= 1
+	if _batch_update_depth > 0:
+		return
+	if _batch_manifest_dirty:
+		_batch_manifest_dirty = false
+		_save_manifest_now()
+	if _batch_registry_dirty:
+		_batch_registry_dirty = false
+		_save_art_pack_registry_now()
+	if _batch_refresh_requested:
+		_batch_refresh_requested = false
+		_needs_full_refresh = true
+		_refresh_accumulator = REFRESH_INTERVAL
+	if _batch_art_packs_changed:
+		_batch_art_packs_changed = false
+		art_packs_changed.emit()
+	for source_path in _batched_override_sources.keys():
+		overrides_changed.emit(String(source_path))
+	_batched_override_sources.clear()
+
+
+func _notify_override_changed(source_path: String) -> void:
+	if _batch_update_depth > 0:
+		_batched_override_sources[source_path] = true
+		return
+	overrides_changed.emit(source_path)
+
+
+func _notify_art_packs_changed() -> void:
+	if _batch_update_depth > 0:
+		_batch_art_packs_changed = true
+		return
+	art_packs_changed.emit()
+
+
 func export_bundle_to_file(export_path: String) -> Dictionary:
 	if _manifest.is_empty():
 		return {
@@ -1550,6 +1642,7 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 	var pack_cards := {}
 	var imported_count := 0
 	var processed_count := 0
+	_begin_batch_updates()
 	await _report_import_progress(progress_callback, 0, overrides.size(), "Reading art pack...")
 	for override_entry in overrides:
 		if !(override_entry is Dictionary):
@@ -1632,6 +1725,7 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 			await _report_import_progress(progress_callback, processed_count, overrides.size(), source_path.get_file())
 
 	if pack_cards.is_empty():
+		_end_batch_updates()
 		return {
 			"ok": false,
 			"message": "No card images from the art pack could be imported."
@@ -1650,8 +1744,9 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 	}
 	_art_pack_registry["packs"] = packs
 	_save_art_pack_registry()
-	art_packs_changed.emit()
+	_notify_art_packs_changed()
 	refresh_all_portraits()
+	_end_batch_updates()
 	return {
 		"ok": true,
 		"message": "Imported %d card images from the shared art pack and registered \"%s\"." % [imported_count, pack_name]
@@ -1744,6 +1839,7 @@ func import_mod_images_from_path(import_path: String, progress_callback: Callabl
 	var pack_id = _build_art_pack_id(pack_name)
 	var pack_cards := {}
 	var debug_matches: Array = []
+	_begin_batch_updates()
 	await _report_import_progress(progress_callback, 0, image_paths.size(), "Matching extracted images...")
 	for image_path in image_paths:
 		var match = _match_card_source_for_mod_image(String(image_path), source_index)
@@ -1805,6 +1901,7 @@ func import_mod_images_from_path(import_path: String, progress_callback: Callabl
 		await _report_import_progress(progress_callback, imported_count + unmatched_count + ambiguous_count, image_paths.size(), String(image_path).get_file())
 
 	if imported_count == 0:
+		_end_batch_updates()
 		return {
 			"ok": false,
 			"message": "No matching card images were imported from that mod. Unmatched: %d, ambiguous: %d.%s" % [
@@ -1831,7 +1928,8 @@ func import_mod_images_from_path(import_path: String, progress_callback: Callabl
 		}
 		_art_pack_registry["packs"] = packs
 		_save_art_pack_registry()
-		art_packs_changed.emit()
+		_notify_art_packs_changed()
+	_end_batch_updates()
 
 	return {
 		"ok": true,
@@ -1964,16 +2062,179 @@ func save_gif_override_from_file(source_path: String, import_path: String, displ
 	if !bool(extract_result.get("ok", false)):
 		return extract_result
 
+	var processed_images = Array(extract_result.get("images", []))
+	var processed_delays = Array(extract_result.get("delays", []))
+	var original_frame_count = int(extract_result.get("original_frame_count", processed_images.size()))
+	var processed_frame_count = int(extract_result.get("processed_frame_count", processed_images.size()))
+	var source_frame_files = Array(extract_result.get("source_frame_files", []))
+	var source_frame_delays = Array(extract_result.get("source_frame_delays", []))
+
+	if processed_images.size() == 1:
+		var static_result = save_override_image(source_path, processed_images[0], display_mode)
+		if bool(static_result.get("ok", false)):
+			_attach_source_animation_backup(source_path, source_frame_files, source_frame_delays)
+			static_result["message"] = "GIF applied as a single frame (%d -> %d frame)." % [original_frame_count, processed_frame_count]
+		var static_temp_dir = String(extract_result.get("temp_dir", ""))
+		if static_temp_dir != "":
+			_delete_directory_recursive(static_temp_dir)
+		return static_result
+
 	var save_result = save_animated_override_images(
 		source_path,
-		Array(extract_result.get("images", [])),
-		Array(extract_result.get("delays", [])),
+		processed_images,
+		processed_delays,
 		display_mode
 	)
+	if bool(save_result.get("ok", false)):
+		_attach_source_animation_backup(source_path, source_frame_files, source_frame_delays)
+		save_result["message"] = "Animated GIF applied with %d frames (%d -> %d)." % [processed_images.size(), original_frame_count, processed_frame_count]
 	var temp_dir = String(extract_result.get("temp_dir", ""))
 	if temp_dir != "":
 		_delete_directory_recursive(temp_dir)
 	return save_result
+
+
+func rebuild_animated_override_with_current_settings(source_path: String) -> Dictionary:
+	var entry = _manifest.get(source_path, null)
+	if !(entry is Dictionary):
+		return {
+			"ok": false,
+			"message": "No custom animated image is applied to this card."
+		}
+	var settings = get_gif_processing_settings()
+	var use_frame_limit = bool(settings.get("use_frame_limit", false))
+	var provider_pack_id = String(entry.get("provider_pack_id", ""))
+	if provider_pack_id != "":
+		var pack_entry = _get_registered_art_pack_card_entry(provider_pack_id, source_path)
+		if pack_entry is Dictionary and !pack_entry.is_empty():
+			if !use_frame_limit:
+				var pack_name = String(entry.get("provider_pack_name", provider_pack_id))
+				return _activate_registered_art_pack_entry(source_path, pack_entry, provider_pack_id, pack_name)
+			var pack_frame_paths = pack_entry.get("source_frame_paths", pack_entry.get("frame_paths", []))
+			var pack_frame_delays = pack_entry.get("frame_delays", [])
+			if pack_frame_paths is Array and !pack_frame_paths.is_empty():
+				var pack_images: Array = []
+				var pack_delays: Array = []
+				for index in range(pack_frame_paths.size()):
+					var frame_image = load_image_from_file(ProjectSettings.globalize_path(String(pack_frame_paths[index])))
+					if frame_image == null:
+						continue
+					pack_images.append(frame_image)
+					pack_delays.append(max(0.02, float(pack_frame_delays[index]) if index < pack_frame_delays.size() else 0.1))
+				if !pack_images.is_empty():
+					var pack_original_count = pack_images.size()
+					if bool(settings.get("skip_duplicate_frames", true)):
+						var pack_deduped = _dedupe_gif_frames(pack_images, pack_delays)
+						pack_images = Array(pack_deduped.get("images", pack_images))
+						pack_delays = Array(pack_deduped.get("delays", pack_delays))
+					var pack_limited = _limit_gif_frames(pack_images, pack_delays, int(settings.get("max_frames", 36)))
+					pack_images = Array(pack_limited.get("images", pack_images))
+					pack_delays = Array(pack_limited.get("delays", pack_delays))
+					var display_mode = String(entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+					if pack_images.size() <= 1:
+						var static_result = save_override_image(source_path, pack_images[0], display_mode)
+						if bool(static_result.get("ok", false)):
+							static_result["message"] = "Animated image rebuilt as a single frame (%d -> %d frame)." % [pack_original_count, pack_images.size()]
+						return static_result
+					var pack_result = save_animated_override_images(source_path, pack_images, pack_delays, display_mode)
+					if bool(pack_result.get("ok", false)):
+						pack_result["message"] = "Animated image rebuilt with %d frames (%d -> %d)." % [pack_images.size(), pack_original_count, pack_images.size()]
+					return pack_result
+	if !use_frame_limit and provider_pack_id != "":
+		var pack_entry = _get_registered_art_pack_card_entry(provider_pack_id, source_path)
+		if pack_entry is Dictionary and !pack_entry.is_empty():
+			var pack_name = String(entry.get("provider_pack_name", provider_pack_id))
+			return _activate_registered_art_pack_entry(source_path, pack_entry, provider_pack_id, pack_name)
+	var frame_paths = entry.get("source_animation_frame_paths", entry.get("source_frame_paths", entry.get("frame_paths", [])))
+	var frame_delays = entry.get("source_animation_frame_delays", entry.get("frame_delays", []))
+	if (!(frame_paths is Array) or frame_paths.is_empty()) and String(entry.get("provider_pack_id", "")) != "":
+		var fallback_entry = _get_registered_art_pack_card_entry(String(entry.get("provider_pack_id", "")), source_path)
+		if fallback_entry is Dictionary:
+			frame_paths = fallback_entry.get("source_frame_paths", fallback_entry.get("frame_paths", []))
+			frame_delays = fallback_entry.get("frame_delays", [])
+	if !(frame_paths is Array) or frame_paths.is_empty():
+		return {
+			"ok": false,
+			"message": "The original animated frames are not available for this card."
+		}
+	var images: Array = []
+	var delays: Array = []
+	for index in range(frame_paths.size()):
+		var frame_image = load_image_from_file(ProjectSettings.globalize_path(String(frame_paths[index])))
+		if frame_image == null:
+			continue
+		images.append(frame_image)
+		delays.append(max(0.02, float(frame_delays[index]) if index < frame_delays.size() else 0.1))
+	if images.is_empty():
+		return {
+			"ok": false,
+			"message": "The original animated frames could not be loaded."
+		}
+	var original_frame_count = images.size()
+	if use_frame_limit and bool(settings.get("skip_duplicate_frames", true)):
+		var deduped = _dedupe_gif_frames(images, delays)
+		images = Array(deduped.get("images", images))
+		delays = Array(deduped.get("delays", delays))
+	if use_frame_limit:
+		var limited = _limit_gif_frames(images, delays, int(settings.get("max_frames", 36)))
+		images = Array(limited.get("images", images))
+		delays = Array(limited.get("delays", delays))
+	var processed_frame_count = images.size()
+	var display_mode = String(entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+	if processed_frame_count <= 1:
+		var static_result = save_override_image(source_path, images[0], display_mode)
+		if bool(static_result.get("ok", false)):
+			static_result["message"] = "Animated image rebuilt as a single frame (%d -> %d frame)." % [original_frame_count, processed_frame_count]
+		return static_result
+	var animated_result = save_animated_override_images(source_path, images, delays, display_mode)
+	if bool(animated_result.get("ok", false)):
+		animated_result["message"] = "Animated image rebuilt with %d frames (%d -> %d)." % [processed_frame_count, original_frame_count, processed_frame_count]
+	return animated_result
+
+
+func _get_registered_art_pack_card_entry(pack_id: String, source_path: String) -> Dictionary:
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary) or !packs.has(pack_id):
+		return {}
+	var pack = packs.get(pack_id, null)
+	if !(pack is Dictionary):
+		return {}
+	var cards = pack.get("cards", {})
+	if !(cards is Dictionary):
+		return {}
+	var card_entry = cards.get(source_path, null)
+	return card_entry if card_entry is Dictionary else {}
+
+
+func rebuild_all_gif_overrides_with_current_settings(progress_callback: Callable = Callable()) -> Dictionary:
+	var gif_sources: Array = []
+	for source_path in _manifest.keys():
+		var entry = _manifest.get(source_path, null)
+		if !(entry is Dictionary):
+			continue
+		var backup_frames = entry.get("source_animation_frame_paths", [])
+		var current_frames = entry.get("source_frame_paths", entry.get("frame_paths", []))
+		if (backup_frames is Array and !backup_frames.is_empty()) or (current_frames is Array and !current_frames.is_empty()):
+			gif_sources.append(String(source_path))
+	if gif_sources.is_empty():
+		return {
+			"ok": false,
+			"message": "There are no GIF-based card images to rebuild."
+		}
+	_begin_batch_updates()
+	var applied := 0
+	var total := gif_sources.size()
+	for index in range(total):
+		var source_path = String(gif_sources[index])
+		await _report_import_progress(progress_callback, index + 1, total, source_path.get_file().get_basename())
+		var result = rebuild_animated_override_with_current_settings(source_path)
+		if bool(result.get("ok", false)):
+			applied += 1
+	_end_batch_updates()
+	return {
+		"ok": applied > 0,
+		"message": "Rebuilt GIF settings for %d / %d cards." % [applied, total]
+	}
 
 
 func save_animated_override_images(source_path: String, images: Array, delays: Array, display_mode: String = DISPLAY_MODE_DEFAULT) -> Dictionary:
@@ -1993,8 +2254,31 @@ func save_animated_override_images(source_path: String, images: Array, delays: A
 	var frame_paths: Array = []
 	var source_frame_paths: Array = []
 	var frame_delays: Array = []
+	var previous_entry = _manifest.get(source_path, null)
+	var backup_frame_paths: Array = []
+	var backup_frame_delays: Array = []
+	var provider_type := ""
+	var provider_pack_id := ""
+	var provider_pack_name := ""
+	if previous_entry is Dictionary:
+		var previous_backup_paths = previous_entry.get("source_animation_frame_paths", [])
+		var previous_backup_delays = previous_entry.get("source_animation_frame_delays", [])
+		provider_type = String(previous_entry.get("provider_type", ""))
+		provider_pack_id = String(previous_entry.get("provider_pack_id", ""))
+		provider_pack_name = String(previous_entry.get("provider_pack_name", ""))
+		if previous_backup_paths is Array:
+			backup_frame_paths = previous_backup_paths.duplicate(true)
+		if previous_backup_delays is Array:
+			backup_frame_delays = previous_backup_delays.duplicate(true)
+		if backup_frame_paths.is_empty():
+			var previous_source_paths = previous_entry.get("source_frame_paths", previous_entry.get("frame_paths", []))
+			var previous_frame_delays = previous_entry.get("frame_delays", [])
+			if previous_source_paths is Array:
+				backup_frame_paths = previous_source_paths.duplicate(true)
+			if previous_frame_delays is Array:
+				backup_frame_delays = previous_frame_delays.duplicate(true)
 
-	_remove_entry_files(_manifest.get(source_path, null))
+	_remove_entry_files(_manifest.get(source_path, null), false)
 
 	for index in range(images.size()):
 		var source_image = images[index]
@@ -2020,24 +2304,29 @@ func save_animated_override_images(source_path: String, images: Array, delays: A
 			"ok": false,
 			"message": "The GIF frames could not be converted to card art."
 		}
+	if backup_frame_paths.is_empty():
+		backup_frame_paths = source_frame_paths.duplicate(true)
+		backup_frame_delays = frame_delays.duplicate(true)
 
 	_manifest[source_path] = {
 		"type": "animated_gif",
 		"frame_paths": frame_paths,
 		"source_frame_paths": source_frame_paths,
 		"frame_delays": frame_delays,
+		"source_animation_frame_paths": backup_frame_paths,
+		"source_animation_frame_delays": backup_frame_delays,
 		"width": target_size.x,
 		"height": target_size.y,
 		"display_mode": display_mode,
-		"provider_type": "",
-		"provider_pack_id": "",
-		"provider_pack_name": "",
+		"provider_type": provider_type,
+		"provider_pack_id": provider_pack_id,
+		"provider_pack_name": provider_pack_name,
 		"updated_at": Time.get_datetime_string_from_system()
 	}
 	_override_texture_cache.erase(source_path)
 	_save_manifest()
 	refresh_all_portraits()
-	overrides_changed.emit(source_path)
+	_notify_override_changed(source_path)
 
 	return {
 		"ok": true,
@@ -2052,8 +2341,31 @@ func _save_static_override_data(source_path: String, normalized_image, edit_sour
 	var edit_source_path = "%s/%s_source.png" % [STORAGE_EDIT_SOURCE_DIR, safe_stem]
 	var absolute_override_path = ProjectSettings.globalize_path(override_path)
 	var absolute_edit_source_path = ProjectSettings.globalize_path(edit_source_path)
+	var previous_entry = _manifest.get(source_path, null)
+	var backup_frame_paths: Array = []
+	var backup_frame_delays: Array = []
+	var provider_type := ""
+	var provider_pack_id := ""
+	var provider_pack_name := ""
+	if previous_entry is Dictionary:
+		var previous_backup_paths = previous_entry.get("source_animation_frame_paths", [])
+		var previous_backup_delays = previous_entry.get("source_animation_frame_delays", [])
+		provider_type = String(previous_entry.get("provider_type", ""))
+		provider_pack_id = String(previous_entry.get("provider_pack_id", ""))
+		provider_pack_name = String(previous_entry.get("provider_pack_name", ""))
+		if previous_backup_paths is Array:
+			backup_frame_paths = previous_backup_paths.duplicate(true)
+		if previous_backup_delays is Array:
+			backup_frame_delays = previous_backup_delays.duplicate(true)
+		if backup_frame_paths.is_empty():
+			var previous_source_paths = previous_entry.get("source_frame_paths", previous_entry.get("frame_paths", []))
+			var previous_frame_delays = previous_entry.get("frame_delays", [])
+			if previous_source_paths is Array:
+				backup_frame_paths = previous_source_paths.duplicate(true)
+			if previous_frame_delays is Array:
+				backup_frame_delays = previous_frame_delays.duplicate(true)
 
-	_remove_entry_files(_manifest.get(source_path, null))
+	_remove_entry_files(_manifest.get(source_path, null), false)
 
 	if normalized_image.save_png(absolute_override_path) != OK:
 		return {
@@ -2071,21 +2383,23 @@ func _save_static_override_data(source_path: String, normalized_image, edit_sour
 	_manifest[source_path] = {
 		"override_path": override_path,
 		"edit_source_path": edit_source_path,
+		"source_animation_frame_paths": backup_frame_paths,
+		"source_animation_frame_delays": backup_frame_delays,
 		"width": target_size.x,
 		"height": target_size.y,
 		"display_mode": display_mode,
 		"adjust_zoom": zoom,
 		"adjust_offset_x": offset_x,
 		"adjust_offset_y": offset_y,
-		"provider_type": "",
-		"provider_pack_id": "",
-		"provider_pack_name": "",
+		"provider_type": provider_type,
+		"provider_pack_id": provider_pack_id,
+		"provider_pack_name": provider_pack_name,
 		"updated_at": Time.get_datetime_string_from_system()
 	}
 	_override_texture_cache.erase(source_path)
 	_save_manifest()
 	refresh_all_portraits()
-	overrides_changed.emit(source_path)
+	_notify_override_changed(source_path)
 
 	return {
 		"ok": true,
@@ -2108,7 +2422,7 @@ func remove_override(source_path: String) -> Dictionary:
 	_clear_source_overrides_from_tracked_portraits(source_path)
 	_clear_source_overrides_in_tree(get_tree().root, source_path)
 	refresh_all_portraits()
-	overrides_changed.emit(source_path)
+	_notify_override_changed(source_path)
 
 	return {
 		"ok": true,
@@ -2221,47 +2535,50 @@ func _extract_gif_frames(import_path: String) -> Dictionary:
 		_safe_file_stem(import_path.get_file()),
 		Time.get_ticks_msec()
 	])
-	DirAccess.make_dir_recursive_absolute(output_dir)
+	var settings = get_gif_processing_settings()
+	var use_cache = bool(settings.get("use_cache", true))
+	var output_metadata = {}
+	var is_cache_hit := false
+	if use_cache:
+		var cached_dir = _get_gif_cache_dir(normalized_import_path)
+		var cached_metadata = _read_gif_metadata(cached_dir)
+		if !cached_metadata.is_empty():
+			output_dir = cached_dir
+			output_metadata = cached_metadata
+			is_cache_hit = true
+	if !is_cache_hit:
+		DirAccess.make_dir_recursive_absolute(output_dir)
 
-	var command_output: Array = []
-	var exit_code = OS.execute(
-		"powershell.exe",
-		[
-			"-ExecutionPolicy",
-			"Bypass",
-			"-File",
-			tool_path,
-			"-InputPath",
-			normalized_import_path,
-			"-OutputDir",
-			output_dir
-		],
-		command_output,
-		true
-	)
-	if exit_code != 0:
-		return {
-			"ok": false,
-			"message": "GIF frame extraction failed.\n%s" % "\n".join(command_output)
-		}
+		var command_output: Array = []
+		var exit_code = OS.execute(
+			"powershell.exe",
+			[
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				tool_path,
+				"-InputPath",
+				normalized_import_path,
+				"-OutputDir",
+				output_dir
+			],
+			command_output,
+			true
+		)
+		if exit_code != 0:
+			return {
+				"ok": false,
+				"message": "GIF frame extraction failed.\n%s" % "\n".join(command_output)
+			}
+		output_metadata = _read_gif_metadata(output_dir)
+		if output_metadata.is_empty():
+			return {
+				"ok": false,
+				"message": "GIF extraction metadata was invalid."
+			}
 
-	var metadata_path = output_dir.path_join("metadata.json")
-	var metadata_file = FileAccess.open(metadata_path, FileAccess.READ)
-	if metadata_file == null:
-		return {
-			"ok": false,
-			"message": "GIF extraction did not produce metadata."
-		}
-
-	var parsed = JSON.parse_string(metadata_file.get_as_text())
-	if !(parsed is Dictionary):
-		return {
-			"ok": false,
-			"message": "GIF extraction metadata was invalid."
-		}
-
-	var frame_files = parsed.get("frames", [])
-	var frame_delays = parsed.get("delays", [])
+	var frame_files = output_metadata.get("frames", [])
+	var frame_delays = output_metadata.get("delays", [])
 	if !(frame_files is Array) or frame_files.is_empty():
 		return {
 			"ok": false,
@@ -2284,12 +2601,120 @@ func _extract_gif_frames(import_path: String) -> Dictionary:
 			"message": "The extracted GIF frames could not be loaded."
 		}
 
+	var original_frame_count = images.size()
+	var use_frame_limit = bool(settings.get("use_frame_limit", false))
+
+	if use_frame_limit and bool(settings.get("skip_duplicate_frames", true)):
+		var deduped = _dedupe_gif_frames(images, delays)
+		images = Array(deduped.get("images", images))
+		delays = Array(deduped.get("delays", delays))
+
+	if use_frame_limit:
+		var limited = _limit_gif_frames(images, delays, int(settings.get("max_frames", 36)))
+		images = Array(limited.get("images", images))
+		delays = Array(limited.get("delays", delays))
+
 	return {
 		"ok": true,
 		"images": images,
 		"delays": delays,
-		"temp_dir": output_dir
+		"source_frame_files": frame_files,
+		"source_frame_delays": frame_delays,
+		"original_frame_count": original_frame_count,
+		"processed_frame_count": images.size(),
+		"temp_dir": "" if use_cache else output_dir
 	}
+
+
+func _attach_source_animation_backup(source_path: String, source_frame_files: Array, source_frame_delays: Array) -> void:
+	var entry = _manifest.get(source_path, null)
+	if !(entry is Dictionary):
+		return
+	if !(source_frame_files is Array) or source_frame_files.is_empty():
+		return
+	var safe_stem = _safe_file_stem(source_path)
+	var backup_paths: Array = []
+	var backup_delays: Array = []
+	for index in range(source_frame_files.size()):
+		var frame_file = String(source_frame_files[index])
+		var frame_image = load_image_from_file(frame_file)
+		if frame_image == null:
+			continue
+		var backup_path = "%s/%s_anim_backup_%03d.png" % [STORAGE_EDIT_SOURCE_DIR, safe_stem, index]
+		var absolute_backup_path = ProjectSettings.globalize_path(backup_path)
+		if frame_image.save_png(absolute_backup_path) != OK:
+			continue
+		backup_paths.append(backup_path)
+		backup_delays.append(max(0.02, float(source_frame_delays[index]) if index < source_frame_delays.size() else 0.1))
+	if backup_paths.is_empty():
+		return
+	entry["source_animation_frame_paths"] = backup_paths
+	entry["source_animation_frame_delays"] = backup_delays
+	entry["updated_at"] = Time.get_datetime_string_from_system()
+	_manifest[source_path] = entry
+	_save_manifest()
+
+
+func _read_gif_metadata(output_dir: String) -> Dictionary:
+	var metadata_path = output_dir.path_join("metadata.json")
+	var metadata_file = FileAccess.open(metadata_path, FileAccess.READ)
+	if metadata_file == null:
+		return {}
+	var parsed = JSON.parse_string(metadata_file.get_as_text())
+	return parsed if parsed is Dictionary else {}
+
+
+func _get_gif_cache_dir(import_path: String) -> String:
+	var modified_time = FileAccess.get_modified_time(import_path)
+	var settings = get_gif_processing_settings()
+	var cache_signature = "%s_%s_%s_%s" % [
+		str(bool(settings.get("skip_duplicate_frames", true))),
+		str(bool(settings.get("use_frame_limit", false))),
+		str(int(settings.get("max_frames", 36))),
+		str(bool(settings.get("use_cache", true)))
+	]
+	var cache_key = _safe_file_stem("%s_%s_%s_%s" % [import_path.get_file(), str(modified_time), str(FileAccess.get_file_as_bytes(import_path).size()), cache_signature])
+	var cache_dir = ProjectSettings.globalize_path("%s/%s" % [STORAGE_GIF_CACHE_DIR, cache_key])
+	DirAccess.make_dir_recursive_absolute(cache_dir)
+	return cache_dir
+
+
+func _dedupe_gif_frames(images: Array, delays: Array) -> Dictionary:
+	if images.size() <= 1:
+		return {"images": images, "delays": delays}
+	var filtered_images: Array = []
+	var filtered_delays: Array = []
+	var previous_bytes := PackedByteArray()
+	for index in range(images.size()):
+		var image = images[index]
+		if !(image is Image):
+			continue
+		var current_bytes = (image as Image).get_data()
+		if !previous_bytes.is_empty() and current_bytes == previous_bytes:
+			if !filtered_delays.is_empty():
+				filtered_delays[filtered_delays.size() - 1] = float(filtered_delays[filtered_delays.size() - 1]) + float(delays[index]) if index < delays.size() else 0.1
+			continue
+		filtered_images.append(image)
+		filtered_delays.append(max(0.02, float(delays[index]) if index < delays.size() else 0.1))
+		previous_bytes = current_bytes
+	return {"images": filtered_images, "delays": filtered_delays}
+
+
+func _limit_gif_frames(images: Array, delays: Array, max_frames: int) -> Dictionary:
+	if max_frames <= 0 or images.size() <= max_frames:
+		return {"images": images, "delays": delays}
+	var filtered_images: Array = []
+	var filtered_delays: Array = []
+	var source_count = images.size()
+	if max_frames == 1:
+		filtered_images.append(images[0])
+		filtered_delays.append(max(0.02, float(delays[0]) if !delays.is_empty() else 0.1))
+		return {"images": filtered_images, "delays": filtered_delays}
+	for index in range(max_frames):
+		var source_index = int(round(float(index) * float(source_count - 1) / float(max_frames - 1)))
+		filtered_images.append(images[source_index])
+		filtered_delays.append(max(0.02, float(delays[source_index]) if source_index < delays.size() else 0.1))
+	return {"images": filtered_images, "delays": filtered_delays}
 
 
 func _ensure_gif_tool_script() -> String:
@@ -2316,7 +2741,7 @@ func _is_animated_entry(entry) -> bool:
 	return entry is Dictionary and entry.has("frame_paths")
 
 
-func _remove_entry_files(entry) -> void:
+func _remove_entry_files(entry, remove_backup: bool = true) -> void:
 	if !(entry is Dictionary):
 		return
 	if _is_animated_entry(entry):
@@ -2328,6 +2753,11 @@ func _remove_entry_files(entry) -> void:
 			var absolute_source_frame_path = ProjectSettings.globalize_path(String(source_frame_path))
 			if FileAccess.file_exists(absolute_source_frame_path):
 				DirAccess.remove_absolute(absolute_source_frame_path)
+		if remove_backup:
+			for backup_frame_path in entry.get("source_animation_frame_paths", []):
+				var absolute_backup_frame_path = ProjectSettings.globalize_path(String(backup_frame_path))
+				if FileAccess.file_exists(absolute_backup_frame_path):
+					DirAccess.remove_absolute(absolute_backup_frame_path)
 		return
 	if entry.has("override_path"):
 		var absolute_override_path = ProjectSettings.globalize_path(String(entry["override_path"]))
@@ -2337,6 +2767,11 @@ func _remove_entry_files(entry) -> void:
 		var absolute_edit_source_path = ProjectSettings.globalize_path(String(entry["edit_source_path"]))
 		if FileAccess.file_exists(absolute_edit_source_path):
 			DirAccess.remove_absolute(absolute_edit_source_path)
+	if remove_backup:
+		for backup_frame_path in entry.get("source_animation_frame_paths", []):
+			var absolute_backup_frame_path = ProjectSettings.globalize_path(String(backup_frame_path))
+			if FileAccess.file_exists(absolute_backup_frame_path):
+				DirAccess.remove_absolute(absolute_backup_frame_path)
 
 
 func _delete_directory_recursive(path: String) -> void:
@@ -2428,7 +2863,11 @@ func build_full_art_preview(source_path: String, source_image, target_size_overr
 
 
 func refresh_all_portraits() -> void:
-	_refresh_tracked_portraits()
+	if _batch_update_depth > 0:
+		_batch_refresh_requested = true
+		return
+	_needs_full_refresh = true
+	_refresh_accumulator = REFRESH_INTERVAL
 
 
 func apply_override_to_texture_rect(texture_rect) -> void:
@@ -2490,16 +2929,44 @@ func _clear_source_overrides_in_tree(node, source_path: String) -> void:
 		_clear_source_overrides_in_tree(child, source_path)
 
 
-func _find_named_descendant(node: Node, target_name: String):
+func _find_named_descendant_raw(node: Node, target_name: String):
 	if node == null:
 		return null
 	for child in node.get_children():
 		if String(child.name) == target_name:
 			return child
-		var nested = _find_named_descendant(child, target_name)
+		var nested = _find_named_descendant_raw(child, target_name)
 		if nested != null:
 			return nested
 	return null
+
+
+func _get_named_node_cache(node: Node) -> Dictionary:
+	if node == null:
+		return {}
+	if node.has_meta(META_NAMED_NODE_CACHE):
+		var cached = node.get_meta(META_NAMED_NODE_CACHE, {})
+		if cached is Dictionary:
+			return cached
+	var cache: Dictionary = {}
+	node.set_meta(META_NAMED_NODE_CACHE, cache)
+	return cache
+
+
+func _find_named_descendant(node: Node, target_name: String):
+	if node == null:
+		return null
+	var cache = _get_named_node_cache(node)
+	if cache.has(target_name):
+		var cached_node = cache[target_name]
+		if cached_node != null and is_instance_valid(cached_node):
+			return cached_node
+		cache.erase(target_name)
+	var found = _find_named_descendant_raw(node, target_name)
+	if found != null:
+		cache[target_name] = found
+		node.set_meta(META_NAMED_NODE_CACHE, cache)
+	return found
 
 
 func _find_card_root(texture_rect):
@@ -2916,6 +3383,7 @@ func _track_portrait(texture_rect) -> void:
 			return
 	_portrait_refs.append(weakref(texture_rect))
 	_refresh_portrait_node(texture_rect)
+	_needs_full_refresh = true
 
 
 func _refresh_tracked_portraits() -> void:
@@ -2969,22 +3437,73 @@ func _get_card_root_source_path(card_root) -> String:
 	return ""
 
 
+func _build_refresh_signature(texture_rect, current_texture, stored_source_path: String, current_path: String, card_root, portrait_visible: bool, ancient_visible: bool) -> String:
+	var node_name = String(texture_rect.name)
+	var texture_size := Vector2i.ZERO
+	var texture_path := ""
+	if current_texture is Texture2D:
+		texture_size = Vector2i(current_texture.get_width(), current_texture.get_height())
+		texture_path = String(current_texture.resource_path)
+	var full_art_active := false
+	var full_art_owner := ""
+	if card_root != null:
+		var full_art_layer = _get_full_art_layer(card_root)
+		if full_art_layer is TextureRect:
+			full_art_active = bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false))
+			full_art_owner = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
+	var tracked_source_path = current_path if current_path != "" else stored_source_path
+	var has_override_for_path = tracked_source_path != "" and _manifest.has(tracked_source_path)
+	var display_mode = DISPLAY_MODE_DEFAULT
+	var entry_type = "static"
+	var entry_updated_at = ""
+	var frame_count = 0
+	if has_override_for_path:
+		var entry = _manifest.get(tracked_source_path, null)
+		if entry is Dictionary:
+			display_mode = String(entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+			entry_type = String(entry.get("type", "static"))
+			entry_updated_at = String(entry.get("updated_at", ""))
+			var entry_frame_paths = entry.get("frame_paths", [])
+			if entry_frame_paths is Array:
+				frame_count = entry_frame_paths.size()
+	return JSON.stringify({
+		"node": node_name,
+		"tracked": tracked_source_path,
+		"stored": stored_source_path,
+		"override": has_override_for_path,
+		"mode": display_mode,
+		"entry_type": entry_type,
+		"entry_updated_at": entry_updated_at,
+		"frame_count": frame_count,
+		"portrait_visible": portrait_visible,
+		"ancient_visible": ancient_visible,
+		"full_art_active": full_art_active,
+		"full_art_owner": full_art_owner,
+		"texture_path": texture_path,
+		"texture_size": [texture_size.x, texture_size.y],
+		"override_active": bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))
+	})
+
+
 func _refresh_portrait_node(texture_rect) -> void:
 	var current_texture = texture_rect.texture
 
 	var card_root = _find_card_root(texture_rect)
 	var node_name = String(texture_rect.name)
+	var portrait_visible := false
+	var ancient_visible := false
 	if card_root != null:
 		var portrait = _find_named_descendant(card_root, "Portrait")
 		var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
-		var portrait_visible = portrait is CanvasItem and (portrait as CanvasItem).visible
-		var ancient_visible = ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible
+		portrait_visible = portrait is CanvasItem and (portrait as CanvasItem).visible
+		ancient_visible = ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible
 		if node_name == "Portrait" and !portrait_visible and ancient_visible:
 			var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null) if texture_rect.has_meta(META_ORIGINAL_TEXTURE) else null
 			if original_texture is Texture2D:
 				texture_rect.texture = original_texture
 			texture_rect.set_meta(META_SOURCE_PATH, "")
 			texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+			texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
 			return
 		if node_name == "AncientPortrait" and !ancient_visible:
 			var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null) if texture_rect.has_meta(META_ORIGINAL_TEXTURE) else null
@@ -2992,6 +3511,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 				texture_rect.texture = original_texture
 			texture_rect.set_meta(META_SOURCE_PATH, "")
 			texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+			texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
 			return
 		var full_art_layer = _get_full_art_layer(card_root)
 		if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
@@ -3014,6 +3534,9 @@ func _refresh_portrait_node(texture_rect) -> void:
 	var card_root_source_path = _get_card_root_source_path(card_root)
 	var current_path = card_root_source_path if card_root_source_path != "" else _resolve_texture_source_path(texture_rect, current_texture)
 	var stored_source_path = String(texture_rect.get_meta(META_SOURCE_PATH, ""))
+	var refresh_signature = _build_refresh_signature(texture_rect, current_texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible)
+	if String(texture_rect.get_meta(META_REFRESH_SIGNATURE, "")) == refresh_signature:
+		return
 
 	if current_path != "" and _looks_like_card_art_source(current_path):
 		var current_root = _find_card_root(texture_rect)
@@ -3036,6 +3559,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 			texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
 			texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
 	elif stored_source_path == "":
+		texture_rect.set_meta(META_REFRESH_SIGNATURE, refresh_signature)
 		return
 
 	var override_texture = _get_override_texture(stored_source_path)
@@ -3062,6 +3586,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 		if texture_rect.texture != override_texture:
 			texture_rect.texture = override_texture
 			texture_rect.set_meta(META_OVERRIDE_ACTIVE, true)
+		texture_rect.set_meta(META_REFRESH_SIGNATURE, _build_refresh_signature(texture_rect, texture_rect.texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible))
 		return
 
 	if node_name == "Portrait":
@@ -3072,6 +3597,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 		if original_texture is Texture2D:
 			texture_rect.texture = original_texture
 		texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+	texture_rect.set_meta(META_REFRESH_SIGNATURE, _build_refresh_signature(texture_rect, texture_rect.texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible))
 
 
 func _get_override_texture(source_path: String):
@@ -3224,6 +3750,7 @@ func _ensure_storage() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_IMAGE_DIR))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_EDIT_SOURCE_DIR))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_GIF_TEMP_DIR))
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_GIF_CACHE_DIR))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_PCK_TEMP_DIR))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_ART_PACK_DIR))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(GIF_TOOL_USER_PATH.get_base_dir()))
@@ -3264,6 +3791,13 @@ func _load_art_pack_registry() -> void:
 
 
 func _save_manifest() -> void:
+	if _batch_update_depth > 0:
+		_batch_manifest_dirty = true
+		return
+	_save_manifest_now()
+
+
+func _save_manifest_now() -> void:
 	var absolute_manifest_path = ProjectSettings.globalize_path(STORAGE_MANIFEST_PATH)
 	var file = FileAccess.open(absolute_manifest_path, FileAccess.WRITE)
 	if file == null:
@@ -3272,6 +3806,13 @@ func _save_manifest() -> void:
 
 
 func _save_art_pack_registry() -> void:
+	if _batch_update_depth > 0:
+		_batch_registry_dirty = true
+		return
+	_save_art_pack_registry_now()
+
+
+func _save_art_pack_registry_now() -> void:
 	var absolute_registry_path = ProjectSettings.globalize_path(STORAGE_ART_PACK_REGISTRY_PATH)
 	var file = FileAccess.open(absolute_registry_path, FileAccess.WRITE)
 	if file == null:

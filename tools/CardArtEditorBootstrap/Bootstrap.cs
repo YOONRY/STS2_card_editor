@@ -14,6 +14,7 @@ namespace CardArtEditorBootstrap;
 public static class Bootstrap
 {
     private static readonly Harmony Harmony = new("ysg05.card_art_editor");
+    private static readonly HashSet<string> LoggedCardEffectTrees = new();
     private static bool _loggedManagerLoadFailure;
     private static bool _loggedManagerInstantiateFailure;
     private static bool _loggedOverlayLoadFailure;
@@ -271,10 +272,113 @@ public static class Bootstrap
             {
                 manager.Call("apply_override_to_texture_rect", ancientPortrait);
             }
+
+            TrySuppressSpecialCardEffects(card);
         }
         catch (Exception ex)
         {
             Log("RefreshCardOverrides failed: " + ex);
+        }
+    }
+
+    private static void TrySuppressSpecialCardEffects(NCard card)
+    {
+        try
+        {
+            var manager = TryEnsureManager();
+            if (manager is not null)
+            {
+                var suppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
+                if (!suppressionEnabled)
+                {
+                    return;
+                }
+            }
+
+            var model = card.Model;
+            if (model is null)
+            {
+                return;
+            }
+
+            var cardId = model.Id.Entry ?? string.Empty;
+            var typeName = model.GetType().Name ?? string.Empty;
+            if (!string.Equals(cardId, "INFECTION", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(typeName, "Infection", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var logKey = $"{cardId}:{card.Name}";
+            if (LoggedCardEffectTrees.Add(logKey))
+            {
+                Log($"Infection card detected. Dumping node tree for {logKey}.");
+                DumpNodeTree(card, 0);
+            }
+
+            HideInfectionEffectNodes(card);
+        }
+        catch (Exception ex)
+        {
+            Log("TrySuppressSpecialCardEffects failed: " + ex);
+        }
+    }
+
+    private static void HideInfectionEffectNodes(Node root)
+    {
+        foreach (var child in root.GetChildren())
+        {
+            if (child is not Node childNode)
+            {
+                continue;
+            }
+
+            var nodeName = childNode.Name?.ToString() ?? string.Empty;
+            var lowerName = nodeName.ToLowerInvariant();
+            var shouldHideByName =
+                lowerName.Contains("infection") ||
+                lowerName.Contains("effect") ||
+                lowerName.Contains("vfx") ||
+                lowerName.Contains("glow") ||
+                lowerName.Contains("goo") ||
+                lowerName.Contains("worm");
+
+            var typeName = childNode.GetType().Name;
+            var shouldHideByType =
+                string.Equals(typeName, "GPUParticles2D", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(typeName, "CPUParticles2D", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(typeName, "AnimatedSprite2D", StringComparison.OrdinalIgnoreCase);
+
+            if (shouldHideByName || shouldHideByType)
+            {
+                if (childNode is CanvasItem canvasItem)
+                {
+                    canvasItem.Visible = false;
+                }
+                Log($"Suppressed Infection effect node: {childNode.GetPath()} [{childNode.GetType().Name}]");
+            }
+
+            HideInfectionEffectNodes(childNode);
+        }
+    }
+
+    private static void DumpNodeTree(Node node, int depth)
+    {
+        if (depth > 6)
+        {
+            return;
+        }
+
+        var indent = new string(' ', depth * 2);
+        var visibleInfo = node is CanvasItem canvasItem ? $" visible={canvasItem.Visible}" : string.Empty;
+        Log($"{indent}- {node.GetPath()} [{node.GetType().FullName}]{visibleInfo}");
+
+        foreach (var child in node.GetChildren())
+        {
+            if (child is Node childNode)
+            {
+                DumpNodeTree(childNode, depth + 1);
+            }
         }
     }
 

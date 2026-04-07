@@ -1,10 +1,10 @@
-extends Control
+﻿extends Control
 
 const GEMINI_API_URL_TEMPLATE := "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 const DEFAULT_MODEL := "gemini-2.0-flash-preview-image-generation"
 const POPUP_SIZE := Vector2i(640, 720)
 const UI_SETTINGS_PATH := "user://card_art_editor/ui_settings.json"
-const STATUS_READY := "이 카드의 이미지를 수정할 준비가 되었습니다."
+const STATUS_READY := "카드 이미지를 수정할 준비가 되었습니다."
 const FILE_DIALOG_MODE_UPLOAD := "upload"
 const FILE_DIALOG_MODE_IMPORT_PACK := "import_pack"
 const FILE_DIALOG_MODE_IMPORT_MOD := "import_mod"
@@ -52,7 +52,7 @@ const TRANSLATIONS := {
 		"browser_pack_hint": "선택한 아트팩 파일:\n%s",
 		"browser_image_error": "이미지를 미리보기로 불러올 수 없습니다.",
 		"browser_gif_preview": "\nGIF 미리보기",
-		"export_current_png": "PNG\uB85C \uB0B4\uBCF4\uB0B4\uAE30",
+		"export_current_png": "PNG로 내보내기",
 		"toggle_language": "English"
 	},
 	"en": {
@@ -152,8 +152,10 @@ var _favorite_dirs: Array = []
 var _thumbnail_cache := {}
 var _locale := "ko"
 var _language_button: Button
+var _gif_settings_button: Button
 var _adjust_button: Button
 var _display_mode_button: Button
+var _infection_effect_button: Button
 var _favorite_add_button: Button
 var _favorites_menu_button: MenuButton
 var _adjust_panel: PanelContainer
@@ -185,6 +187,24 @@ var _art_pack_ui_state := ""
 var _adjust_source_image = null
 var _adjust_source_path := ""
 var _adjust_drag_active := false
+var _gif_settings_popup: PanelContainer
+var _gif_settings_hint_label: Label
+var _gif_preset_label: Label
+var _gif_preset_fast_button: Button
+var _gif_preset_balanced_button: Button
+var _gif_preset_quality_button: Button
+var _gif_cache_check: CheckBox
+var _gif_dedupe_check: CheckBox
+var _gif_limit_check: CheckBox
+var _gif_limit_spinbox: SpinBox
+var _gif_settings_close_button: Button
+var _gif_settings_ui_syncing := false
+var _gif_processing_settings := {
+	"use_cache": true,
+	"skip_duplicate_frames": true,
+	"use_frame_limit": false,
+	"max_frames": 36
+}
 
 
 func _manager():
@@ -245,6 +265,7 @@ func _tr(key: String) -> String:
 
 
 func _load_ui_settings() -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(UI_SETTINGS_PATH).get_base_dir())
 	if !FileAccess.file_exists(UI_SETTINGS_PATH):
 		return
 	var file = FileAccess.open(UI_SETTINGS_PATH, FileAccess.READ)
@@ -268,9 +289,16 @@ func _load_ui_settings() -> void:
 				var normalized = _normalize_existing_dir(String(path))
 				if normalized != "" and !_favorite_dirs.has(normalized):
 					_favorite_dirs.append(normalized)
+		var parsed_gif_settings = parsed.get("gif_processing_settings", {})
+		if parsed_gif_settings is Dictionary:
+			_gif_processing_settings["use_cache"] = bool(parsed_gif_settings.get("use_cache", true))
+			_gif_processing_settings["skip_duplicate_frames"] = bool(parsed_gif_settings.get("skip_duplicate_frames", true))
+			_gif_processing_settings["use_frame_limit"] = bool(parsed_gif_settings.get("use_frame_limit", false))
+			_gif_processing_settings["max_frames"] = clamp(int(parsed_gif_settings.get("max_frames", 36)), 1, 300)
 
 
 func _save_ui_settings() -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(UI_SETTINGS_PATH).get_base_dir())
 	var file = FileAccess.open(UI_SETTINGS_PATH, FileAccess.WRITE)
 	if file == null:
 		return
@@ -278,8 +306,10 @@ func _save_ui_settings() -> void:
 		"locale": _locale,
 		"browser_last_dirs": _browser_last_dirs,
 		"export_last_dirs": _export_last_dirs,
-		"favorite_dirs": _favorite_dirs
+		"favorite_dirs": _favorite_dirs,
+		"gif_processing_settings": _gif_processing_settings
 	}))
+	file.flush()
 
 
 func _toggle_locale() -> void:
@@ -307,6 +337,7 @@ func _apply_locale() -> void:
 	_browser_up_button.text = _tr("browser_up")
 	_browser_refresh_button.text = _tr("browser_refresh")
 	_browser_open_button.text = _tr("browser_open")
+	_refresh_gif_settings_ui()
 	_browser_cancel_button.text = _tr("cancel")
 	_file_browser_title.text = _tr("browser_title_upload") if _file_dialog_mode == FILE_DIALOG_MODE_UPLOAD else _tr("browser_title_pack")
 	_browser_preview_label.text = _tr("browser_preview_default")
@@ -339,6 +370,7 @@ func _apply_locale() -> void:
 		_favorites_menu_button.text = "즐겨찾기" if _locale == "ko" else "Favorites"
 		_refresh_favorites_menu()
 	_refresh_art_pack_manager_ui()
+	_refresh_infection_effect_button()
 	_refresh_card_label()
 
 
@@ -351,21 +383,110 @@ func _get_display_mode_button_text() -> String:
 	return "풀아트 끄기" if is_full_art else "풀아트 켜기"
 
 
+func _is_current_infection_card() -> bool:
+	var inspect_card = _get_inspect_card()
+	if inspect_card == null:
+		return false
+	if inspect_card.has_meta("_card_art_inspect_card_id"):
+		var inspect_id = String(inspect_card.get_meta("_card_art_inspect_card_id", ""))
+		if inspect_id.to_upper() == "INFECTION":
+			return true
+	var effective_source_path = _get_effective_source_path()
+	if effective_source_path.get_file().get_basename().to_lower() == "infection":
+		return true
+	var model = inspect_card.get("Model")
+	if model == null:
+		return false
+	var type_name = String(model.get_class())
+	if type_name.to_lower().contains("infection"):
+		return true
+	var id = model.get("Id")
+	if id != null:
+		var entry = String(id.get("Entry"))
+		if entry.to_upper() == "INFECTION":
+			return true
+	return false
+
+
+func _refresh_infection_effect_button() -> void:
+	if _infection_effect_button == null:
+		return
+	var manager = _manager()
+	var visible = _is_current_infection_card()
+	_infection_effect_button.visible = visible
+	if !visible or manager == null:
+		return
+	var hidden_enabled = bool(manager.is_infection_effect_hidden_enabled())
+	if _locale == "en":
+		_infection_effect_button.text = "Show Infection Effect" if hidden_enabled else "Hide Infection Effect"
+	else:
+		_infection_effect_button.text = "감염 이펙트 켜기" if hidden_enabled else "감염 이펙트 끄기"
+
+
+func _apply_gif_processing_settings_to_manager() -> void:
+	var manager = _manager()
+	if manager != null and manager.has_method("set_gif_processing_settings"):
+		manager.set_gif_processing_settings(_gif_processing_settings)
+
+
+func _refresh_gif_settings_ui() -> void:
+	if _gif_settings_button == null:
+		return
+	var is_ko = _locale == "ko"
+	_gif_settings_button.text = "GIF 설정" if is_ko else "GIF Settings"
+	_gif_settings_button.tooltip_text = "GIF 설정" if is_ko else "GIF Settings"
+	if _gif_cache_check == null:
+		return
+	if _gif_settings_hint_label != null:
+		_gif_settings_hint_label.text = "이 옵션은 GIF를 불러오거나 다시 적용할 때만 성능에 영향을 줍니다." if is_ko else "These options only affect performance when importing or reapplying GIFs."
+	if _gif_preset_label != null:
+		_gif_preset_label.text = "GIF 프리셋" if is_ko else "GIF Presets"
+	if _gif_preset_fast_button != null:
+		_gif_preset_fast_button.text = "고속" if is_ko else "Fast"
+	if _gif_preset_balanced_button != null:
+		_gif_preset_balanced_button.text = "균형" if is_ko else "Balanced"
+	if _gif_preset_quality_button != null:
+		_gif_preset_quality_button.text = "품질" if is_ko else "Quality"
+	_gif_cache_check.text = "GIF 캐시 사용" if is_ko else "Use GIF cache"
+	_gif_dedupe_check.text = "중복 프레임 건너뛰기" if is_ko else "Skip duplicate frames"
+	_gif_limit_check.text = "프레임 제한 사용" if is_ko else "Use frame limit"
+	_gif_settings_close_button.text = "닫기" if is_ko else "Close"
+	_gif_settings_ui_syncing = true
+	_gif_cache_check.button_pressed = bool(_gif_processing_settings.get("use_cache", true))
+	_gif_dedupe_check.button_pressed = bool(_gif_processing_settings.get("skip_duplicate_frames", true))
+	_gif_limit_check.button_pressed = bool(_gif_processing_settings.get("use_frame_limit", false))
+	_gif_limit_spinbox.value = int(_gif_processing_settings.get("max_frames", 36))
+	_gif_limit_spinbox.editable = _gif_limit_check.button_pressed
+	_gif_settings_ui_syncing = false
+
+
 func _build_adjust_ui() -> void:
 	var footer_row = _restore_button.get_parent()
 	_language_button = Button.new()
 	_language_button.text = "English"
 	footer_row.add_child(_language_button)
 	footer_row.move_child(_language_button, 0)
+	_gif_settings_button = Button.new()
+	_gif_settings_button.text = "GIF Settings"
+	_gif_settings_button.tooltip_text = "GIF Settings"
+	footer_row.add_child(_gif_settings_button)
+	footer_row.move_child(_gif_settings_button, 1)
+	_gif_settings_button.visible = true
+	_gif_settings_button.mouse_filter = Control.MOUSE_FILTER_STOP
 	_adjust_button = Button.new()
 	_adjust_button.text = "이미지 조정"
 	footer_row.add_child(_adjust_button)
-	footer_row.move_child(_adjust_button, 1)
+	footer_row.move_child(_adjust_button, 2)
 
 	_display_mode_button = Button.new()
 	_display_mode_button.text = "Enable Full Art"
 	footer_row.add_child(_display_mode_button)
-	footer_row.move_child(_display_mode_button, 2)
+	footer_row.move_child(_display_mode_button, 3)
+
+	_infection_effect_button = Button.new()
+	_infection_effect_button.visible = false
+	footer_row.add_child(_infection_effect_button)
+	footer_row.move_child(_infection_effect_button, 4)
 
 	_adjust_panel = PanelContainer.new()
 	_adjust_panel.name = "AdjustPanel"
@@ -445,6 +566,106 @@ func _build_adjust_ui() -> void:
 	_adjust_x_slider.get_parent().visible = false
 	_adjust_y_slider.get_parent().visible = false
 
+	_gif_settings_popup = PanelContainer.new()
+	_gif_settings_popup.name = "GifSettingsPopup"
+	_gif_settings_popup.visible = false
+	_gif_settings_popup.top_level = true
+	_gif_settings_popup.z_as_relative = false
+	_gif_settings_popup.z_index = 1210
+	_gif_settings_popup.mouse_filter = Control.MOUSE_FILTER_STOP
+	_gif_settings_popup.set_anchors_preset(Control.PRESET_CENTER)
+	_gif_settings_popup.offset_left = -220
+	_gif_settings_popup.offset_top = -120
+	_gif_settings_popup.offset_right = 220
+	_gif_settings_popup.offset_bottom = 120
+	var gif_popup_style = StyleBoxFlat.new()
+	gif_popup_style.bg_color = Color(0.10, 0.10, 0.12, 1.0)
+	gif_popup_style.border_color = Color(0.72, 0.72, 0.76, 1.0)
+	gif_popup_style.border_width_left = 1
+	gif_popup_style.border_width_top = 1
+	gif_popup_style.border_width_right = 1
+	gif_popup_style.border_width_bottom = 1
+	gif_popup_style.corner_radius_top_left = 8
+	gif_popup_style.corner_radius_top_right = 8
+	gif_popup_style.corner_radius_bottom_left = 8
+	gif_popup_style.corner_radius_bottom_right = 8
+	_gif_settings_popup.add_theme_stylebox_override("panel", gif_popup_style)
+	add_child(_gif_settings_popup)
+
+	var gif_margin = MarginContainer.new()
+	gif_margin.add_theme_constant_override("margin_left", 16)
+	gif_margin.add_theme_constant_override("margin_top", 16)
+	gif_margin.add_theme_constant_override("margin_right", 16)
+	gif_margin.add_theme_constant_override("margin_bottom", 16)
+	_gif_settings_popup.add_child(gif_margin)
+
+	var gif_root = VBoxContainer.new()
+	gif_root.add_theme_constant_override("separation", 10)
+	gif_margin.add_child(gif_root)
+
+	var gif_title = Label.new()
+	gif_title.text = "GIF Settings"
+	gif_root.add_child(gif_title)
+
+	_gif_settings_hint_label = Label.new()
+	_gif_settings_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_gif_settings_hint_label.add_theme_font_size_override("font_size", 13)
+	gif_root.add_child(_gif_settings_hint_label)
+
+	_gif_preset_label = Label.new()
+	_gif_preset_label.text = "GIF Presets"
+	gif_root.add_child(_gif_preset_label)
+
+	var gif_preset_row = HBoxContainer.new()
+	gif_preset_row.add_theme_constant_override("separation", 8)
+	gif_root.add_child(gif_preset_row)
+
+	_gif_preset_fast_button = Button.new()
+	_gif_preset_fast_button.text = "Fast"
+	gif_preset_row.add_child(_gif_preset_fast_button)
+
+	_gif_preset_balanced_button = Button.new()
+	_gif_preset_balanced_button.text = "Balanced"
+	_gif_preset_balanced_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gif_preset_row.add_child(_gif_preset_balanced_button)
+
+	_gif_preset_quality_button = Button.new()
+	_gif_preset_quality_button.text = "Quality"
+	gif_preset_row.add_child(_gif_preset_quality_button)
+
+	_gif_cache_check = CheckBox.new()
+	gif_root.add_child(_gif_cache_check)
+
+	_gif_dedupe_check = CheckBox.new()
+	gif_root.add_child(_gif_dedupe_check)
+
+	_gif_limit_check = CheckBox.new()
+	gif_root.add_child(_gif_limit_check)
+
+	var limit_row = HBoxContainer.new()
+	limit_row.add_theme_constant_override("separation", 8)
+	gif_root.add_child(limit_row)
+	var limit_label = Label.new()
+	limit_label.text = "Max Frames"
+	limit_row.add_child(limit_label)
+	_gif_limit_spinbox = SpinBox.new()
+	_gif_limit_spinbox.min_value = 1
+	_gif_limit_spinbox.max_value = 300
+	_gif_limit_spinbox.step = 1
+	_gif_limit_spinbox.value = 36
+	_gif_limit_spinbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	limit_row.add_child(_gif_limit_spinbox)
+
+	var gif_button_row = HBoxContainer.new()
+	var gif_spacer = Control.new()
+	gif_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gif_button_row.add_child(gif_spacer)
+	_gif_settings_close_button = Button.new()
+	_gif_settings_close_button.text = "Close"
+	gif_button_row.add_child(_gif_settings_close_button)
+	gif_root.add_child(gif_button_row)
+	_refresh_gif_settings_ui()
+
 
 func _make_adjust_slider_row(label_text: String, slider_property: String, min_value: float, max_value: float, step: float, default_value: float):
 	var row = VBoxContainer.new()
@@ -481,6 +702,7 @@ func _ready() -> void:
 	_tab_container.set_tab_hidden(0, true)
 	_tab_container.current_tab = 1
 	_apply_locale()
+	_apply_gif_processing_settings_to_manager()
 	_status_label.text = _tr("status_ready")
 	_update_context(true)
 
@@ -608,7 +830,7 @@ func _refresh_art_pack_manager_ui() -> void:
 	_art_pack_list_ids.clear()
 	_art_pack_variant_ids.clear()
 	if manager == null:
-		_art_pack_list.add_item("(없음)" if is_ko else "(none)")
+		_art_pack_list.add_item("(?놁쓬)" if is_ko else "(none)")
 		_art_pack_list.set_item_disabled(0, true)
 		_art_pack_remove_button.disabled = true
 		_art_pack_apply_all_button.disabled = true
@@ -618,7 +840,7 @@ func _refresh_art_pack_manager_ui() -> void:
 
 	var packs = manager.get_art_pack_list()
 	if packs.is_empty():
-		_art_pack_list.add_item("(없음)" if is_ko else "(none)")
+		_art_pack_list.add_item("(?놁쓬)" if is_ko else "(none)")
 		_art_pack_list.set_item_disabled(0, true)
 		_art_pack_remove_button.disabled = true
 		_art_pack_apply_all_button.disabled = true
@@ -708,8 +930,92 @@ func _on_edit_art_pressed() -> void:
 
 func _on_close_pressed() -> void:
 	_close_adjust_panel()
+	if _gif_settings_popup != null:
+		_gif_settings_popup.hide()
 	_close_file_browser()
 	_editor_popup.hide()
+
+
+func _on_gif_settings_pressed() -> void:
+	if _gif_settings_popup == null:
+		return
+	_refresh_gif_settings_ui()
+	var popup_rect = _editor_popup.get_global_rect()
+	_gif_settings_popup.position = Vector2(
+		popup_rect.position.x + popup_rect.size.x - _gif_settings_popup.size.x - 16.0,
+		popup_rect.position.y + 54.0
+	)
+	_gif_settings_popup.show()
+	_gif_settings_popup.move_to_front()
+
+
+func _on_gif_settings_close_pressed() -> void:
+	if _gif_settings_popup != null:
+		_gif_settings_popup.hide()
+	await _reapply_gif_settings_globally()
+
+
+func _on_gif_settings_changed(_value = null) -> void:
+	if _gif_cache_check == null or _gif_settings_ui_syncing:
+		return
+	_gif_processing_settings["use_cache"] = _gif_cache_check.button_pressed
+	_gif_processing_settings["skip_duplicate_frames"] = _gif_dedupe_check.button_pressed
+	_gif_processing_settings["use_frame_limit"] = _gif_limit_check.button_pressed
+	_gif_processing_settings["max_frames"] = int(_gif_limit_spinbox.value)
+	_gif_limit_spinbox.editable = _gif_limit_check.button_pressed
+	_apply_gif_processing_settings_to_manager()
+	_save_ui_settings()
+
+
+func _apply_gif_preset(preset_id: String) -> void:
+	match preset_id:
+		"fast":
+			_gif_processing_settings["use_cache"] = true
+			_gif_processing_settings["skip_duplicate_frames"] = true
+			_gif_processing_settings["use_frame_limit"] = true
+			_gif_processing_settings["max_frames"] = 12
+		"balanced":
+			_gif_processing_settings["use_cache"] = true
+			_gif_processing_settings["skip_duplicate_frames"] = true
+			_gif_processing_settings["use_frame_limit"] = true
+			_gif_processing_settings["max_frames"] = 36
+		"quality":
+			_gif_processing_settings["use_cache"] = true
+			_gif_processing_settings["skip_duplicate_frames"] = false
+			_gif_processing_settings["use_frame_limit"] = false
+			_gif_processing_settings["max_frames"] = 60
+		_:
+			return
+	_apply_gif_processing_settings_to_manager()
+	_save_ui_settings()
+	_refresh_gif_settings_ui()
+
+
+func _on_gif_preset_fast_pressed() -> void:
+	_apply_gif_preset("fast")
+
+
+func _on_gif_preset_balanced_pressed() -> void:
+	_apply_gif_preset("balanced")
+
+
+func _on_gif_preset_quality_pressed() -> void:
+	_apply_gif_preset("quality")
+
+
+func _reapply_gif_settings_globally() -> void:
+	var manager = _manager()
+	if manager == null or !manager.has_method("rebuild_all_gif_overrides_with_current_settings"):
+		return
+	_set_busy(true, "GIF 설정 전체 적용 중..." if _locale == "ko" else "Applying GIF settings to all GIF cards...")
+	_show_progress(0, 1, "GIF 설정 적용 준비 중..." if _locale == "ko" else "Preparing GIF settings update...")
+	var progress_callback := Callable(self, "_on_import_progress")
+	var result = await manager.rebuild_all_gif_overrides_with_current_settings(progress_callback)
+	_hide_progress()
+	if bool(result.get("ok", false)):
+		manager.refresh_all_portraits()
+	_update_context(true)
+	_set_busy(false, String(result.get("message", "Unknown GIF result.")), !bool(result.get("ok", false)))
 
 
 func _on_restore_pressed() -> void:
@@ -1028,6 +1334,26 @@ func _on_art_pack_remove_pressed() -> void:
 	_update_context(true)
 
 
+func _on_infection_effect_pressed() -> void:
+	var manager = _manager()
+	if manager == null:
+		_set_status("The card art manager is not available.", true)
+		return
+	var next_hidden_enabled = !bool(manager.is_infection_effect_hidden_enabled())
+	manager.set_infection_effect_hidden_enabled(next_hidden_enabled)
+	var inspect_card = _get_inspect_card()
+	if inspect_card != null and inspect_card.has_method("Reload"):
+		inspect_card.call_deferred("Reload")
+	var screen = get_parent()
+	if screen != null and screen.has_method("UpdateCardDisplay"):
+		screen.call_deferred("UpdateCardDisplay")
+	_refresh_infection_effect_button()
+	if _locale == "ko":
+		_set_status("감염 테두리 이펙트를 숨겼습니다." if next_hidden_enabled else "감염 테두리 이펙트를 다시 표시합니다.", false)
+	else:
+		_set_status("Infection border effect hidden." if next_hidden_enabled else "Infection border effect shown.", false)
+
+
 func _on_adjust_preview_gui_input(event: InputEvent) -> void:
 	if _adjust_panel == null or !_adjust_panel.visible:
 		return
@@ -1287,6 +1613,7 @@ func _update_context(force_refresh: bool) -> void:
 	_import_mod_button.disabled = false
 	_restore_all_button.disabled = manager.get_override_count() == 0
 	_refresh_art_pack_manager_ui()
+	_refresh_infection_effect_button()
 
 
 func _refresh_card_label() -> void:
@@ -1423,11 +1750,13 @@ func _configure_file_dialog() -> void:
 func _bind_signals() -> void:
 	_edit_art_button.pressed.connect(_on_edit_art_pressed)
 	_language_button.pressed.connect(_toggle_locale)
+	_gif_settings_button.pressed.connect(_on_gif_settings_pressed)
 	_close_button.pressed.connect(_on_close_pressed)
 	_restore_button.pressed.connect(_on_restore_pressed)
 	_restore_all_button.pressed.connect(_on_restore_all_pressed)
 	_adjust_button.pressed.connect(_on_adjust_pressed)
 	_display_mode_button.pressed.connect(_on_display_mode_pressed)
+	_infection_effect_button.pressed.connect(_on_infection_effect_pressed)
 	_choose_image_button.pressed.connect(_on_choose_image_pressed)
 	_import_pack_button.pressed.connect(_on_import_shared_pressed)
 	_import_mod_button.pressed.connect(_on_import_mod_pressed)
@@ -1452,6 +1781,14 @@ func _bind_signals() -> void:
 	_adjust_apply_button.pressed.connect(_on_adjust_apply_pressed)
 	_adjust_reset_button.pressed.connect(_on_adjust_reset_pressed)
 	_adjust_cancel_button.pressed.connect(_on_adjust_cancel_pressed)
+	_gif_cache_check.toggled.connect(_on_gif_settings_changed)
+	_gif_dedupe_check.toggled.connect(_on_gif_settings_changed)
+	_gif_limit_check.toggled.connect(_on_gif_settings_changed)
+	_gif_limit_spinbox.value_changed.connect(_on_gif_settings_changed)
+	_gif_preset_fast_button.pressed.connect(_on_gif_preset_fast_pressed)
+	_gif_preset_balanced_button.pressed.connect(_on_gif_preset_balanced_pressed)
+	_gif_preset_quality_button.pressed.connect(_on_gif_preset_quality_pressed)
+	_gif_settings_close_button.pressed.connect(_on_gif_settings_close_pressed)
 	_art_pack_remove_button.pressed.connect(_on_art_pack_remove_pressed)
 	_art_pack_apply_all_button.pressed.connect(_on_art_pack_apply_all_pressed)
 	_art_pack_apply_button.pressed.connect(_on_art_pack_apply_pressed)
@@ -1469,6 +1806,8 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 	_restore_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.has_override(effective_source_path)
 	_adjust_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.can_adjust_override(effective_source_path)
 	_display_mode_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.has_override(effective_source_path) or !manager.can_toggle_full_art(effective_source_path)
+	if _infection_effect_button != null:
+		_infection_effect_button.disabled = is_busy or !_is_current_infection_card()
 	if _art_pack_remove_button != null:
 		_art_pack_remove_button.disabled = is_busy or _art_pack_list_ids.is_empty()
 	_restore_all_button.disabled = is_busy or manager == null or manager.get_override_count() == 0
@@ -1673,7 +2012,7 @@ func _refresh_file_browser(target_dir: String) -> void:
 	files.sort_custom(func(a, b): return String(a["name"]).nocasecmp_to(String(b["name"])) < 0)
 
 	for entry in directories + files:
-		var item_text = "[폴더] %s" % String(entry["name"]) if bool(entry["is_dir"]) else String(entry["name"])
+		var item_text = "[?대뜑] %s" % String(entry["name"]) if bool(entry["is_dir"]) else String(entry["name"])
 		_browser_item_list.add_item(item_text)
 		var item_index = _browser_item_list.item_count - 1
 		_browser_item_list.set_item_metadata(item_index, entry)
@@ -1919,3 +2258,4 @@ func _extract_generated_image_base64(response_text: String) -> String:
 					return data
 
 	return ""
+
