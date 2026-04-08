@@ -1457,7 +1457,7 @@ func _get_art_pack_dir(pack_id: String) -> String:
 	return "%s/%s" % [STORAGE_ART_PACK_DIR, pack_id]
 
 
-func _register_art_pack_static_entry(pack_id: String, source_path: String, image, display_mode: String) -> Dictionary:
+func _register_art_pack_static_entry(pack_id: String, source_path: String, image, display_mode: String, edit_source_image = null, adjust_zoom: float = 1.0, adjust_offset_x: float = 0.0, adjust_offset_y: float = 0.0) -> Dictionary:
 	var pack_dir = _get_art_pack_dir(pack_id)
 	var safe_stem = _safe_file_stem(source_path)
 	var override_path = "%s/%s.png" % [pack_dir, safe_stem]
@@ -1467,18 +1467,22 @@ func _register_art_pack_static_entry(pack_id: String, source_path: String, image
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(pack_dir))
 	if image.save_png(absolute_override_path) != OK:
 		return {}
-	if image.save_png(absolute_edit_source_path) != OK:
+	var image_to_save = edit_source_image if edit_source_image != null else image
+	if image_to_save.save_png(absolute_edit_source_path) != OK:
 		return {}
 	return {
 		"type": "static",
 		"override_path": override_path,
 		"edit_source_path": edit_source_path,
 		"display_mode": display_mode,
+		"adjust_zoom": adjust_zoom,
+		"adjust_offset_x": adjust_offset_x,
+		"adjust_offset_y": adjust_offset_y,
 		"updated_at": Time.get_datetime_string_from_system()
 	}
 
 
-func _register_art_pack_animated_entry(pack_id: String, source_path: String, images: Array, delays: Array, display_mode: String) -> Dictionary:
+func _register_art_pack_animated_entry(pack_id: String, source_path: String, images: Array, delays: Array, display_mode: String, source_images: Array = [], source_delays: Array = [], adjust_zoom: float = 1.0, adjust_offset_x: float = 0.0, adjust_offset_y: float = 0.0) -> Dictionary:
 	var pack_dir = _get_art_pack_dir(pack_id)
 	var safe_stem = _safe_file_stem(source_path)
 	var frame_paths: Array = []
@@ -1493,11 +1497,12 @@ func _register_art_pack_animated_entry(pack_id: String, source_path: String, ima
 		var source_frame_path = "%s/%s_anim_source_%03d.png" % [pack_dir, safe_stem, index]
 		if image.save_png(ProjectSettings.globalize_path(frame_path)) != OK:
 			continue
-		if image.save_png(ProjectSettings.globalize_path(source_frame_path)) != OK:
+		var source_image = source_images[index] if index < source_images.size() and source_images[index] != null else image
+		if source_image.save_png(ProjectSettings.globalize_path(source_frame_path)) != OK:
 			continue
 		frame_paths.append(frame_path)
 		source_frame_paths.append(source_frame_path)
-		frame_delays.append(max(0.02, float(delays[index]) if index < delays.size() else 0.1))
+		frame_delays.append(max(0.02, float(source_delays[index]) if index < source_delays.size() else float(delays[index]) if index < delays.size() else 0.1))
 	if frame_paths.is_empty():
 		return {}
 	return {
@@ -1506,6 +1511,9 @@ func _register_art_pack_animated_entry(pack_id: String, source_path: String, ima
 		"source_frame_paths": source_frame_paths,
 		"frame_delays": frame_delays,
 		"display_mode": display_mode,
+		"adjust_zoom": adjust_zoom,
+		"adjust_offset_x": adjust_offset_x,
+		"adjust_offset_y": adjust_offset_y,
 		"updated_at": Time.get_datetime_string_from_system()
 	}
 
@@ -1514,8 +1522,11 @@ func _activate_registered_art_pack_entry(source_path: String, card_entry: Dictio
 	source_path = _canonicalize_source_key(source_path)
 	var result := {}
 	var display_mode = String(card_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+	var adjust_zoom = float(card_entry.get("adjust_zoom", 1.0))
+	var adjust_offset_x = float(card_entry.get("adjust_offset_x", 0.0))
+	var adjust_offset_y = float(card_entry.get("adjust_offset_y", 0.0))
 	if String(card_entry.get("type", "static")) == "animated_gif":
-		var frame_paths = card_entry.get("frame_paths", [])
+		var frame_paths = card_entry.get("source_frame_paths", card_entry.get("frame_paths", []))
 		var frame_delays = card_entry.get("frame_delays", [])
 		var images: Array = []
 		for frame_path in frame_paths:
@@ -1532,6 +1543,8 @@ func _activate_registered_art_pack_entry(source_path: String, card_entry: Dictio
 				"message": "The selected art pack image could not be loaded."
 			}
 		result = save_override_image(source_path, source_image, display_mode)
+	if bool(result.get("ok", false)) and (absf(adjust_zoom - 1.0) > 0.001 or absf(adjust_offset_x) > 0.001 or absf(adjust_offset_y) > 0.001):
+		result = save_adjusted_override(source_path, adjust_zoom, adjust_offset_x, adjust_offset_y)
 	if bool(result.get("ok", false)) and _manifest.has(source_path):
 		var manifest_entry = _manifest.get(source_path, null)
 		if manifest_entry is Dictionary:
@@ -1606,8 +1619,8 @@ func export_bundle_to_file(export_path: String) -> Dictionary:
 			"display_mode": String(entry.get("display_mode", DISPLAY_MODE_DEFAULT))
 		}
 		if _is_animated_entry(entry):
-			var frame_paths = entry.get("frame_paths", [])
-			var frame_delays = entry.get("frame_delays", [])
+			var frame_paths = entry.get("source_animation_frame_paths", entry.get("source_frame_paths", entry.get("frame_paths", [])))
+			var frame_delays = entry.get("source_animation_frame_delays", entry.get("frame_delays", []))
 			var frames: Array = []
 			for index in range(frame_paths.size()):
 				var frame_path = String(frame_paths[index])
@@ -1622,15 +1635,29 @@ func export_bundle_to_file(export_path: String) -> Dictionary:
 			if frames.is_empty():
 				continue
 			bundle_entry["frames"] = frames
+			bundle_entry["adjust_zoom"] = float(entry.get("adjust_zoom", 1.0))
+			bundle_entry["adjust_offset_x"] = float(entry.get("adjust_offset_x", 0.0))
+			bundle_entry["adjust_offset_y"] = float(entry.get("adjust_offset_y", 0.0))
 		else:
-			if !entry.has("override_path"):
+			var edit_source_path = String(entry.get("edit_source_path", ""))
+			var absolute_edit_source_path = ProjectSettings.globalize_path(edit_source_path)
+			var edit_source_bytes = FileAccess.get_file_as_bytes(absolute_edit_source_path)
+			if edit_source_bytes.is_empty() and entry.has("override_path"):
+				edit_source_path = String(entry["override_path"])
+				absolute_edit_source_path = ProjectSettings.globalize_path(edit_source_path)
+				edit_source_bytes = FileAccess.get_file_as_bytes(absolute_edit_source_path)
+			if edit_source_bytes.is_empty():
 				continue
-			var override_path = String(entry["override_path"])
-			var absolute_override_path = ProjectSettings.globalize_path(override_path)
-			var image_bytes = FileAccess.get_file_as_bytes(absolute_override_path)
-			if image_bytes.is_empty():
-				continue
-			bundle_entry["png_base64"] = Marshalls.raw_to_base64(image_bytes)
+			bundle_entry["edit_source_png_base64"] = Marshalls.raw_to_base64(edit_source_bytes)
+			if entry.has("override_path"):
+				var override_path = String(entry["override_path"])
+				var absolute_override_path = ProjectSettings.globalize_path(override_path)
+				var image_bytes = FileAccess.get_file_as_bytes(absolute_override_path)
+				if !image_bytes.is_empty():
+					bundle_entry["png_base64"] = Marshalls.raw_to_base64(image_bytes)
+			bundle_entry["adjust_zoom"] = float(entry.get("adjust_zoom", 1.0))
+			bundle_entry["adjust_offset_x"] = float(entry.get("adjust_offset_x", 0.0))
+			bundle_entry["adjust_offset_y"] = float(entry.get("adjust_offset_y", 0.0))
 		overrides.append(bundle_entry)
 
 	if overrides.is_empty():
@@ -1736,7 +1763,12 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 				source_path,
 				imported_images,
 				imported_delays,
-				String(override_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+				String(override_entry.get("display_mode", DISPLAY_MODE_DEFAULT)),
+				imported_images,
+				imported_delays,
+				float(override_entry.get("adjust_zoom", 1.0)),
+				float(override_entry.get("adjust_offset_x", 0.0)),
+				float(override_entry.get("adjust_offset_y", 0.0))
 			)
 			if !registered_entry.is_empty():
 				pack_cards[source_path] = registered_entry
@@ -1753,7 +1785,7 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 				imported_count += 1
 			await _report_import_progress(progress_callback, processed_count, overrides.size(), source_path.get_file())
 		else:
-			var png_base64 = String(override_entry.get("png_base64", ""))
+			var png_base64 = String(override_entry.get("edit_source_png_base64", override_entry.get("png_base64", "")))
 			if png_base64 == "":
 				continue
 			var image_bytes = Marshalls.base64_to_raw(png_base64)
@@ -1766,7 +1798,11 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 				pack_id,
 				source_path,
 				image,
-				String(override_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+				String(override_entry.get("display_mode", DISPLAY_MODE_DEFAULT)),
+				image,
+				float(override_entry.get("adjust_zoom", 1.0)),
+				float(override_entry.get("adjust_offset_x", 0.0)),
+				float(override_entry.get("adjust_offset_y", 0.0))
 			)
 			if !registered_entry.is_empty():
 				pack_cards[source_path] = registered_entry
