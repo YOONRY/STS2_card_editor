@@ -72,6 +72,7 @@ var _batch_registry_dirty := false
 var _batch_refresh_requested := false
 var _batch_art_packs_changed := false
 var _batched_override_sources := {}
+var _managed_source_index_cache: Dictionary = {}
 
 
 func _ready() -> void:
@@ -127,10 +128,12 @@ func set_gif_processing_settings(settings: Dictionary) -> void:
 
 
 func has_override(source_path: String) -> bool:
+	source_path = _canonicalize_source_key(source_path)
 	return _manifest.has(source_path)
 
 
 func can_toggle_full_art(source_path: String) -> bool:
+	source_path = _canonicalize_source_key(source_path)
 	if !_manifest.has(source_path):
 		return false
 	var target_size = get_target_size_for_source_path(source_path)
@@ -138,6 +141,7 @@ func can_toggle_full_art(source_path: String) -> bool:
 
 
 func get_display_mode(source_path: String) -> String:
+	source_path = _canonicalize_source_key(source_path)
 	var entry = _manifest.get(source_path, null)
 	if !(entry is Dictionary):
 		return DISPLAY_MODE_DEFAULT
@@ -150,6 +154,7 @@ func is_full_art_mode(source_path: String) -> bool:
 
 
 func toggle_display_mode(source_path: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	if !_manifest.has(source_path):
 		return {
 			"ok": false,
@@ -232,6 +237,7 @@ func _rebuild_override_for_display_mode(source_path: String, display_mode: Strin
 
 
 func can_adjust_override(source_path: String) -> bool:
+	source_path = _canonicalize_source_key(source_path)
 	if !_manifest.has(source_path):
 		return false
 	var entry = _manifest.get(source_path, null)
@@ -239,6 +245,7 @@ func can_adjust_override(source_path: String) -> bool:
 
 
 func get_override_adjustment_state(source_path: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	var entry = _manifest.get(source_path, null)
 	if !(entry is Dictionary):
 		return {
@@ -263,6 +270,7 @@ func get_adjustable_override_image(source_path: String):
 
 
 func get_adjustable_override_payload(source_path: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	if !can_adjust_override(source_path):
 		return {}
 	var entry = _manifest.get(source_path, null)
@@ -336,6 +344,7 @@ func get_art_pack_list() -> Array:
 
 
 func get_art_pack_variants_for_source(source_path: String) -> Array:
+	source_path = _canonicalize_source_key(source_path)
 	if source_path == "":
 		return []
 	var active_pack_id = ""
@@ -368,6 +377,7 @@ func get_art_pack_variants_for_source(source_path: String) -> Array:
 
 
 func apply_art_pack_variant(source_path: String, pack_id: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	if source_path == "":
 		return {
 			"ok": false,
@@ -486,14 +496,14 @@ func get_source_path_for_texture_rect(texture_rect) -> String:
 	if texture_rect == null:
 		return ""
 	_refresh_portrait_node(texture_rect)
-	return String(texture_rect.get_meta(META_SOURCE_PATH, ""))
+	return _canonicalize_source_key(String(texture_rect.get_meta(META_SOURCE_PATH, "")))
 
 
 func get_source_path_for_card_node(card_node) -> String:
 	if card_node == null:
 		return ""
 	if card_node.has_meta(META_INSPECT_SOURCE_PATH):
-		var inspect_source_path = String(card_node.get_meta(META_INSPECT_SOURCE_PATH, ""))
+		var inspect_source_path = _canonicalize_source_key(String(card_node.get_meta(META_INSPECT_SOURCE_PATH, "")))
 		if inspect_source_path != "":
 			return inspect_source_path
 	var portrait_canvas_group = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup")
@@ -519,15 +529,12 @@ func get_source_path_for_card_node(card_node) -> String:
 			var full_art_owner = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
 			if full_art_owner != "":
 				return full_art_owner
-	var direct_model_path = get_source_path_for_model(card_node.get("Model"))
-	if direct_model_path != "":
-		return direct_model_path
 	var current = card_node
 	while current != null:
-		var model = current.get("Model")
-		var model_path = get_source_path_for_model(model)
-		if model_path != "":
-			return model_path
+		if current.has_meta(META_INSPECT_SOURCE_PATH):
+			var current_meta_source = String(current.get_meta(META_INSPECT_SOURCE_PATH, ""))
+			if current_meta_source != "":
+				return _normalize_source_path(current_meta_source)
 		current = current.get_parent()
 	if ancient_portrait is TextureRect:
 		return get_source_path_for_texture_rect(ancient_portrait)
@@ -537,7 +544,7 @@ func get_source_path_for_card_node(card_node) -> String:
 
 
 func get_source_path_for_model(model) -> String:
-	return _extract_model_portrait_path(model)
+	return _canonicalize_source_key(_extract_model_portrait_path(model))
 
 
 func get_target_size_for_source_path(source_path: String) -> Vector2i:
@@ -548,7 +555,8 @@ func get_target_size_for_source_path(source_path: String) -> Vector2i:
 	if manifest_entry is Dictionary and manifest_entry.has("width") and manifest_entry.has("height"):
 		return Vector2i(int(manifest_entry["width"]), int(manifest_entry["height"]))
 
-	var texture = load(source_path)
+	var size_probe_path = _get_preferred_size_probe_path(source_path)
+	var texture = load(size_probe_path)
 	if texture is Texture2D:
 		return Vector2i(texture.get_width(), texture.get_height())
 
@@ -556,6 +564,19 @@ func get_target_size_for_source_path(source_path: String) -> Vector2i:
 		return DEFAULT_PORTRAIT_SIZE
 
 	return DEFAULT_LANDSCAPE_SIZE
+
+
+func _get_preferred_size_probe_path(source_path: String) -> String:
+	var normalized = _normalize_source_path(source_path)
+	if normalized == "":
+		return source_path
+	if normalized.contains("/card_portraits/big/"):
+		return normalized
+	if normalized.contains("/card_portraits/") and !normalized.contains("/card_portraits/beta/"):
+		var big_candidate = normalized.replace("/card_portraits/", "/card_portraits/big/")
+		if ResourceLoader.exists(big_candidate):
+			return big_candidate
+	return normalized
 
 
 func get_generation_size_for_source_path(source_path: String) -> String:
@@ -586,6 +607,7 @@ func get_source_image(source_path: String):
 
 
 func export_source_image_to_png(source_path: String, export_path: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	if source_path == "":
 		return {
 			"ok": false,
@@ -675,6 +697,41 @@ func _build_card_source_index() -> Dictionary:
 		"normalized": normalized_map,
 		"sources": sources
 	}
+
+
+func _get_managed_source_index_cached() -> Dictionary:
+	if _managed_source_index_cache.is_empty():
+		_managed_source_index_cache = _build_card_source_index()
+	return _managed_source_index_cache
+
+
+func _canonicalize_managed_card_source_path(path: String) -> String:
+	if path == "":
+		return ""
+	var normalized_path = path.replace("\\", "/").to_lower()
+	var marker = "/card_portraits/"
+	var marker_index = normalized_path.find(marker)
+	if marker_index < 0:
+		return ""
+	var relative_key = normalized_path.substr(marker_index + marker.length())
+	relative_key = relative_key.trim_suffix(".png").trim_suffix(".jpg").trim_suffix(".jpeg").trim_suffix(".webp").trim_suffix(".gif")
+	if relative_key == "":
+		return ""
+	var source_index = _get_managed_source_index_cached()
+	var exact_map = source_index.get("exact", {})
+	if exact_map is Dictionary and (exact_map as Dictionary).has(relative_key):
+		return String((exact_map as Dictionary)[relative_key])
+	if normalized_path.contains("/modchar/") and normalized_path.contains("/card/"):
+		var basename = normalized_path.get_file().get_basename()
+		var direct_source_path = _resolve_source_path_from_basename(basename)
+		if direct_source_path != "":
+			return direct_source_path
+	return ""
+
+
+func _canonicalize_source_key(source_path: String) -> String:
+	var normalized = _normalize_source_path(source_path)
+	return normalized if normalized != "" else source_path
 
 
 func _collect_card_source_paths(dir_path: String, output: Array) -> void:
@@ -1373,6 +1430,7 @@ func _compute_token_match_score(candidate_tokens: Array, source_tokens: Array) -
 
 
 func save_override_from_file(source_path: String, import_path: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	if import_path.strip_edges() == "":
 		return {
 			"ok": false,
@@ -1453,6 +1511,7 @@ func _register_art_pack_animated_entry(pack_id: String, source_path: String, ima
 
 
 func _activate_registered_art_pack_entry(source_path: String, card_entry: Dictionary, pack_id: String, pack_name: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	var result := {}
 	var display_mode = String(card_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
 	if String(card_entry.get("type", "static")) == "animated_gif":
@@ -1648,7 +1707,7 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 		if !(override_entry is Dictionary):
 			continue
 		processed_count += 1
-		var source_path = String(override_entry.get("source_path", ""))
+		var source_path = _canonicalize_source_key(String(override_entry.get("source_path", "")))
 		if source_path == "":
 			await _report_import_progress(progress_callback, processed_count, overrides.size(), "")
 			continue
@@ -1964,6 +2023,7 @@ func _report_import_progress(progress_callback: Callable, current: int, total: i
 
 
 func save_override_image(source_path: String, image, display_mode: String = DISPLAY_MODE_DEFAULT) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	if source_path == "":
 		return {
 			"ok": false,
@@ -1985,6 +2045,7 @@ func save_override_image(source_path: String, image, display_mode: String = DISP
 
 
 func save_adjusted_override(source_path: String, zoom: float, offset_x: float, offset_y: float) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	var payload = get_adjustable_override_payload(source_path)
 	if payload.is_empty():
 		return {
@@ -2034,6 +2095,7 @@ func save_adjusted_override(source_path: String, zoom: float, offset_x: float, o
 
 
 func build_adjusted_preview(source_path: String, source_image, zoom: float, offset_x: float, offset_y: float):
+	source_path = _canonicalize_source_key(source_path)
 	if source_image == null:
 		return null
 	if is_full_art_mode(source_path):
@@ -2052,6 +2114,7 @@ func build_adjusted_preview(source_path: String, source_image, zoom: float, offs
 
 
 func save_gif_override_from_file(source_path: String, import_path: String, display_mode: String = DISPLAY_MODE_DEFAULT) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	if source_path == "":
 		return {
 			"ok": false,
@@ -2095,6 +2158,7 @@ func save_gif_override_from_file(source_path: String, import_path: String, displ
 
 
 func rebuild_animated_override_with_current_settings(source_path: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	var entry = _manifest.get(source_path, null)
 	if !(entry is Dictionary):
 		return {
@@ -2193,6 +2257,7 @@ func rebuild_animated_override_with_current_settings(source_path: String) -> Dic
 
 
 func _get_registered_art_pack_card_entry(pack_id: String, source_path: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	var packs = _art_pack_registry.get("packs", {})
 	if !(packs is Dictionary) or !packs.has(pack_id):
 		return {}
@@ -2238,6 +2303,7 @@ func rebuild_all_gif_overrides_with_current_settings(progress_callback: Callable
 
 
 func save_animated_override_images(source_path: String, images: Array, delays: Array, display_mode: String = DISPLAY_MODE_DEFAULT) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	if source_path == "":
 		return {
 			"ok": false,
@@ -2335,6 +2401,7 @@ func save_animated_override_images(source_path: String, images: Array, delays: A
 
 
 func _save_static_override_data(source_path: String, normalized_image, edit_source_image, zoom: float, offset_x: float, offset_y: float, display_mode: String = DISPLAY_MODE_DEFAULT) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	var target_size = get_target_size_for_source_path(source_path)
 	var safe_stem = _safe_file_stem(source_path)
 	var override_path = "%s/%s.png" % [STORAGE_IMAGE_DIR, safe_stem]
@@ -2408,6 +2475,7 @@ func _save_static_override_data(source_path: String, normalized_image, edit_sour
 
 
 func remove_override(source_path: String) -> Dictionary:
+	source_path = _canonicalize_source_key(source_path)
 	if !_manifest.has(source_path):
 		return {
 			"ok": false,
@@ -3690,7 +3758,20 @@ func _is_portrait_node(node) -> bool:
 
 
 func _looks_like_card_art_source(path: String) -> bool:
-	return path.begins_with(MANAGED_TEXTURE_PREFIX) or path.begins_with(CARD_ATLAS_PREFIX)
+	if path == "":
+		return false
+	if path.begins_with(MANAGED_TEXTURE_PREFIX) or path.begins_with(CARD_ATLAS_PREFIX):
+		return true
+	if path.begins_with("res://") and (
+		path.contains("/card_portraits/")
+		or path.ends_with(".png")
+		or path.ends_with(".jpg")
+		or path.ends_with(".jpeg")
+		or path.ends_with(".webp")
+		or path.ends_with(".gif")
+	):
+		return true
+	return false
 
 
 func _resolve_texture_source_path(texture_rect, current_texture: Texture2D) -> String:
@@ -3700,11 +3781,20 @@ func _resolve_texture_source_path(texture_rect, current_texture: Texture2D) -> S
 
 	var ancestor = texture_rect
 	while ancestor != null:
-		var model = ancestor.get("Model")
-		var model_path = _extract_model_portrait_path(model)
-		if model_path != "":
-			return model_path
+		if ancestor.has_meta(META_INSPECT_SOURCE_PATH):
+			var inspect_source = _normalize_source_path(String(ancestor.get_meta(META_INSPECT_SOURCE_PATH, "")))
+			if inspect_source != "" and _looks_like_card_art_source(inspect_source):
+				return inspect_source
+		if ancestor.has_meta(META_SOURCE_PATH):
+			var ancestor_source = _normalize_source_path(String(ancestor.get_meta(META_SOURCE_PATH, "")))
+			if ancestor_source != "" and _looks_like_card_art_source(ancestor_source):
+				return ancestor_source
 		ancestor = ancestor.get_parent()
+
+	if texture_rect != null and texture_rect.has_meta(META_SOURCE_PATH):
+		var stored_source = _normalize_source_path(String(texture_rect.get_meta(META_SOURCE_PATH, "")))
+		if stored_source != "" and _looks_like_card_art_source(stored_source):
+			return stored_source
 
 	return current_path
 
@@ -3733,6 +3823,13 @@ func _normalize_source_path(path: String) -> String:
 	if path == "":
 		return ""
 
+	path = path.replace("\\", "/")
+
+	if !path.begins_with("res://") and !path.begins_with("user://"):
+		var res_candidate = "res://%s" % path.trim_prefix("/")
+		if ResourceLoader.exists(res_candidate):
+			path = res_candidate
+
 	if path.begins_with(MANAGED_TEXTURE_PREFIX):
 		return path
 
@@ -3742,6 +3839,10 @@ func _normalize_source_path(path: String) -> String:
 		var fallback_path = "%s%s.png" % [MANAGED_TEXTURE_PREFIX, sprite_path]
 		if ResourceLoader.exists(fallback_path):
 			return fallback_path
+
+	var canonical_managed_path = _canonicalize_managed_card_source_path(path)
+	if canonical_managed_path != "":
+		return canonical_managed_path
 
 	return path
 
@@ -3770,8 +3871,39 @@ func _load_manifest() -> void:
 	var parsed = JSON.parse_string(file.get_as_text())
 	if parsed is Dictionary:
 		_manifest = parsed
+		_sanitize_manifest_for_missing_sources()
 	else:
 		_manifest = {}
+
+
+func _sanitize_manifest_for_missing_sources() -> void:
+	if _manifest.is_empty():
+		return
+	var removed_any := false
+	var invalid_sources: Array = []
+	for source_path in _manifest.keys():
+		var normalized_source = _normalize_source_path(String(source_path))
+		if !_is_manifest_source_still_valid(normalized_source):
+			invalid_sources.append(String(source_path))
+	for source_path in invalid_sources:
+		var entry = _manifest.get(source_path, null)
+		if entry is Dictionary:
+			_remove_entry_files(entry)
+		_manifest.erase(source_path)
+		_override_texture_cache.erase(source_path)
+		removed_any = true
+	if removed_any:
+		_save_manifest_now()
+
+
+func _is_manifest_source_still_valid(source_path: String) -> bool:
+	if source_path == "":
+		return false
+	if source_path.begins_with("res://"):
+		return ResourceLoader.exists(source_path)
+	if source_path.begins_with("user://"):
+		return FileAccess.file_exists(ProjectSettings.globalize_path(source_path))
+	return false
 
 
 func _load_art_pack_registry() -> void:
@@ -3786,8 +3918,48 @@ func _load_art_pack_registry() -> void:
 	var parsed = JSON.parse_string(file.get_as_text())
 	if parsed is Dictionary and parsed.has("packs") and parsed["packs"] is Dictionary:
 		_art_pack_registry = parsed
+		_sanitize_art_pack_registry_for_missing_sources()
 	else:
 		_art_pack_registry = {"packs": {}}
+
+
+func _sanitize_art_pack_registry_for_missing_sources() -> void:
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary) or packs.is_empty():
+		return
+	var removed_any := false
+	var empty_pack_ids: Array = []
+	for pack_id in packs.keys():
+		var pack_data = packs.get(pack_id, null)
+		if !(pack_data is Dictionary):
+			empty_pack_ids.append(pack_id)
+			removed_any = true
+			continue
+		var cards = pack_data.get("cards", {})
+		if !(cards is Dictionary):
+			pack_data["cards"] = {}
+			packs[pack_id] = pack_data
+			empty_pack_ids.append(pack_id)
+			removed_any = true
+			continue
+		var invalid_sources: Array = []
+		for source_path in cards.keys():
+			var normalized_source = _normalize_source_path(String(source_path))
+			if !_is_manifest_source_still_valid(normalized_source):
+				invalid_sources.append(String(source_path))
+		for source_path in invalid_sources:
+			cards.erase(source_path)
+			removed_any = true
+		pack_data["cards"] = cards
+		packs[pack_id] = pack_data
+		if cards.is_empty():
+			empty_pack_ids.append(pack_id)
+	for pack_id in empty_pack_ids:
+		packs.erase(pack_id)
+		removed_any = true
+	_art_pack_registry["packs"] = packs
+	if removed_any:
+		_save_art_pack_registry_now()
 
 
 func _save_manifest() -> void:

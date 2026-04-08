@@ -5,6 +5,7 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Exceptions;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 
@@ -107,8 +108,8 @@ public static class Bootstrap
         _loggedManagerLoadFailure = false;
         _loggedManagerInstantiateFailure = false;
         manager.Name = ManagerNodeName;
-        root.AddChild(manager);
-        Log("Manager node added to /root.");
+        root.CallDeferred(Node.MethodName.AddChild, manager);
+        Log("Manager node queued for add to /root.");
         return manager;
     }
 
@@ -229,8 +230,7 @@ public static class Bootstrap
                 return;
             }
 
-            var model = card.Model;
-            if (model is null)
+            if (!TryGetCardModel(card, out var model) || model is null)
             {
                 card.SetMeta(InspectSourcePathMeta, string.Empty);
                 card.SetMeta(InspectCardIdMeta, string.Empty);
@@ -260,6 +260,14 @@ public static class Bootstrap
             {
                 return;
             }
+
+            if (!TryGetCardModel(card, out _))
+            {
+                Log($"Skipping override refresh for card '{card.Name}' because its model is unavailable.");
+                return;
+            }
+
+            UpdateInspectCardMetadataFromCard(card);
 
             var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
             if (portrait is not null)
@@ -295,8 +303,7 @@ public static class Bootstrap
                 }
             }
 
-            var model = card.Model;
-            if (model is null)
+            if (!TryGetCardModel(card, out var model) || model is null)
             {
                 return;
             }
@@ -321,6 +328,51 @@ public static class Bootstrap
         catch (Exception ex)
         {
             Log("TrySuppressSpecialCardEffects failed: " + ex);
+        }
+    }
+
+    private static bool TryGetCardModel(NCard card, out CardModel? model)
+    {
+        model = null;
+        try
+        {
+            model = card.Model;
+            return model is not null;
+        }
+        catch (ModelNotFoundException ex)
+        {
+            Log($"Skipping card '{card?.Name}' because model lookup failed: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log($"Unexpected card model lookup failure for '{card?.Name}': {ex}");
+            return false;
+        }
+    }
+
+    private static void UpdateInspectCardMetadataFromCard(NCard card)
+    {
+        try
+        {
+            if (card is null || !GodotObject.IsInstanceValid(card))
+            {
+                return;
+            }
+
+            if (!TryGetCardModel(card, out var model) || model is null)
+            {
+                card.SetMeta(InspectSourcePathMeta, string.Empty);
+                card.SetMeta(InspectCardIdMeta, string.Empty);
+                return;
+            }
+
+            card.SetMeta(InspectSourcePathMeta, model.PortraitPath ?? string.Empty);
+            card.SetMeta(InspectCardIdMeta, model.Id.Entry ?? string.Empty);
+        }
+        catch (Exception ex)
+        {
+            Log("UpdateInspectCardMetadataFromCard failed: " + ex);
         }
     }
 

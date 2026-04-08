@@ -818,6 +818,7 @@ func _refresh_art_pack_manager_ui() -> void:
 	_art_pack_apply_all_button.text = "선택 팩 전체 적용" if is_ko else "Apply Pack to All"
 	_art_pack_apply_button.text = "적용" if is_ko else "Apply"
 	var state_parts: Array = []
+	state_parts.append(_locale)
 	state_parts.append(_get_effective_source_path())
 	state_parts.append(JSON.stringify(manager.get_art_pack_list() if manager != null else []))
 	state_parts.append(JSON.stringify(manager.get_art_pack_variants_for_source(_get_effective_source_path()) if manager != null and _get_effective_source_path() != "" else []))
@@ -830,7 +831,7 @@ func _refresh_art_pack_manager_ui() -> void:
 	_art_pack_list_ids.clear()
 	_art_pack_variant_ids.clear()
 	if manager == null:
-		_art_pack_list.add_item("(?놁쓬)" if is_ko else "(none)")
+		_art_pack_list.add_item("(none)")
 		_art_pack_list.set_item_disabled(0, true)
 		_art_pack_remove_button.disabled = true
 		_art_pack_apply_all_button.disabled = true
@@ -840,7 +841,7 @@ func _refresh_art_pack_manager_ui() -> void:
 
 	var packs = manager.get_art_pack_list()
 	if packs.is_empty():
-		_art_pack_list.add_item("(?놁쓬)" if is_ko else "(none)")
+		_art_pack_list.add_item("(none)")
 		_art_pack_list.set_item_disabled(0, true)
 		_art_pack_remove_button.disabled = true
 		_art_pack_apply_all_button.disabled = true
@@ -858,7 +859,7 @@ func _refresh_art_pack_manager_ui() -> void:
 	var source_path = _get_effective_source_path()
 	var variants = manager.get_art_pack_variants_for_source(source_path) if source_path != "" else []
 	if variants.is_empty():
-		_art_pack_variant_select.add_item("선택 가능한 아트팩 없음" if is_ko else "No art pack variants")
+		_art_pack_variant_select.add_item("\uC120\uD0DD \uAC00\uB2A5\uD55C \uC544\uD2B8\uD329 \uC5C6\uC74C" if is_ko else "No art pack variants")
 		_art_pack_variant_select.disabled = true
 		_art_pack_apply_button.disabled = true
 		return
@@ -1883,7 +1884,7 @@ func _refresh_favorites_menu() -> void:
 	var popup = _favorites_menu_button.get_popup()
 	popup.clear()
 	if _favorite_dirs.is_empty():
-		popup.add_item("(empty)" if _locale == "en" else "(비어 있음)", -1)
+		popup.add_item("(empty)" if _locale == "en" else "(\uBE44\uC5B4 \uC788\uC74C)", -1)
 		popup.set_item_disabled(0, true)
 		return
 	for index in range(_favorite_dirs.size()):
