@@ -9,6 +9,7 @@ const STORAGE_PCK_TEMP_DIR := STORAGE_ROOT + "/pck_temp"
 const STORAGE_MANIFEST_PATH := STORAGE_ROOT + "/manifest.json"
 const STORAGE_ART_PACK_DIR := STORAGE_ROOT + "/art_packs"
 const STORAGE_ART_PACK_REGISTRY_PATH := STORAGE_ROOT + "/art_pack_registry.json"
+const STORAGE_UI_SETTINGS_PATH := STORAGE_ROOT + "/ui_settings.json"
 const GIF_TOOL_RES_PATH := "res://mods/card_art_editor/extract_gif_frames.ps1"
 const GIF_TOOL_USER_PATH := STORAGE_ROOT + "/tools/extract_gif_frames.ps1"
 const PICTURES_EXTRACT_SUBDIR := "card_art_editor_extracted"
@@ -78,6 +79,7 @@ var _managed_source_index_cache: Dictionary = {}
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_ensure_storage()
+	_load_persistent_preferences()
 	_load_manifest()
 	_load_art_pack_registry()
 	get_tree().node_added.connect(_on_node_added)
@@ -321,6 +323,35 @@ func is_infection_effect_hidden_enabled() -> bool:
 
 func set_infection_effect_hidden_enabled(enabled: bool) -> void:
 	_infection_effect_hidden_enabled = enabled
+	_save_persistent_preferences()
+
+
+func _load_persistent_preferences() -> void:
+	if !FileAccess.file_exists(STORAGE_UI_SETTINGS_PATH):
+		return
+	var file = FileAccess.open(STORAGE_UI_SETTINGS_PATH, FileAccess.READ)
+	if file == null:
+		return
+	var parsed = JSON.parse_string(file.get_as_text())
+	if parsed is Dictionary:
+		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", _infection_effect_hidden_enabled))
+
+
+func _save_persistent_preferences() -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(STORAGE_UI_SETTINGS_PATH).get_base_dir())
+	var settings: Dictionary = {}
+	if FileAccess.file_exists(STORAGE_UI_SETTINGS_PATH):
+		var existing_file = FileAccess.open(STORAGE_UI_SETTINGS_PATH, FileAccess.READ)
+		if existing_file != null:
+			var parsed = JSON.parse_string(existing_file.get_as_text())
+			if parsed is Dictionary:
+				settings = parsed.duplicate(true)
+	settings["infection_effect_hidden_enabled"] = _infection_effect_hidden_enabled
+	var file = FileAccess.open(STORAGE_UI_SETTINGS_PATH, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_string(JSON.stringify(settings))
+	file.flush()
 
 
 func get_art_pack_list() -> Array:

@@ -205,6 +205,7 @@ var _gif_processing_settings := {
 	"use_frame_limit": false,
 	"max_frames": 36
 }
+var _infection_effect_hidden_enabled := true
 
 
 func _manager():
@@ -295,6 +296,7 @@ func _load_ui_settings() -> void:
 			_gif_processing_settings["skip_duplicate_frames"] = bool(parsed_gif_settings.get("skip_duplicate_frames", true))
 			_gif_processing_settings["use_frame_limit"] = bool(parsed_gif_settings.get("use_frame_limit", false))
 			_gif_processing_settings["max_frames"] = clamp(int(parsed_gif_settings.get("max_frames", 36)), 1, 300)
+		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", true))
 
 
 func _save_ui_settings() -> void:
@@ -307,7 +309,8 @@ func _save_ui_settings() -> void:
 		"browser_last_dirs": _browser_last_dirs,
 		"export_last_dirs": _export_last_dirs,
 		"favorite_dirs": _favorite_dirs,
-		"gif_processing_settings": _gif_processing_settings
+		"gif_processing_settings": _gif_processing_settings,
+		"infection_effect_hidden_enabled": _infection_effect_hidden_enabled
 	}))
 	file.flush()
 
@@ -703,6 +706,8 @@ func _ready() -> void:
 	_tab_container.current_tab = 1
 	_apply_locale()
 	_apply_gif_processing_settings_to_manager()
+	if manager != null and manager.has_method("set_infection_effect_hidden_enabled"):
+		manager.set_infection_effect_hidden_enabled(_infection_effect_hidden_enabled)
 	_status_label.text = _tr("status_ready")
 	_update_context(true)
 
@@ -1342,6 +1347,8 @@ func _on_infection_effect_pressed() -> void:
 		return
 	var next_hidden_enabled = !bool(manager.is_infection_effect_hidden_enabled())
 	manager.set_infection_effect_hidden_enabled(next_hidden_enabled)
+	_infection_effect_hidden_enabled = next_hidden_enabled
+	_save_ui_settings()
 	var inspect_card = _get_inspect_card()
 	if inspect_card != null and inspect_card.has_method("Reload"):
 		inspect_card.call_deferred("Reload")
