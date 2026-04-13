@@ -27,6 +27,7 @@ const DISPLAY_MODE_FULL_ART := "full_art"
 const FULL_ART_STATIC_ZOOM_BOOST := 1.12
 const FULL_ART_ANIMATED_ZOOM_BOOST := 1.22
 const FULL_ART_MASK_MATERIAL = preload("res://scenes/cards/card_canvas_group_mask_material.tres")
+const HOVER_TIP_SCENE = preload("res://scenes/ui/hover_tip.tscn")
 const PCK_MAGIC := 0x43504447 # GDPC
 const PCK_HEADER_VERSION_FIELDS := 4
 const PCK_HEADER_RESERVED_FIELDS := 16
@@ -41,11 +42,18 @@ const META_INSPECT_SOURCE_PATH := "_card_art_inspect_source_path"
 const META_PORTRAIT_GROUP_ORIGINAL_MATERIAL := "_card_art_portrait_group_original_material"
 const META_REFRESH_SIGNATURE := "_card_art_refresh_signature"
 const META_NAMED_NODE_CACHE := "_card_art_named_node_cache"
+const META_ANCIENT_TEXT_LAYOUT_DEFAULTS := "_card_art_ancient_text_layout_defaults"
 const FULL_ART_LAYER_NAME := "CardArtFullArtLayer"
 const FULL_ART_INSET_STATIC := 0
 const FULL_ART_INSET_ANIMATED := 0
 const STARTUP_RESCAN_FRAMES := 180
 const STARTUP_RESCAN_STEP_INTERVAL := 6
+const ANCIENT_TEXT_OUTSIDE_OFFSETS := {
+	"left": -154.0,
+	"top": 228.0,
+	"right": 154.0,
+	"bottom": 382.0
+}
 
 signal overrides_changed(source_path)
 signal art_packs_changed()
@@ -59,6 +67,7 @@ var _session_api_key := ""
 var _overlay_scene := preload("res://mods/card_art_editor/inspect_card_art_editor.tscn")
 var _startup_rescan_frames_remaining := STARTUP_RESCAN_FRAMES
 var _infection_effect_hidden_enabled := true
+var _ancient_text_outside_by_source := {}
 var _needs_full_refresh := true
 var _startup_rescan_tick := 0
 var _gif_processing_settings := {
@@ -74,6 +83,10 @@ var _batch_refresh_requested := false
 var _batch_art_packs_changed := false
 var _batched_override_sources := {}
 var _managed_source_index_cache: Dictionary = {}
+var _ancient_text_hover_tip: Control
+var _ancient_text_hover_tip_title
+var _ancient_text_hover_tip_description
+var _ancient_text_hover_tip_owner: Node = null
 
 
 func _ready() -> void:
@@ -94,6 +107,7 @@ func _process(delta: float) -> void:
 			_register_existing(get_tree().root)
 		_startup_rescan_frames_remaining -= 1
 		_needs_full_refresh = true
+	_refresh_ancient_text_hover_tip()
 	if !_needs_full_refresh:
 		return
 	if REFRESH_INTERVAL <= 0.0:
@@ -326,6 +340,29 @@ func set_infection_effect_hidden_enabled(enabled: bool) -> void:
 	_save_persistent_preferences()
 
 
+func get_ancient_text_outside_settings() -> Dictionary:
+	return _ancient_text_outside_by_source.duplicate(true)
+
+
+func is_ancient_text_outside_enabled(source_path: String) -> bool:
+	source_path = _canonicalize_source_key(source_path)
+	if source_path == "":
+		return false
+	return bool(_ancient_text_outside_by_source.get(source_path, false))
+
+
+func set_ancient_text_outside_enabled(source_path: String, enabled: bool) -> void:
+	source_path = _canonicalize_source_key(source_path)
+	if source_path == "":
+		return
+	if enabled:
+		_ancient_text_outside_by_source[source_path] = true
+	else:
+		_ancient_text_outside_by_source.erase(source_path)
+	_save_persistent_preferences()
+	_needs_full_refresh = true
+
+
 func _load_persistent_preferences() -> void:
 	if !FileAccess.file_exists(STORAGE_UI_SETTINGS_PATH):
 		return
@@ -335,6 +372,14 @@ func _load_persistent_preferences() -> void:
 	var parsed = JSON.parse_string(file.get_as_text())
 	if parsed is Dictionary:
 		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", _infection_effect_hidden_enabled))
+		var parsed_ancient_settings = parsed.get("ancient_text_outside_by_source", {})
+		if parsed_ancient_settings is Dictionary:
+			_ancient_text_outside_by_source.clear()
+			for source_path in parsed_ancient_settings.keys():
+				if bool(parsed_ancient_settings[source_path]):
+					var normalized_path = _canonicalize_source_key(String(source_path))
+					if normalized_path != "":
+						_ancient_text_outside_by_source[normalized_path] = true
 
 
 func _save_persistent_preferences() -> void:
@@ -347,6 +392,7 @@ func _save_persistent_preferences() -> void:
 			if parsed is Dictionary:
 				settings = parsed.duplicate(true)
 	settings["infection_effect_hidden_enabled"] = _infection_effect_hidden_enabled
+	settings["ancient_text_outside_by_source"] = _ancient_text_outside_by_source.duplicate(true)
 	var file = FileAccess.open(STORAGE_UI_SETTINGS_PATH, FileAccess.WRITE)
 	if file == null:
 		return
@@ -3214,6 +3260,292 @@ func _restore_full_art_portrait_mask(portrait_canvas_group) -> void:
 	canvas_group.remove_meta(META_PORTRAIT_GROUP_ORIGINAL_MATERIAL)
 
 
+func _is_card_root_in_inspect_screen(card_root) -> bool:
+	var current = card_root
+	while current != null:
+		if String(current.name) == "InspectCardScreen":
+			return true
+		current = current.get_parent()
+	return false
+
+
+func _get_ancient_text_layout_source_path(card_root) -> String:
+	if card_root == null:
+		return ""
+	var source_path = _canonicalize_source_key(_get_card_root_source_path(card_root))
+	if source_path != "":
+		return source_path
+	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
+	if ancient_portrait is TextureRect:
+		source_path = _canonicalize_source_key(get_source_path_for_texture_rect(ancient_portrait))
+		if source_path != "":
+			return source_path
+	var portrait = _find_named_descendant(card_root, "Portrait")
+	if portrait is TextureRect:
+		return _canonicalize_source_key(get_source_path_for_texture_rect(portrait))
+	return ""
+
+
+func _store_ancient_text_layout_defaults(card_root, description_label, ancient_text_bg) -> Dictionary:
+	if card_root == null:
+		return {}
+	if card_root.has_meta(META_ANCIENT_TEXT_LAYOUT_DEFAULTS):
+		var stored_defaults = card_root.get_meta(META_ANCIENT_TEXT_LAYOUT_DEFAULTS, {})
+		return stored_defaults if stored_defaults is Dictionary else {}
+	if !(description_label is Control):
+		return {}
+	var defaults := {
+		"offset_left": description_label.offset_left,
+		"offset_top": description_label.offset_top,
+		"offset_right": description_label.offset_right,
+		"offset_bottom": description_label.offset_bottom,
+		"z_index": description_label.z_index,
+		"description_visible": description_label.visible,
+		"ancient_text_bg_visible": ancient_text_bg.visible if ancient_text_bg is CanvasItem else false
+	}
+	var type_plaque = _find_named_descendant(card_root, "TypePlaque")
+	if type_plaque is CanvasItem:
+		defaults["type_plaque_visible"] = type_plaque.visible
+	card_root.set_meta(META_ANCIENT_TEXT_LAYOUT_DEFAULTS, defaults)
+	return defaults
+
+
+func _restore_ancient_text_layout(card_root, description_label, ancient_text_bg, defaults: Dictionary) -> void:
+	if !(description_label is Control):
+		return
+	description_label.offset_left = float(defaults.get("offset_left", description_label.offset_left))
+	description_label.offset_top = float(defaults.get("offset_top", description_label.offset_top))
+	description_label.offset_right = float(defaults.get("offset_right", description_label.offset_right))
+	description_label.offset_bottom = float(defaults.get("offset_bottom", description_label.offset_bottom))
+	description_label.z_index = int(defaults.get("z_index", description_label.z_index))
+	description_label.visible = bool(defaults.get("description_visible", description_label.visible))
+	if ancient_text_bg is CanvasItem:
+		ancient_text_bg.visible = bool(defaults.get("ancient_text_bg_visible", ancient_text_bg.visible))
+	var type_plaque = _find_named_descendant(card_root, "TypePlaque")
+	if type_plaque is CanvasItem:
+		type_plaque.visible = bool(defaults.get("type_plaque_visible", type_plaque.visible))
+
+
+func _apply_ancient_text_outside_layout(card_root) -> void:
+	if card_root == null:
+		return
+	var description_label = _find_named_descendant(card_root, "DescriptionLabel")
+	if !(description_label is RichTextLabel):
+		return
+	var ancient_text_bg = _find_named_descendant(card_root, "AncientTextBg")
+	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
+	var portrait = _find_named_descendant(card_root, "Portrait")
+	var is_ancient_layout = ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible and !(portrait is CanvasItem and (portrait as CanvasItem).visible)
+	var defaults = _store_ancient_text_layout_defaults(card_root, description_label, ancient_text_bg)
+	if defaults.is_empty():
+		return
+	var source_path = _get_ancient_text_layout_source_path(card_root)
+	var should_move_outside = is_ancient_layout and is_ancient_text_outside_enabled(source_path)
+	if should_move_outside:
+		description_label.visible = false
+		if ancient_text_bg is CanvasItem:
+			ancient_text_bg.visible = false
+		var type_plaque = _find_named_descendant(card_root, "TypePlaque")
+		if type_plaque is CanvasItem:
+			type_plaque.visible = false
+		return
+	_restore_ancient_text_layout(card_root, description_label, ancient_text_bg, defaults)
+
+
+func _get_card_rect_global(card_root) -> Rect2:
+	if !(card_root is Control):
+		return Rect2()
+	var control := card_root as Control
+	var global_position = control.global_position
+	var rect_size = control.size * control.scale
+	return Rect2(global_position, rect_size)
+
+
+func _normalize_ancient_text_tooltip_text(text: String) -> String:
+	var normalized = text.strip_edges()
+	normalized = normalized.replace("[center]", "")
+	normalized = normalized.replace("[/center]", "")
+	normalized = normalized.replace("\r", "")
+	var line_regex := RegEx.new()
+	if line_regex.compile("\\n{3,}") == OK:
+		normalized = line_regex.sub(normalized, "\n\n", true)
+	return normalized
+
+
+func _get_card_description_text(card_root) -> String:
+	if card_root == null:
+		return ""
+	var description_label = _find_named_descendant(card_root, "DescriptionLabel")
+	if description_label is RichTextLabel:
+		return String((description_label as RichTextLabel).text)
+	return ""
+
+
+func _get_hover_tips_container():
+	var root = get_tree().root if get_tree() != null else null
+	if root == null:
+		return null
+	return root.find_child("HoverTipsContainer", true, false)
+
+
+func _find_active_text_hover_tip_container():
+	var hover_tips_container = _get_hover_tips_container()
+	if hover_tips_container == null:
+		return null
+	for child in hover_tips_container.get_children():
+		if !(child is CanvasItem) or !(child as CanvasItem).visible:
+			continue
+		var text_container = child.get_node_or_null("textHoverTipContainer")
+		if text_container is Control and (text_container as Control).visible:
+			return text_container
+	return null
+
+
+func _is_card_root_ancient_layout(card_root) -> bool:
+	if card_root == null:
+		return false
+	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
+	var portrait = _find_named_descendant(card_root, "Portrait")
+	return ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible and !(portrait is CanvasItem and (portrait as CanvasItem).visible)
+
+
+func _find_hovered_ancient_text_card_root():
+	var viewport = get_viewport()
+	if viewport == null:
+		return null
+	var mouse_position = viewport.get_mouse_position()
+	var candidate = null
+	var candidate_area := INF
+	var seen_roots := {}
+	for portrait_ref in _portrait_refs:
+		var texture_rect = portrait_ref.get_ref()
+		if texture_rect == null:
+			continue
+		var card_root = _find_card_root(texture_rect)
+		if card_root == null or seen_roots.has(card_root):
+			continue
+		seen_roots[card_root] = true
+		if !_is_card_root_ancient_layout(card_root):
+			continue
+		var source_path = _get_ancient_text_layout_source_path(card_root)
+		if !is_ancient_text_outside_enabled(source_path):
+			continue
+		if card_root is CanvasItem and !(card_root as CanvasItem).visible:
+			continue
+		var rect = _get_card_rect_global(card_root)
+		if rect.size.x <= 0.0 or rect.size.y <= 0.0:
+			continue
+		if !rect.has_point(mouse_position):
+			continue
+		var area = rect.size.x * rect.size.y
+		if area < candidate_area:
+			candidate = card_root
+			candidate_area = area
+	return candidate
+
+
+func _find_active_inspect_ancient_text_card_root():
+	var tree = get_tree()
+	if tree == null or tree.root == null:
+		return null
+	var inspect_screen = tree.root.find_child("InspectCardScreen", true, false)
+	if inspect_screen == null or !(inspect_screen is CanvasItem) or !(inspect_screen as CanvasItem).visible:
+		return null
+	var card_root = inspect_screen.get_node_or_null("Card/CardContainer")
+	if card_root == null:
+		return null
+	if !_is_card_root_ancient_layout(card_root):
+		return null
+	var source_path = _get_ancient_text_layout_source_path(card_root)
+	if !is_ancient_text_outside_enabled(source_path):
+		return null
+	return card_root
+
+
+func _is_valid_ancient_text_card_root(card_root) -> bool:
+	if card_root == null or !is_instance_valid(card_root):
+		return false
+	if !_is_card_root_ancient_layout(card_root):
+		return false
+	var source_path = _get_ancient_text_layout_source_path(card_root)
+	return is_ancient_text_outside_enabled(source_path)
+
+
+func _resolve_active_ancient_text_card_root():
+	var inspect_card_root = _find_active_inspect_ancient_text_card_root()
+	if inspect_card_root != null:
+		return inspect_card_root
+	var hovered_card_root = _find_hovered_ancient_text_card_root()
+	if hovered_card_root != null:
+		return hovered_card_root
+	if _is_valid_ancient_text_card_root(_ancient_text_hover_tip_owner):
+		return _ancient_text_hover_tip_owner
+	return null
+
+
+func _ensure_ancient_text_hover_tip() -> void:
+	if _ancient_text_hover_tip != null and is_instance_valid(_ancient_text_hover_tip):
+		return
+	var instance = HOVER_TIP_SCENE.instantiate()
+	if !(instance is Control):
+		return
+	_ancient_text_hover_tip = instance as Control
+	_ancient_text_hover_tip.name = "CardArtAncientTextHoverTip"
+	_ancient_text_hover_tip.visible = false
+	_ancient_text_hover_tip.top_level = true
+	_ancient_text_hover_tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ancient_text_hover_tip.z_as_relative = false
+	_ancient_text_hover_tip.z_index = 5000
+	_ancient_text_hover_tip_title = _ancient_text_hover_tip.get_node_or_null("%Title")
+	var icon = _ancient_text_hover_tip.get_node_or_null("%Icon")
+	if icon is CanvasItem:
+		(icon as CanvasItem).visible = false
+	_ancient_text_hover_tip_description = _ancient_text_hover_tip.get_node_or_null("%Description")
+	var hover_tips_container = _get_hover_tips_container()
+	if hover_tips_container != null:
+		hover_tips_container.add_child(_ancient_text_hover_tip)
+
+
+func _hide_ancient_text_hover_tip() -> void:
+	if _ancient_text_hover_tip == null or !is_instance_valid(_ancient_text_hover_tip):
+		return
+	_ancient_text_hover_tip.visible = false
+	_ancient_text_hover_tip_owner = null
+
+
+func _refresh_ancient_text_hover_tip() -> void:
+	var active_text_container = _find_active_text_hover_tip_container()
+	if active_text_container == null:
+		_hide_ancient_text_hover_tip()
+		return
+	var card_root = _resolve_active_ancient_text_card_root()
+	if card_root == null:
+		_hide_ancient_text_hover_tip()
+		return
+	var description_text = _normalize_ancient_text_tooltip_text(_get_card_description_text(card_root))
+	if description_text == "":
+		_hide_ancient_text_hover_tip()
+		return
+	_ensure_ancient_text_hover_tip()
+	if _ancient_text_hover_tip == null or !is_instance_valid(_ancient_text_hover_tip):
+		return
+	var hover_tips_container = _get_hover_tips_container()
+	if hover_tips_container != null and _ancient_text_hover_tip.get_parent() != hover_tips_container:
+		var current_parent = _ancient_text_hover_tip.get_parent()
+		if current_parent != null:
+			current_parent.remove_child(_ancient_text_hover_tip)
+		hover_tips_container.add_child(_ancient_text_hover_tip)
+	if _ancient_text_hover_tip_title != null:
+		_ancient_text_hover_tip_title.text = "카드 텍스트"
+	if _ancient_text_hover_tip_description != null:
+		_ancient_text_hover_tip_description.text = description_text
+	if active_text_container is Control:
+		var text_container := active_text_container as Control
+		_ancient_text_hover_tip.global_position = text_container.global_position + Vector2(0.0, text_container.size.y + 5.0)
+	_ancient_text_hover_tip.visible = true
+	_ancient_text_hover_tip_owner = card_root
+
+
 func _get_card_model_from_root(card_root):
 	var current = card_root
 	while current != null:
@@ -3671,6 +4003,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 	var stored_source_path = String(texture_rect.get_meta(META_SOURCE_PATH, ""))
 	var refresh_signature = _build_refresh_signature(texture_rect, current_texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible)
 	if String(texture_rect.get_meta(META_REFRESH_SIGNATURE, "")) == refresh_signature:
+		_apply_ancient_text_outside_layout(card_root)
 		return
 
 	if current_path != "" and _looks_like_card_art_source(current_path):
@@ -3721,6 +4054,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 		if texture_rect.texture != override_texture:
 			texture_rect.texture = override_texture
 			texture_rect.set_meta(META_OVERRIDE_ACTIVE, true)
+		_apply_ancient_text_outside_layout(card_root)
 		texture_rect.set_meta(META_REFRESH_SIGNATURE, _build_refresh_signature(texture_rect, texture_rect.texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible))
 		return
 
@@ -3732,6 +4066,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 		if original_texture is Texture2D:
 			texture_rect.texture = original_texture
 		texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+	_apply_ancient_text_outside_layout(card_root)
 	texture_rect.set_meta(META_REFRESH_SIGNATURE, _build_refresh_signature(texture_rect, texture_rect.texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible))
 
 
