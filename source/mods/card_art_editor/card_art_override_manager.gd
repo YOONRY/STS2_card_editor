@@ -3352,7 +3352,8 @@ func _apply_ancient_text_outside_layout(card_root) -> void:
 	if defaults.is_empty():
 		return
 	var source_path = _get_ancient_text_layout_source_path(card_root)
-	var should_move_outside = _is_card_root_ancient_text_outside_eligible(card_root, source_path, is_ancient_layout) and is_ancient_text_outside_enabled(source_path)
+	var is_text_outside_eligible = _is_card_root_ancient_text_outside_eligible(card_root, source_path, is_ancient_layout)
+	var should_move_outside = is_text_outside_eligible and is_ancient_text_outside_enabled(source_path)
 	if should_move_outside:
 		description_label.visible = false
 		if ancient_text_bg is CanvasItem:
@@ -3362,6 +3363,9 @@ func _apply_ancient_text_outside_layout(card_root) -> void:
 			type_plaque.visible = false
 		return
 	_restore_ancient_text_layout(card_root, description_label, ancient_text_bg, defaults)
+	if is_text_outside_eligible and ancient_text_bg is CanvasItem:
+		_apply_full_art_card_type_style(card_root, ancient_text_bg)
+		ancient_text_bg.visible = true
 
 
 func _get_card_rect_global(card_root) -> Rect2:
@@ -3682,8 +3686,46 @@ func _get_effective_ancient_card_type_name(model) -> String:
 			return normalized
 
 
-func _get_ancient_text_bg_texture_for_model(model):
-	var type_name = _get_effective_ancient_card_type_name(model)
+func _normalize_card_type_name(raw_value) -> String:
+	if raw_value == null:
+		return ""
+	var normalized := String(raw_value).strip_edges().to_lower()
+	match normalized:
+		"attack", "공격":
+			return "attack"
+		"skill", "스킬", "none", "status", "curse", "상태", "저주":
+			return "skill"
+		"power", "파워":
+			return "power"
+		"quest", "퀘스트":
+			return "quest"
+		_:
+			return normalized
+
+
+func _get_card_type_name_from_type_plaque(card_root) -> String:
+	if card_root == null:
+		return ""
+	var type_label = _find_named_descendant(card_root, "TypeLabel")
+	if type_label == null:
+		return ""
+	var label_text := ""
+	if type_label is Label:
+		label_text = String((type_label as Label).text)
+	else:
+		label_text = String(type_label.get("text"))
+	return _normalize_card_type_name(label_text)
+
+
+func _get_effective_ancient_card_type_name_for_card(card_root) -> String:
+	var type_name = _get_card_type_name_from_type_plaque(card_root)
+	if type_name != "":
+		return type_name
+	var model = _get_card_model_from_root(card_root)
+	return _get_effective_ancient_card_type_name(model)
+
+
+func _get_ancient_text_bg_texture_for_type_name(type_name: String):
 	if type_name == "":
 		return null
 	var texture_path = "res://images/atlases/compressed.sprites/card_template/ancient_card_text_bg_%s.tres" % type_name
@@ -3696,10 +3738,8 @@ func _get_ancient_text_bg_texture_for_model(model):
 func _apply_full_art_card_type_style(card_root, ancient_text_bg) -> void:
 	if !(ancient_text_bg is TextureRect):
 		return
-	var model = _get_card_model_from_root(card_root)
-	if model == null:
-		return
-	var ancient_text_bg_texture = _get_ancient_text_bg_texture_for_model(model)
+	var type_name = _get_effective_ancient_card_type_name_for_card(card_root)
+	var ancient_text_bg_texture = _get_ancient_text_bg_texture_for_type_name(type_name)
 	if ancient_text_bg_texture is Texture2D:
 		(ancient_text_bg as TextureRect).texture = ancient_text_bg_texture
 
