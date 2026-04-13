@@ -261,9 +261,21 @@ public static class Bootstrap
                 return;
             }
 
-            if (!TryGetCardModel(card, out _))
+            if (!TryGetCardModel(card, out var model) || model is null)
             {
                 Log($"Skipping override refresh for card '{card.Name}' because its model is unavailable.");
+                return;
+            }
+
+            var sourcePath = model.PortraitPath ?? string.Empty;
+            var isInfectionCard =
+                string.Equals(model.Id.Entry ?? string.Empty, "INFECTION", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(model.GetType().Name ?? string.Empty, "Infection", StringComparison.OrdinalIgnoreCase);
+            var infectionSuppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
+            var hasOverride = !string.IsNullOrEmpty(sourcePath) && manager.Call("has_override", sourcePath).AsBool();
+            var hasAncientTextOutside = !string.IsNullOrEmpty(sourcePath) && manager.Call("is_ancient_text_outside_enabled", sourcePath).AsBool();
+            if (!hasOverride && !hasAncientTextOutside && !(infectionSuppressionEnabled && isInfectionCard))
+            {
                 return;
             }
 

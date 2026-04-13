@@ -215,6 +215,7 @@ var _gif_processing_settings := {
 }
 var _infection_effect_hidden_enabled := true
 var _ancient_text_outside_by_source := {}
+var _ui_initialized := false
 
 
 func _manager():
@@ -247,6 +248,8 @@ func _pick_best_source_path(manager, candidates: Array) -> String:
 
 
 func _get_effective_source_path() -> String:
+	if _current_source_path != "":
+		return _current_source_path
 	var manager = _manager()
 	var candidates: Array = []
 	if _current_source_path != "":
@@ -267,6 +270,25 @@ func _get_effective_source_path() -> String:
 			candidates.append(model_path)
 			candidates.append(portrait_path)
 	return _pick_best_source_path(manager, candidates)
+
+
+func _get_context_source_path_fast() -> String:
+	var manager = _manager()
+	if manager == null:
+		return ""
+	var inspect_card = _get_inspect_card()
+	if inspect_card != null:
+		var model = inspect_card.get("Model")
+		var model_path = manager.get_source_path_for_model(model)
+		if model_path != "":
+			return model_path
+		if inspect_card.has_meta("_card_art_inspect_source_path"):
+			var inspect_meta_path = String(inspect_card.get_meta("_card_art_inspect_source_path", ""))
+			if inspect_meta_path != "":
+				return inspect_meta_path
+	if _current_source_path != "":
+		return _current_source_path
+	return ""
 
 
 func _tr(key: String) -> String:
@@ -387,11 +409,12 @@ func _apply_locale() -> void:
 	if _favorites_menu_button != null:
 		_favorites_menu_button.text = "즐겨찾기" if _locale == "ko" else "Favorites"
 		_refresh_favorites_menu()
-	_refresh_art_pack_manager_ui()
-	_refresh_infection_effect_button()
-	_refresh_ancient_text_outside_button()
-	_refresh_ancient_text_panel()
-	_refresh_card_label()
+	if _editor_popup.visible or _current_source_path != "":
+		_refresh_art_pack_manager_ui()
+		_refresh_infection_effect_button()
+		_refresh_ancient_text_outside_button()
+		_refresh_ancient_text_panel()
+		_refresh_card_label()
 
 
 func _get_display_mode_button_text() -> String:
@@ -460,12 +483,22 @@ func _is_current_ancient_card() -> bool:
 	return effective_source_path.contains("ancient")
 
 
+func _is_current_ancient_text_outside_supported_card() -> bool:
+	var source_path = _get_effective_source_path()
+	if source_path == "":
+		return false
+	var manager = _manager()
+	if manager != null and manager.is_full_art_mode(source_path):
+		return true
+	return _is_current_ancient_card()
+
+
 func _refresh_ancient_text_outside_button() -> void:
 	if _ancient_text_outside_button == null:
 		return
 	var manager = _manager()
 	var source_path = _get_effective_source_path()
-	var visible = _is_current_ancient_card() and source_path != ""
+	var visible = _is_current_ancient_text_outside_supported_card() and source_path != ""
 	_ancient_text_outside_button.visible = visible
 	if !visible or manager == null:
 		return
@@ -878,6 +911,17 @@ func _make_adjust_slider_row(label_text: String, slider_property: String, min_va
 
 
 func _ready() -> void:
+	_load_ui_settings()
+	_edit_art_button.text = _tr("edit_button")
+	if !_edit_art_button.pressed.is_connected(_on_edit_art_pressed):
+		_edit_art_button.pressed.connect(_on_edit_art_pressed)
+	_status_label.text = _tr("status_ready")
+
+
+func _initialize_editor_ui_once() -> void:
+	if _ui_initialized:
+		return
+	_ui_initialized = true
 	_build_adjust_ui()
 	_build_progress_ui()
 	_build_browser_shortcuts_ui()
@@ -885,7 +929,6 @@ func _ready() -> void:
 	_configure_quality_options()
 	_configure_file_dialog()
 	_bind_signals()
-	_load_ui_settings()
 	_api_key_input.secret = true
 	var manager = _manager()
 	_api_key_input.text = manager.get_session_api_key() if manager != null else ""
@@ -897,7 +940,6 @@ func _ready() -> void:
 	if manager != null and manager.has_method("set_infection_effect_hidden_enabled"):
 		manager.set_infection_effect_hidden_enabled(_infection_effect_hidden_enabled)
 	_status_label.text = _tr("status_ready")
-	_update_context(true)
 
 
 func _build_browser_shortcuts_ui() -> void:
@@ -996,8 +1038,6 @@ func _build_art_pack_manager_ui() -> void:
 
 	_art_pack_apply_button = Button.new()
 	variant_row.add_child(_art_pack_apply_button)
-
-	_refresh_art_pack_manager_ui()
 
 
 func _refresh_art_pack_manager_ui() -> void:
@@ -1101,25 +1141,27 @@ func _on_import_progress(current: int, total: int, label: String = "") -> void:
 
 
 func _process(delta: float) -> void:
+	if !_editor_popup.visible:
+		_refresh_accumulator = 0.0
+		return
 	_refresh_accumulator += delta
-	if _refresh_accumulator < 0.15:
+	if _refresh_accumulator < 0.35:
 		return
 	_refresh_accumulator = 0.0
 	_update_context(false)
 
 
 func _on_edit_art_pressed() -> void:
+	_initialize_editor_ui_once()
 	if _editor_popup.visible:
 		_close_adjust_panel()
 		_close_file_browser()
 		_editor_popup.hide()
 		return
-	_update_context(true)
 	var manager = _manager()
 	_api_key_input.text = manager.get_session_api_key() if manager != null else ""
 	_open_editor_popup()
-	if _get_effective_source_path() == "":
-		_set_status("Open a card inspection view first.", true)
+	call_deferred("_refresh_editor_context_after_open")
 
 
 func _on_close_pressed() -> void:
@@ -1556,8 +1598,8 @@ func _on_ancient_text_outside_pressed() -> void:
 		_set_status("The card art manager is not available.", true)
 		return
 	var source_path = _get_effective_source_path()
-	if source_path == "" or !_is_current_ancient_card():
-		_set_status("고대 카드에서만 사용할 수 있습니다." if _locale == "ko" else "This option is only available for Ancient cards.", true)
+	if source_path == "" or !_is_current_ancient_text_outside_supported_card():
+		_set_status("고대 카드 또는 풀아트 카드에서만 사용할 수 있습니다." if _locale == "ko" else "This option is only available for Ancient or full-art cards.", true)
 		return
 	var next_enabled = !bool(manager.is_ancient_text_outside_enabled(source_path))
 	manager.set_ancient_text_outside_enabled(source_path, next_enabled)
@@ -1786,33 +1828,11 @@ func _update_context(force_refresh: bool) -> void:
 		_display_mode_button.disabled = true
 		return
 
-	var next_source_path = ""
-	var model_source_path = ""
-	var card_node_source_path = ""
-	var portrait_source_path = ""
-	var screen = get_parent()
-	if screen != null:
-		var inspect_card = screen.get_node_or_null("Card")
-		if inspect_card != null:
-			var inspect_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/Portrait")
-			var inspect_ancient_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
-			if inspect_ancient_portrait is TextureRect and (inspect_ancient_portrait as CanvasItem).visible:
-				portrait_source_path = manager.get_source_path_for_texture_rect(inspect_ancient_portrait)
-				next_source_path = portrait_source_path
-			elif inspect_portrait is TextureRect and (inspect_portrait as CanvasItem).visible:
-				portrait_source_path = manager.get_source_path_for_texture_rect(inspect_portrait)
-				next_source_path = portrait_source_path
-			if next_source_path == "":
-				card_node_source_path = manager.get_source_path_for_card_node(inspect_card)
-				next_source_path = card_node_source_path
-			if next_source_path == "":
-				model_source_path = manager.get_source_path_for_model(inspect_card.get("Model"))
-				next_source_path = model_source_path
+	var next_source_path = _get_context_source_path_fast()
 	if next_source_path == "":
 		var portrait = _get_active_portrait()
 		if portrait != null:
-			portrait_source_path = manager.get_source_path_for_texture_rect(portrait)
-			next_source_path = portrait_source_path
+			next_source_path = manager.get_source_path_for_texture_rect(portrait)
 
 	if force_refresh or next_source_path != _current_source_path:
 		var source_changed = next_source_path != _current_source_path
@@ -1840,6 +1860,12 @@ func _update_context(force_refresh: bool) -> void:
 	_refresh_infection_effect_button()
 	_refresh_ancient_text_outside_button()
 	_refresh_ancient_text_panel()
+
+
+func _refresh_editor_context_after_open() -> void:
+	_update_context(true)
+	if _get_effective_source_path() == "":
+		_set_status("Open a card inspection view first.", true)
 
 
 func _refresh_card_label() -> void:
@@ -1974,7 +2000,6 @@ func _configure_file_dialog() -> void:
 
 
 func _bind_signals() -> void:
-	_edit_art_button.pressed.connect(_on_edit_art_pressed)
 	_language_button.pressed.connect(_toggle_locale)
 	_gif_settings_button.pressed.connect(_on_gif_settings_pressed)
 	_close_button.pressed.connect(_on_close_pressed)
@@ -2036,7 +2061,7 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 	if _infection_effect_button != null:
 		_infection_effect_button.disabled = is_busy or !_is_current_infection_card()
 	if _ancient_text_outside_button != null:
-		_ancient_text_outside_button.disabled = is_busy or !_is_current_ancient_card() or effective_source_path == ""
+		_ancient_text_outside_button.disabled = is_busy or !_is_current_ancient_text_outside_supported_card() or effective_source_path == ""
 	if _art_pack_remove_button != null:
 		_art_pack_remove_button.disabled = is_busy or _art_pack_list_ids.is_empty()
 	_restore_all_button.disabled = is_busy or manager == null or manager.get_override_count() == 0
