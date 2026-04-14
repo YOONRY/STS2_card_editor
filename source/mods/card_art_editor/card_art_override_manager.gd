@@ -3338,6 +3338,16 @@ func _restore_ancient_text_layout(card_root, description_label, ancient_text_bg,
 		type_plaque.visible = bool(defaults.get("type_plaque_visible", type_plaque.visible))
 
 
+func _is_card_root_in_hover_tip_preview(card_root) -> bool:
+	var current = card_root
+	while current != null:
+		var current_name = String(current.name)
+		if current_name == "HoverTipsContainer" or current_name == "textHoverTipContainer":
+			return true
+		current = current.get_parent()
+	return false
+
+
 func _apply_ancient_text_outside_layout(card_root) -> void:
 	if card_root == null:
 		return
@@ -3350,6 +3360,9 @@ func _apply_ancient_text_outside_layout(card_root) -> void:
 	var is_ancient_layout = ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible and !(portrait is CanvasItem and (portrait as CanvasItem).visible)
 	var defaults = _store_ancient_text_layout_defaults(card_root, description_label, ancient_text_bg)
 	if defaults.is_empty():
+		return
+	if _is_card_root_in_hover_tip_preview(card_root):
+		_restore_ancient_text_layout(card_root, description_label, ancient_text_bg, defaults)
 		return
 	var source_path = _get_ancient_text_layout_source_path(card_root)
 	var is_text_outside_eligible = _is_card_root_ancient_text_outside_eligible(card_root, source_path, is_ancient_layout)
@@ -3368,13 +3381,41 @@ func _apply_ancient_text_outside_layout(card_root) -> void:
 		ancient_text_bg.visible = true
 
 
-func _get_card_rect_global(card_root) -> Rect2:
-	if !(card_root is Control):
+func _get_control_rect_global(control) -> Rect2:
+	if !(control is Control):
 		return Rect2()
-	var control := card_root as Control
-	var global_position = control.global_position
-	var rect_size = control.size * control.scale
+	var casted := control as Control
+	if casted.has_method("get_global_rect"):
+		return casted.get_global_rect()
+	var global_position = casted.global_position
+	var rect_size = casted.size * casted.scale
 	return Rect2(global_position, rect_size)
+
+
+func _get_card_rect_global(card_root) -> Rect2:
+	if card_root == null:
+		return Rect2()
+	var reference_nodes = [
+		_get_full_art_layer(card_root),
+		_find_named_descendant(card_root, "AncientBorder"),
+		_find_named_descendant(card_root, "AncientHighlight"),
+		_find_named_descendant(card_root, "Highlight"),
+		_find_named_descendant(card_root, "AncientPortrait"),
+		_find_named_descendant(card_root, "Portrait")
+	]
+	for reference_node in reference_nodes:
+		if reference_node is Control and (!(reference_node is CanvasItem) or (reference_node as CanvasItem).visible):
+			var reference_rect = _get_control_rect_global(reference_node)
+			if reference_rect.size.x > 0.0 and reference_rect.size.y > 0.0:
+				return reference_rect
+	if card_root is Control:
+		return _get_control_rect_global(card_root)
+	return Rect2()
+
+
+func _is_mouse_over_card_root(card_root, mouse_position: Vector2) -> bool:
+	var card_rect = _get_card_rect_global(card_root)
+	return card_rect.size.x > 0.0 and card_rect.size.y > 0.0 and card_rect.has_point(mouse_position)
 
 
 func _normalize_ancient_text_tooltip_text(text: String) -> String:
@@ -3499,18 +3540,43 @@ func _find_hovered_ancient_text_card_root_from_gui():
 	return card_root
 
 
+func _find_hovered_ancient_text_card_root_from_tracked_portraits(mouse_position: Vector2):
+	var seen_card_roots := {}
+	for index in range(_portrait_refs.size() - 1, -1, -1):
+		var texture_rect = _portrait_refs[index].get_ref()
+		if texture_rect == null:
+			continue
+		var card_root = _find_card_root(texture_rect)
+		if card_root == null or seen_card_roots.has(card_root):
+			continue
+		seen_card_roots[card_root] = true
+		if _is_card_root_in_hover_tip_preview(card_root):
+			continue
+		if !_is_mouse_over_card_root(card_root, mouse_position):
+			continue
+		var source_path = _get_ancient_text_layout_source_path(card_root)
+		if !_is_card_root_ancient_text_outside_eligible(card_root, source_path):
+			continue
+		if !is_ancient_text_outside_enabled(source_path):
+			continue
+		return card_root
+	return null
+
+
 func _find_hovered_ancient_text_card_root():
 	var viewport = get_viewport()
 	if viewport == null:
 		return null
 	var mouse_position = viewport.get_mouse_position()
-	if _is_valid_ancient_text_card_root(_ancient_text_hover_tip_owner):
-		var owner_rect = _get_card_rect_global(_ancient_text_hover_tip_owner)
-		if owner_rect.size.x > 0.0 and owner_rect.size.y > 0.0 and owner_rect.has_point(mouse_position):
-			return _ancient_text_hover_tip_owner
 	var gui_card_root = _find_hovered_ancient_text_card_root_from_gui()
 	if gui_card_root != null:
 		return gui_card_root
+	var tracked_card_root = _find_hovered_ancient_text_card_root_from_tracked_portraits(mouse_position)
+	if tracked_card_root != null:
+		return tracked_card_root
+	if _is_valid_ancient_text_card_root(_ancient_text_hover_tip_owner):
+		if _is_mouse_over_card_root(_ancient_text_hover_tip_owner, mouse_position):
+			return _ancient_text_hover_tip_owner
 	return null
 
 
@@ -3539,14 +3605,12 @@ func _is_valid_ancient_text_card_root(card_root) -> bool:
 
 
 func _resolve_active_ancient_text_card_root():
-	var inspect_card_root = _find_active_inspect_ancient_text_card_root()
-	if inspect_card_root != null:
-		return inspect_card_root
 	var hovered_card_root = _find_hovered_ancient_text_card_root()
 	if hovered_card_root != null:
 		return hovered_card_root
-	if _is_valid_ancient_text_card_root(_ancient_text_hover_tip_owner):
-		return _ancient_text_hover_tip_owner
+	var inspect_card_root = _find_active_inspect_ancient_text_card_root()
+	if inspect_card_root != null:
+		return inspect_card_root
 	return null
 
 
