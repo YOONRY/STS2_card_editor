@@ -24,6 +24,10 @@ public static class Bootstrap
     private const string OverlayScenePath = "res://mods/card_art_editor/inspect_card_art_editor.tscn";
     internal const string InspectSourcePathMeta = "_card_art_inspect_source_path";
     internal const string InspectCardIdMeta = "_card_art_inspect_card_id";
+    internal const string SourcePathMeta = "_card_art_source_path";
+    internal const string OverrideActiveMeta = "_card_art_override_active";
+    internal const string FullArtActiveMeta = "_card_art_full_art_active";
+    internal const string FullArtOwnerPathMeta = "_card_art_full_art_owner_path";
 
     public static void Init()
     {
@@ -230,15 +234,63 @@ public static class Bootstrap
                 return;
             }
 
+            var manager = TryEnsureManager();
+            var cardRoot = card.GetNodeOrNull<Node>("CardContainer");
+
             if (!TryGetCardModel(card, out var model) || model is null)
             {
-                card.SetMeta(InspectSourcePathMeta, string.Empty);
-                card.SetMeta(InspectCardIdMeta, string.Empty);
+                var existingSourcePath = card.HasMeta(InspectSourcePathMeta)
+                    ? card.GetMeta(InspectSourcePathMeta, string.Empty).AsString()
+                    : string.Empty;
+                var existingCardId = card.HasMeta(InspectCardIdMeta)
+                    ? card.GetMeta(InspectCardIdMeta, string.Empty).AsString()
+                    : string.Empty;
+
+                if (existingSourcePath != string.Empty)
+                {
+                    card.SetMeta(InspectSourcePathMeta, string.Empty);
+                }
+
+                if (existingCardId != string.Empty)
+                {
+                    card.SetMeta(InspectCardIdMeta, string.Empty);
+                }
+
+                var metadataCleared = existingSourcePath != string.Empty || existingCardId != string.Empty;
+                if (metadataCleared && manager is not null && cardRoot is not null)
+                {
+                    manager.Call("refresh_card_visuals", cardRoot);
+                }
+
                 return;
             }
 
-            card.SetMeta(InspectSourcePathMeta, model.PortraitPath ?? string.Empty);
-            card.SetMeta(InspectCardIdMeta, model.Id.Entry ?? string.Empty);
+            var nextSourcePath = model.PortraitPath ?? string.Empty;
+            var nextCardId = model.Id.Entry ?? string.Empty;
+            var currentSourcePath = card.HasMeta(InspectSourcePathMeta)
+                ? card.GetMeta(InspectSourcePathMeta, string.Empty).AsString()
+                : string.Empty;
+            var currentCardId = card.HasMeta(InspectCardIdMeta)
+                ? card.GetMeta(InspectCardIdMeta, string.Empty).AsString()
+                : string.Empty;
+            var metadataChanged = false;
+
+            if (currentSourcePath != nextSourcePath)
+            {
+                card.SetMeta(InspectSourcePathMeta, nextSourcePath);
+                metadataChanged = true;
+            }
+
+            if (currentCardId != nextCardId)
+            {
+                card.SetMeta(InspectCardIdMeta, nextCardId);
+                metadataChanged = true;
+            }
+
+            if (metadataChanged && manager is not null && cardRoot is not null)
+            {
+                manager.Call("refresh_card_visuals", cardRoot);
+            }
         }
         catch (Exception ex)
         {
@@ -263,34 +315,27 @@ public static class Bootstrap
 
             if (!TryGetCardModel(card, out var model) || model is null)
             {
-                Log($"Skipping override refresh for card '{card.Name}' because its model is unavailable.");
                 return;
             }
 
             var sourcePath = model.PortraitPath ?? string.Empty;
+            var cardRoot = card.GetNodeOrNull<Node>("CardContainer");
             var isInfectionCard =
                 string.Equals(model.Id.Entry ?? string.Empty, "INFECTION", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(model.GetType().Name ?? string.Empty, "Infection", StringComparison.OrdinalIgnoreCase);
             var infectionSuppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
             var hasOverride = !string.IsNullOrEmpty(sourcePath) && manager.Call("has_override", sourcePath).AsBool();
             var hasAncientTextOutside = !string.IsNullOrEmpty(sourcePath) && manager.Call("is_ancient_text_outside_enabled", sourcePath).AsBool();
-            if (!hasOverride && !hasAncientTextOutside && !(infectionSuppressionEnabled && isInfectionCard))
+            var needsVisualRefresh = CardNeedsVisualRefresh(cardRoot);
+            if (!hasOverride && !hasAncientTextOutside && !(infectionSuppressionEnabled && isInfectionCard) && !needsVisualRefresh)
             {
                 return;
             }
 
             UpdateInspectCardMetadataFromCard(card);
-
-            var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
-            if (portrait is not null)
+            if (cardRoot is not null)
             {
-                manager.Call("apply_override_to_texture_rect", portrait);
-            }
-
-            var ancientPortrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/AncientPortrait");
-            if (ancientPortrait is not null)
-            {
-                manager.Call("apply_override_to_texture_rect", ancientPortrait);
+                manager.Call("refresh_card_visuals", cardRoot);
             }
 
             TrySuppressSpecialCardEffects(card);
@@ -386,6 +431,64 @@ public static class Bootstrap
         {
             Log("UpdateInspectCardMetadataFromCard failed: " + ex);
         }
+    }
+
+    private static bool CardNeedsVisualRefresh(Node? cardRoot)
+    {
+        if (cardRoot is null || !GodotObject.IsInstanceValid(cardRoot))
+        {
+            return false;
+        }
+
+        var portrait = cardRoot.GetNodeOrNull<TextureRect>("PortraitCanvasGroup/Portrait");
+        if (NodeHasRefreshState(portrait))
+        {
+            return true;
+        }
+
+        var ancientPortrait = cardRoot.GetNodeOrNull<TextureRect>("PortraitCanvasGroup/AncientPortrait");
+        if (NodeHasRefreshState(ancientPortrait))
+        {
+            return true;
+        }
+
+        var fullArtLayer = cardRoot.GetNodeOrNull<TextureRect>("PortraitCanvasGroup/CardArtFullArtLayer");
+        if (NodeHasRefreshState(fullArtLayer))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool NodeHasRefreshState(Node? node)
+    {
+        if (node is null || !GodotObject.IsInstanceValid(node))
+        {
+            return false;
+        }
+
+        if (node.HasMeta(SourcePathMeta) && !string.IsNullOrEmpty(node.GetMeta(SourcePathMeta, string.Empty).AsString()))
+        {
+            return true;
+        }
+
+        if (node.HasMeta(OverrideActiveMeta) && node.GetMeta(OverrideActiveMeta, false).AsBool())
+        {
+            return true;
+        }
+
+        if (node.HasMeta(FullArtActiveMeta) && node.GetMeta(FullArtActiveMeta, false).AsBool())
+        {
+            return true;
+        }
+
+        if (node.HasMeta(FullArtOwnerPathMeta) && !string.IsNullOrEmpty(node.GetMeta(FullArtOwnerPathMeta, string.Empty).AsString()))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static void HideInfectionEffectNodes(Node root)
