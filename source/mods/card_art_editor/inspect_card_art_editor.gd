@@ -477,10 +477,20 @@ func _is_current_ancient_card() -> bool:
 	if model == null:
 		return false
 	var rarity = model.get("Rarity")
-	if rarity != null and String(rarity).to_lower() == "ancient":
+	if _is_ancient_rarity_value(rarity):
 		return true
 	var effective_source_path = _get_effective_source_path().to_lower()
 	return effective_source_path.contains("ancient")
+
+
+func _is_ancient_rarity_value(rarity) -> bool:
+	if rarity == null:
+		return false
+	var rarity_type = typeof(rarity)
+	if rarity_type == TYPE_INT or rarity_type == TYPE_FLOAT:
+		return int(rarity) == 5
+	var rarity_text = String(rarity).strip_edges().to_lower()
+	return rarity_text == "ancient" or rarity_text.ends_with(".ancient") or rarity_text == "5"
 
 
 func _is_current_ancient_text_outside_supported_card() -> bool:

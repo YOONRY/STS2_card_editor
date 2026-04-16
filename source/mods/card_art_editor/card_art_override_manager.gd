@@ -21,7 +21,8 @@ const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
 const FULL_ART_TARGET_SIZE := Vector2i(600, 847)
 const MOD_IMPORT_IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
 const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "colorless", "status", "token", "curse", "event", "necrobinder"]
-const REFRESH_INTERVAL := 0.2
+const REFRESH_INTERVAL := 0.15
+const PASSIVE_RESYNC_INTERVAL := 0.0
 const DISPLAY_MODE_DEFAULT := "default"
 const DISPLAY_MODE_FULL_ART := "full_art"
 const FULL_ART_STATIC_ZOOM_BOOST := 1.12
@@ -64,6 +65,7 @@ var _manifest := {}
 var _art_pack_registry := {"packs": {}}
 var _override_texture_cache := {}
 var _refresh_accumulator := 0.0
+var _passive_resync_accumulator := 0.0
 var _ancient_text_hover_refresh_accumulator := 0.0
 var _session_api_key := ""
 var _overlay_scene := preload("res://mods/card_art_editor/inspect_card_art_editor.tscn")
@@ -94,6 +96,8 @@ var _ancient_text_hover_tip_last_position := Vector2.INF
 var _ancient_text_hover_probe_mouse_position := Vector2.INF
 var _hover_tips_container_cache: Node = null
 var _inspect_screen_refs := []
+var _queued_card_root_refreshes := {}
+var _queued_card_root_refresh_scheduled := false
 
 
 func _ready() -> void:
@@ -121,6 +125,10 @@ func _process(delta: float) -> void:
 			_hide_ancient_text_hover_tip()
 		else:
 			_refresh_ancient_text_hover_tip()
+	_passive_resync_accumulator += delta
+	if PASSIVE_RESYNC_INTERVAL > 0.0 and _passive_resync_accumulator >= PASSIVE_RESYNC_INTERVAL:
+		_passive_resync_accumulator = 0.0
+		_refresh_tracked_portraits()
 	if !_needs_full_refresh:
 		return
 	if REFRESH_INTERVAL <= 0.0:
@@ -596,12 +604,13 @@ func get_source_path_for_card_node(card_node) -> String:
 		var inspect_source_path = _canonicalize_source_key(String(card_node.get_meta(META_INSPECT_SOURCE_PATH, "")))
 		if inspect_source_path != "":
 			return inspect_source_path
-	var model_source_path = _canonicalize_source_key(get_source_path_for_model(_get_card_model_from_root(card_node)))
-	if model_source_path != "":
-		return model_source_path
 	var portrait_canvas_group = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup")
 	var ancient_portrait = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
 	var portrait = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup/Portrait")
+	if card_node.has_meta(META_SOURCE_PATH):
+		var card_node_source = _canonicalize_source_key(String(card_node.get_meta(META_SOURCE_PATH, "")))
+		if card_node_source != "":
+			return card_node_source
 	if portrait_canvas_group != null:
 		var full_art_layer = portrait_canvas_group.get_node_or_null(FULL_ART_LAYER_NAME)
 		if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
@@ -628,7 +637,14 @@ func get_source_path_for_card_node(card_node) -> String:
 			var current_meta_source = String(current.get_meta(META_INSPECT_SOURCE_PATH, ""))
 			if current_meta_source != "":
 				return _normalize_source_path(current_meta_source)
+		if current.has_meta(META_SOURCE_PATH):
+			var current_source = _canonicalize_source_key(String(current.get_meta(META_SOURCE_PATH, "")))
+			if current_source != "":
+				return current_source
 		current = current.get_parent()
+	var model_source_path = _canonicalize_source_key(get_source_path_for_model(_get_card_model_from_root(card_node)))
+	if model_source_path != "":
+		return model_source_path
 	if ancient_portrait is TextureRect:
 		return get_source_path_for_texture_rect(ancient_portrait)
 	if portrait is TextureRect:
@@ -1550,7 +1566,7 @@ func _get_art_pack_dir(pack_id: String) -> String:
 	return "%s/%s" % [STORAGE_ART_PACK_DIR, pack_id]
 
 
-func _register_art_pack_static_entry(pack_id: String, source_path: String, image, display_mode: String, edit_source_image = null, adjust_zoom: float = 1.0, adjust_offset_x: float = 0.0, adjust_offset_y: float = 0.0) -> Dictionary:
+func _register_art_pack_static_entry(pack_id: String, source_path: String, image, display_mode: String, edit_source_image = null, adjust_zoom: float = 1.0, adjust_offset_x: float = 0.0, adjust_offset_y: float = 0.0, ancient_text_outside := false) -> Dictionary:
 	var pack_dir = _get_art_pack_dir(pack_id)
 	var safe_stem = _safe_file_stem(source_path)
 	var override_path = "%s/%s.png" % [pack_dir, safe_stem]
@@ -1568,6 +1584,7 @@ func _register_art_pack_static_entry(pack_id: String, source_path: String, image
 		"override_path": override_path,
 		"edit_source_path": edit_source_path,
 		"display_mode": display_mode,
+		"ancient_text_outside": ancient_text_outside,
 		"adjust_zoom": adjust_zoom,
 		"adjust_offset_x": adjust_offset_x,
 		"adjust_offset_y": adjust_offset_y,
@@ -1575,7 +1592,7 @@ func _register_art_pack_static_entry(pack_id: String, source_path: String, image
 	}
 
 
-func _register_art_pack_animated_entry(pack_id: String, source_path: String, images: Array, delays: Array, display_mode: String, source_images: Array = [], source_delays: Array = [], adjust_zoom: float = 1.0, adjust_offset_x: float = 0.0, adjust_offset_y: float = 0.0) -> Dictionary:
+func _register_art_pack_animated_entry(pack_id: String, source_path: String, images: Array, delays: Array, display_mode: String, source_images: Array = [], source_delays: Array = [], adjust_zoom: float = 1.0, adjust_offset_x: float = 0.0, adjust_offset_y: float = 0.0, ancient_text_outside := false) -> Dictionary:
 	var pack_dir = _get_art_pack_dir(pack_id)
 	var safe_stem = _safe_file_stem(source_path)
 	var frame_paths: Array = []
@@ -1604,11 +1621,38 @@ func _register_art_pack_animated_entry(pack_id: String, source_path: String, ima
 		"source_frame_paths": source_frame_paths,
 		"frame_delays": frame_delays,
 		"display_mode": display_mode,
+		"ancient_text_outside": ancient_text_outside,
 		"adjust_zoom": adjust_zoom,
 		"adjust_offset_x": adjust_offset_x,
 		"adjust_offset_y": adjust_offset_y,
 		"updated_at": Time.get_datetime_string_from_system()
 	}
+
+
+func _resolve_art_pack_ancient_text_outside(card_entry: Dictionary, source_path: String) -> bool:
+	source_path = _canonicalize_source_key(source_path)
+	if card_entry.has("ancient_text_outside"):
+		return bool(card_entry.get("ancient_text_outside", false))
+	if is_ancient_text_outside_enabled(source_path):
+		return true
+	if is_full_art_mode(source_path):
+		return true
+	var existing_entry = _manifest.get(source_path, null)
+	var display_mode = String(card_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+	if display_mode == DISPLAY_MODE_DEFAULT and existing_entry is Dictionary:
+		display_mode = String(existing_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+	if display_mode == DISPLAY_MODE_FULL_ART:
+		return true
+	var adjust_zoom = float(card_entry.get("adjust_zoom", 1.0))
+	var adjust_offset_x = absf(float(card_entry.get("adjust_offset_x", 0.0)))
+	var adjust_offset_y = absf(float(card_entry.get("adjust_offset_y", 0.0)))
+	if absf(adjust_zoom - 1.0) > 0.001 or adjust_offset_x > 0.001 or adjust_offset_y > 0.001:
+		return true
+	var width = int(card_entry.get("width", 0))
+	var height = int(card_entry.get("height", 0))
+	if width > 0 and height > width:
+		return true
+	return _normalize_source_path(source_path).contains("ancient")
 
 
 func _activate_registered_art_pack_entry(source_path: String, card_entry: Dictionary, pack_id: String, pack_name: String) -> Dictionary:
@@ -1618,6 +1662,7 @@ func _activate_registered_art_pack_entry(source_path: String, card_entry: Dictio
 	var adjust_zoom = float(card_entry.get("adjust_zoom", 1.0))
 	var adjust_offset_x = float(card_entry.get("adjust_offset_x", 0.0))
 	var adjust_offset_y = float(card_entry.get("adjust_offset_y", 0.0))
+	var should_enable_ancient_text_outside = _resolve_art_pack_ancient_text_outside(card_entry, source_path)
 	if String(card_entry.get("type", "static")) == "animated_gif":
 		var frame_paths = card_entry.get("source_frame_paths", card_entry.get("frame_paths", []))
 		var frame_delays = card_entry.get("frame_delays", [])
@@ -1638,6 +1683,8 @@ func _activate_registered_art_pack_entry(source_path: String, card_entry: Dictio
 		result = save_override_image(source_path, source_image, display_mode)
 	if bool(result.get("ok", false)) and (absf(adjust_zoom - 1.0) > 0.001 or absf(adjust_offset_x) > 0.001 or absf(adjust_offset_y) > 0.001):
 		result = save_adjusted_override(source_path, adjust_zoom, adjust_offset_x, adjust_offset_y)
+	if bool(result.get("ok", false)):
+		set_ancient_text_outside_enabled(source_path, should_enable_ancient_text_outside)
 	if bool(result.get("ok", false)) and _manifest.has(source_path):
 		var manifest_entry = _manifest.get(source_path, null)
 		if manifest_entry is Dictionary:
@@ -1709,7 +1756,8 @@ func export_bundle_to_file(export_path: String) -> Dictionary:
 			"height": int(entry.get("height", 0)),
 			"updated_at": String(entry.get("updated_at", "")),
 			"type": String(entry.get("type", "static")),
-			"display_mode": String(entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+			"display_mode": String(entry.get("display_mode", DISPLAY_MODE_DEFAULT)),
+			"ancient_text_outside": is_ancient_text_outside_enabled(source_path)
 		}
 		if _is_animated_entry(entry):
 			var frame_paths = entry.get("source_animation_frame_paths", entry.get("source_frame_paths", entry.get("frame_paths", [])))
@@ -1861,7 +1909,8 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 				imported_delays,
 				float(override_entry.get("adjust_zoom", 1.0)),
 				float(override_entry.get("adjust_offset_x", 0.0)),
-				float(override_entry.get("adjust_offset_y", 0.0))
+				float(override_entry.get("adjust_offset_y", 0.0)),
+				_resolve_art_pack_ancient_text_outside(override_entry, source_path)
 			)
 			if !registered_entry.is_empty():
 				pack_cards[source_path] = registered_entry
@@ -1895,7 +1944,8 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 				image,
 				float(override_entry.get("adjust_zoom", 1.0)),
 				float(override_entry.get("adjust_offset_x", 0.0)),
-				float(override_entry.get("adjust_offset_y", 0.0))
+				float(override_entry.get("adjust_offset_y", 0.0)),
+				_resolve_art_pack_ancient_text_outside(override_entry, source_path)
 			)
 			if !registered_entry.is_empty():
 				pack_cards[source_path] = registered_entry
@@ -2615,6 +2665,8 @@ func remove_override(source_path: String) -> Dictionary:
 
 	_manifest.erase(source_path)
 	_override_texture_cache.erase(source_path)
+	_ancient_text_outside_by_source.erase(source_path)
+	_save_persistent_preferences()
 	_save_manifest()
 	_clear_source_overrides_from_tracked_portraits(source_path)
 	_clear_source_overrides_in_tree(get_tree().root, source_path)
@@ -2640,9 +2692,13 @@ func remove_all_overrides() -> Dictionary:
 
 	_manifest.clear()
 	_override_texture_cache.clear()
+	_ancient_text_outside_by_source.clear()
+	_save_persistent_preferences()
 	_save_manifest()
 	for source_path in source_paths:
-		_clear_source_overrides_in_tree(get_tree().root, String(source_path))
+		_clear_source_overrides_from_tracked_portraits(String(source_path))
+	_clear_all_runtime_overrides_in_tree(get_tree().root)
+	_hide_ancient_text_hover_tip()
 	refresh_all_portraits()
 
 	return {
@@ -3082,9 +3138,6 @@ func refresh_card_visuals(card_root) -> void:
 	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
 	if ancient_portrait is TextureRect:
 		_refresh_portrait_node(ancient_portrait)
-	var full_art_layer = _get_full_art_layer(card_root)
-	if full_art_layer is TextureRect:
-		_refresh_portrait_node(full_art_layer)
 	_apply_ancient_text_outside_layout(card_root)
 	if _ancient_text_hover_tip_owner == card_root and !_is_valid_ancient_text_card_root(card_root):
 		_hide_ancient_text_hover_tip()
@@ -3096,6 +3149,47 @@ func refresh_card_text_layout(card_root) -> void:
 	_apply_ancient_text_outside_layout(card_root)
 	if _ancient_text_hover_tip_owner == card_root and !_is_valid_ancient_text_card_root(card_root):
 		_hide_ancient_text_hover_tip()
+
+
+func _reset_portrait_runtime_state(texture_rect, clear_source_meta := true, restore_full_art := true) -> void:
+	if texture_rect == null or !is_instance_valid(texture_rect):
+		return
+	if restore_full_art and String(texture_rect.name) == "Portrait":
+		_restore_full_art_state(texture_rect)
+	if !clear_source_meta:
+		var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null) if texture_rect.has_meta(META_ORIGINAL_TEXTURE) else null
+		if original_texture is Texture2D:
+			texture_rect.texture = original_texture
+	texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+	texture_rect.set_meta(META_FULL_ART_ACTIVE, false)
+	texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
+	if clear_source_meta:
+		texture_rect.set_meta(META_SOURCE_PATH, "")
+		texture_rect.remove_meta(META_ORIGINAL_TEXTURE)
+		texture_rect.remove_meta(META_SOURCE_SIZE)
+		texture_rect.remove_meta(META_FULL_ART_OWNER_PATH)
+
+
+func _apply_runtime_base_texture(texture_rect, source_path: String, restore_full_art := true) -> bool:
+	if texture_rect == null or !is_instance_valid(texture_rect):
+		return false
+	var normalized_source_path = _normalize_source_path(source_path)
+	if normalized_source_path == "":
+		return false
+	var loaded_texture = load(normalized_source_path)
+	if !(loaded_texture is Texture2D):
+		return false
+	if restore_full_art and String(texture_rect.name) == "Portrait":
+		_restore_full_art_state(texture_rect)
+	texture_rect.texture = loaded_texture
+	texture_rect.set_meta(META_ORIGINAL_TEXTURE, loaded_texture)
+	texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(loaded_texture.get_width(), loaded_texture.get_height()))
+	texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+	texture_rect.set_meta(META_FULL_ART_ACTIVE, false)
+	texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
+	texture_rect.set_meta(META_SOURCE_PATH, normalized_source_path)
+	texture_rect.remove_meta(META_FULL_ART_OWNER_PATH)
+	return true
 
 
 func _clear_source_overrides_from_tracked_portraits(source_path: String) -> void:
@@ -3113,12 +3207,7 @@ func _clear_source_overrides_from_tracked_portraits(source_path: String) -> void
 				full_art_owner = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
 		if tracked_source != source_path and full_art_owner != source_path:
 			continue
-		_restore_full_art_state(texture_rect)
-		var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null)
-		if original_texture is Texture2D:
-			texture_rect.texture = original_texture
-		texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
-		texture_rect.set_meta(META_SOURCE_PATH, "")
+		_reset_portrait_runtime_state(texture_rect)
 
 
 func _clear_source_overrides_in_tree(node, source_path: String) -> void:
@@ -3135,20 +3224,55 @@ func _clear_source_overrides_in_tree(node, source_path: String) -> void:
 			var portrait = _find_named_descendant(card_root, "Portrait")
 			var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
 			if portrait is TextureRect:
-				_restore_full_art_state(portrait)
-				var portrait_original = portrait.get_meta(META_ORIGINAL_TEXTURE, null) if portrait.has_meta(META_ORIGINAL_TEXTURE) else null
-				if portrait_original is Texture2D:
-					portrait.texture = portrait_original
-				portrait.set_meta(META_OVERRIDE_ACTIVE, false)
-				portrait.set_meta(META_SOURCE_PATH, "")
+				_reset_portrait_runtime_state(portrait)
 			if ancient_portrait is TextureRect:
-				var ancient_original = ancient_portrait.get_meta(META_ORIGINAL_TEXTURE, null) if ancient_portrait.has_meta(META_ORIGINAL_TEXTURE) else null
-				if ancient_original is Texture2D:
-					ancient_portrait.texture = ancient_original
-				ancient_portrait.set_meta(META_OVERRIDE_ACTIVE, false)
-				ancient_portrait.set_meta(META_SOURCE_PATH, "")
+				_reset_portrait_runtime_state(ancient_portrait)
 	for child in node.get_children():
 		_clear_source_overrides_in_tree(child, source_path)
+
+
+func _clear_all_runtime_overrides_in_tree(node) -> void:
+	if node == null:
+		return
+	if String(node.name) == "CardContainer":
+		node.set_meta(META_SOURCE_PATH, "")
+		var portrait = _find_named_descendant(node, "Portrait")
+		var ancient_portrait = _find_named_descendant(node, "AncientPortrait")
+		var full_art_layer = _get_full_art_layer(node)
+		if portrait is TextureRect:
+			_reset_portrait_runtime_state(portrait)
+		if ancient_portrait is TextureRect:
+			_reset_portrait_runtime_state(ancient_portrait)
+		if full_art_layer is TextureRect:
+			full_art_layer.texture = null
+			full_art_layer.visible = false
+			full_art_layer.set_meta(META_FULL_ART_ACTIVE, false)
+			full_art_layer.remove_meta(META_FULL_ART_OWNER_PATH)
+		_apply_ancient_text_outside_layout(node)
+	for child in node.get_children():
+		_clear_all_runtime_overrides_in_tree(child)
+
+
+func _reset_card_root_runtime_visual_state(card_root, clear_source_meta := true, source_path := "") -> void:
+	if card_root == null or !is_instance_valid(card_root):
+		return
+	var is_ancient_layout = _is_card_model_ancient(card_root)
+	if clear_source_meta:
+		card_root.set_meta(META_SOURCE_PATH, "")
+	_clear_custom_full_art_layer(card_root)
+	var portrait = _find_named_descendant(card_root, "Portrait")
+	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
+	if portrait is TextureRect:
+		_reset_portrait_runtime_state(portrait, clear_source_meta, !is_ancient_layout)
+	if ancient_portrait is TextureRect:
+		_reset_portrait_runtime_state(ancient_portrait, clear_source_meta, false)
+	var normalized_source_path = _normalize_source_path(String(source_path))
+	if clear_source_meta and normalized_source_path != "" and _looks_like_card_art_source(normalized_source_path):
+		if portrait is TextureRect and !is_ancient_layout:
+			_apply_runtime_base_texture(portrait, normalized_source_path, true)
+		if ancient_portrait is TextureRect and is_ancient_layout:
+			_apply_runtime_base_texture(ancient_portrait, normalized_source_path, false)
+	_apply_ancient_text_outside_layout(card_root)
 
 
 func _find_named_descendant_raw(node: Node, target_name: String):
@@ -3360,12 +3484,12 @@ func _get_ancient_text_layout_source_path(card_root) -> String:
 			if inspect_source_path != "":
 				return inspect_source_path
 		current = current.get_parent()
-	var model_source_path = _canonicalize_source_key(get_source_path_for_model(_get_card_model_from_root(card_root)))
-	if model_source_path != "":
-		return model_source_path
 	var source_path = _canonicalize_source_key(_get_card_root_source_path(card_root))
 	if source_path != "":
 		return source_path
+	var model_source_path = _canonicalize_source_key(get_source_path_for_model(_get_card_model_from_root(card_root)))
+	if model_source_path != "":
+		return model_source_path
 	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
 	if ancient_portrait is TextureRect:
 		source_path = _canonicalize_source_key(get_source_path_for_texture_rect(ancient_portrait))
@@ -3387,14 +3511,17 @@ func _get_confident_ancient_text_layout_source_path(card_root) -> String:
 			if inspect_source_path != "":
 				return inspect_source_path
 		current = current.get_parent()
-	var model_source_path = _canonicalize_source_key(get_source_path_for_model(_get_card_model_from_root(card_root)))
-	if model_source_path != "":
-		return model_source_path
+	var root_source_path = _canonicalize_source_key(_get_card_root_source_path(card_root))
+	if root_source_path != "":
+		return root_source_path
 	var full_art_layer = _get_full_art_layer(card_root)
 	if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
 		var full_art_owner = _canonicalize_source_key(String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, "")))
 		if full_art_owner != "":
 			return full_art_owner
+	var model_source_path = _canonicalize_source_key(get_source_path_for_model(_get_card_model_from_root(card_root)))
+	if model_source_path != "":
+		return model_source_path
 	return ""
 
 
@@ -3800,9 +3927,48 @@ func _get_ancient_text_hover_tip_size() -> Vector2:
 func _is_card_root_ancient_layout(card_root) -> bool:
 	if card_root == null:
 		return false
+	if _is_card_model_ancient(card_root):
+		return true
 	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
 	var portrait = _find_named_descendant(card_root, "Portrait")
 	return ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible and !(portrait is CanvasItem and (portrait as CanvasItem).visible)
+
+
+func _is_card_model_ancient(card_root) -> bool:
+	if card_root == null:
+		return false
+	var model = _get_card_model_from_root(card_root)
+	if model != null:
+		var rarity = model.get("Rarity")
+		if _is_ancient_rarity_value(rarity):
+			return true
+	var source_path = _canonicalize_source_key(_get_card_root_source_path(card_root))
+	if _looks_like_native_ancient_source(source_path):
+		return true
+	return false
+
+
+func _is_ancient_rarity_value(rarity) -> bool:
+	if rarity == null:
+		return false
+	var rarity_type = typeof(rarity)
+	if rarity_type == TYPE_INT or rarity_type == TYPE_FLOAT:
+		return int(rarity) == 5
+	var rarity_text = String(rarity).strip_edges().to_lower()
+	return rarity_text == "ancient" or rarity_text.ends_with(".ancient") or rarity_text == "5"
+
+
+func _looks_like_native_ancient_source(source_path: String) -> bool:
+	var normalized_source_path = _canonicalize_source_key(source_path)
+	if normalized_source_path == "":
+		return false
+	if normalized_source_path.to_lower().contains("ancient"):
+		return true
+	var probe_path = _get_preferred_size_probe_path(normalized_source_path)
+	var texture = load(probe_path)
+	if texture is Texture2D:
+		return texture.get_height() > texture.get_width()
+	return false
 
 
 func _is_card_root_ancient_text_outside_eligible(card_root, source_path: String = "", is_ancient_layout := false) -> bool:
@@ -4348,7 +4514,7 @@ func _clear_custom_full_art_layer(card_root) -> void:
 	var ancient_border = _find_named_descendant(card_root, "AncientBorder")
 	var ancient_text_bg = _find_named_descendant(card_root, "AncientTextBg")
 	var ancient_banner = _find_named_descendant(card_root, "AncientBanner")
-	var is_ancient_layout = ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible and !(portrait is CanvasItem and (portrait as CanvasItem).visible)
+	var is_ancient_layout = _is_card_model_ancient(card_root)
 
 	if full_art_layer is TextureRect:
 		full_art_layer.visible = false
@@ -4359,9 +4525,11 @@ func _clear_custom_full_art_layer(card_root) -> void:
 		portrait_canvas_group.visible = true
 	_restore_full_art_portrait_mask(portrait_canvas_group)
 	if portrait is TextureRect:
-		(portrait as TextureRect).self_modulate = Color(1, 1, 1, 1)
+		(portrait as TextureRect).visible = !is_ancient_layout
+		(portrait as TextureRect).self_modulate = Color(1, 1, 1, 1 if !is_ancient_layout else 0)
 	if ancient_portrait is TextureRect:
-		(ancient_portrait as TextureRect).self_modulate = Color(1, 1, 1, 1)
+		(ancient_portrait as TextureRect).visible = is_ancient_layout
+		(ancient_portrait as TextureRect).self_modulate = Color(1, 1, 1, 1 if is_ancient_layout else 0)
 	if is_ancient_layout:
 		if portrait_border is CanvasItem:
 			portrait_border.visible = false
@@ -4411,6 +4579,7 @@ func _restore_full_art_state(texture_rect) -> void:
 	var ancient_border = _find_named_descendant(card_root, "AncientBorder")
 	var ancient_text_bg = _find_named_descendant(card_root, "AncientTextBg")
 	var ancient_banner = _find_named_descendant(card_root, "AncientBanner")
+	var is_ancient_layout = _is_card_model_ancient(card_root)
 	if full_art_layer is TextureRect:
 		full_art_layer.visible = false
 		full_art_layer.texture = null
@@ -4419,30 +4588,58 @@ func _restore_full_art_state(texture_rect) -> void:
 	if portrait_canvas_group is CanvasItem:
 		portrait_canvas_group.visible = true
 	_restore_full_art_portrait_mask(portrait_canvas_group)
-	if ancient_portrait is TextureRect:
-		(ancient_portrait as TextureRect).visible = false
-		(ancient_portrait as TextureRect).self_modulate = Color(1, 1, 1, 1)
-	if portrait_border is CanvasItem:
-		portrait_border.visible = true
-	if frame is CanvasItem:
-		frame.visible = true
-	if title_banner is CanvasItem:
-		title_banner.visible = true
-	if ancient_highlight is CanvasItem:
-		ancient_highlight.visible = false
-	if ancient_border is CanvasItem:
-		ancient_border.visible = false
-	if ancient_text_bg is CanvasItem:
-		ancient_text_bg.visible = false
-	if ancient_banner is CanvasItem:
-		ancient_banner.visible = false
 	if portrait is TextureRect:
-		(portrait as TextureRect).visible = true
-		(portrait as TextureRect).self_modulate = Color(1, 1, 1, 1)
+		(portrait as TextureRect).visible = !is_ancient_layout
+		(portrait as TextureRect).self_modulate = Color(1, 1, 1, 1 if !is_ancient_layout else 0)
 		(portrait as TextureRect).set_meta(META_FULL_ART_ACTIVE, false)
 	else:
 		texture_rect.visible = true
+	if ancient_portrait is TextureRect:
+		(ancient_portrait as TextureRect).visible = is_ancient_layout
+		(ancient_portrait as TextureRect).self_modulate = Color(1, 1, 1, 1 if is_ancient_layout else 0)
+	if is_ancient_layout:
+		if portrait_border is CanvasItem:
+			portrait_border.visible = false
+		if frame is CanvasItem:
+			frame.visible = false
+		if title_banner is CanvasItem:
+			title_banner.visible = false
+		if ancient_highlight is CanvasItem:
+			ancient_highlight.visible = true
+		if ancient_border is CanvasItem:
+			ancient_border.visible = true
+		if ancient_text_bg is CanvasItem:
+			ancient_text_bg.visible = true
+		if ancient_banner is CanvasItem:
+			ancient_banner.visible = true
+	else:
+		if portrait_border is CanvasItem:
+			portrait_border.visible = true
+		if frame is CanvasItem:
+			frame.visible = true
+		if title_banner is CanvasItem:
+			title_banner.visible = true
+		if ancient_highlight is CanvasItem:
+			ancient_highlight.visible = false
+		if ancient_border is CanvasItem:
+			ancient_border.visible = false
+		if ancient_text_bg is CanvasItem:
+			ancient_text_bg.visible = false
+		if ancient_banner is CanvasItem:
+			ancient_banner.visible = false
 	texture_rect.set_meta(META_FULL_ART_ACTIVE, false)
+
+
+func _restore_texture_rect_original(texture_rect) -> void:
+	if texture_rect == null:
+		return
+	if String(texture_rect.name) == "Portrait":
+		_restore_full_art_state(texture_rect)
+	var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null) if texture_rect.has_meta(META_ORIGINAL_TEXTURE) else null
+	if original_texture is Texture2D:
+		texture_rect.texture = original_texture
+	texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+	texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
 
 
 func _on_node_added(node) -> void:
@@ -4470,15 +4667,71 @@ func _track_portrait(texture_rect) -> void:
 			return
 	_portrait_refs.append(weakref(texture_rect))
 	_needs_full_refresh = true
+	_refresh_accumulator = REFRESH_INTERVAL
+	var card_root = _find_card_root(texture_rect)
+	if card_root != null and is_instance_valid(card_root):
+		_queue_card_root_refresh(card_root)
+
+
+func _queue_card_root_refresh(card_root) -> void:
+	if card_root == null or !is_instance_valid(card_root):
+		return
+	var card_root_id = card_root.get_instance_id()
+	var existing_entry = _queued_card_root_refreshes.get(card_root_id, {})
+	var remaining_passes = max(int(existing_entry.get("passes", 0)), 1)
+	_queued_card_root_refreshes[card_root_id] = {
+		"ref": weakref(card_root),
+		"passes": remaining_passes
+	}
+	if _queued_card_root_refresh_scheduled:
+		return
+	_queued_card_root_refresh_scheduled = true
+	call_deferred("_flush_queued_card_root_refreshes")
+
+
+func _flush_queued_card_root_refreshes() -> void:
+	_queued_card_root_refresh_scheduled = false
+	var queued_refreshes = _queued_card_root_refreshes
+	_queued_card_root_refreshes = {}
+	var needs_followup := false
+	for card_root_id in queued_refreshes.keys():
+		var entry = queued_refreshes.get(card_root_id, {})
+		if !(entry is Dictionary):
+			continue
+		var card_root_ref = entry.get("ref", null)
+		if !(card_root_ref is WeakRef):
+			continue
+		var card_root = card_root_ref.get_ref()
+		if card_root == null or !is_instance_valid(card_root):
+			continue
+		refresh_card_visuals(card_root)
+		var remaining_passes = int(entry.get("passes", 1)) - 1
+		if remaining_passes > 0:
+			_queued_card_root_refreshes[card_root_id] = {
+				"ref": weakref(card_root),
+				"passes": remaining_passes
+			}
+			needs_followup = true
+	if needs_followup:
+		_queued_card_root_refresh_scheduled = true
+		call_deferred("_flush_queued_card_root_refreshes")
 
 
 func _refresh_tracked_portraits() -> void:
+	var refreshed_card_roots := {}
 	for index in range(_portrait_refs.size() - 1, -1, -1):
 		var texture_rect = _portrait_refs[index].get_ref()
 		if texture_rect == null:
 			_portrait_refs.remove_at(index)
 			continue
-		_refresh_portrait_node(texture_rect)
+		var card_root = _find_card_root(texture_rect)
+		if card_root != null and is_instance_valid(card_root):
+			var card_root_id = card_root.get_instance_id()
+			if !refreshed_card_roots.has(card_root_id):
+				refreshed_card_roots[card_root_id] = true
+				refresh_card_visuals(card_root)
+		else:
+			_refresh_portrait_node(texture_rect)
 
 
 func _get_card_root_source_path(card_root) -> String:
@@ -4491,9 +4744,10 @@ func _get_card_root_source_path(card_root) -> String:
 			if inspect_source != "":
 				return inspect_source
 		current = current.get_parent()
-	var model_source_path = _extract_model_portrait_path(_get_card_model_from_root(card_root))
-	if model_source_path != "":
-		return model_source_path
+	if card_root.has_meta(META_SOURCE_PATH):
+		var card_root_source = _normalize_source_path(String(card_root.get_meta(META_SOURCE_PATH, "")))
+		if card_root_source != "" and _looks_like_card_art_source(card_root_source):
+			return card_root_source
 	var full_art_layer = _get_full_art_layer(card_root)
 	if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
 		var full_art_owner = _normalize_source_path(String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, "")))
@@ -4523,6 +4777,9 @@ func _get_card_root_source_path(card_root) -> String:
 		var portrait_hidden_path = _resolve_texture_source_path(portrait, portrait.texture)
 		if portrait_hidden_path != "":
 			return portrait_hidden_path
+	var model_source_path = _extract_model_portrait_path(_get_card_model_from_root(card_root))
+	if model_source_path != "":
+		return model_source_path
 	return ""
 
 
@@ -4623,6 +4880,8 @@ func _refresh_portrait_node(texture_rect) -> void:
 	var card_root_source_path = _get_card_root_source_path(card_root)
 	var current_path = card_root_source_path if card_root_source_path != "" else _resolve_texture_source_path(texture_rect, current_texture)
 	var stored_source_path = String(texture_rect.get_meta(META_SOURCE_PATH, ""))
+	if card_root != null and current_path != "" and _normalize_source_path(String(card_root.get_meta(META_SOURCE_PATH, ""))) != current_path:
+		card_root.set_meta(META_SOURCE_PATH, current_path)
 	var refresh_signature = _build_refresh_signature(texture_rect, current_texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible)
 	if String(texture_rect.get_meta(META_REFRESH_SIGNATURE, "")) == refresh_signature:
 		_apply_ancient_text_outside_layout(card_root)
@@ -4630,20 +4889,43 @@ func _refresh_portrait_node(texture_rect) -> void:
 
 	if current_path != "" and _looks_like_card_art_source(current_path):
 		var current_root = _find_card_root(texture_rect)
+		var is_native_ancient_card = current_root != null and (_is_card_model_ancient(current_root) or (ancient_visible and !portrait_visible))
 		var full_art_layer = _get_full_art_layer(current_root)
 		if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
 			var owner_path = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
 			if owner_path != "" and owner_path != current_path:
 				_clear_custom_full_art_layer(current_root)
 		if stored_source_path != current_path:
-			if String(texture_rect.name) == "Portrait":
-				_restore_full_art_state(texture_rect)
-			texture_rect.set_meta(META_SOURCE_PATH, current_path)
-			if current_texture is Texture2D:
-				texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
-				texture_rect.set_meta(META_ORIGINAL_TEXTURE, current_texture)
-			texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
-			stored_source_path = current_path
+			if is_native_ancient_card:
+				texture_rect.set_meta(META_SOURCE_PATH, current_path)
+				if current_texture is Texture2D:
+					texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
+					texture_rect.set_meta(META_ORIGINAL_TEXTURE, current_texture)
+				else:
+					texture_rect.remove_meta(META_ORIGINAL_TEXTURE)
+					texture_rect.remove_meta(META_SOURCE_SIZE)
+				texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+				texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
+				stored_source_path = current_path
+			else:
+				_reset_card_root_runtime_visual_state(current_root, true, current_path)
+				current_texture = texture_rect.texture
+				texture_rect.set_meta(META_SOURCE_PATH, current_path)
+				if current_texture is Texture2D:
+					texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
+					texture_rect.set_meta(META_ORIGINAL_TEXTURE, current_texture)
+				else:
+					var restored_to_base = _apply_runtime_base_texture(texture_rect, current_path)
+					if !restored_to_base:
+						_restore_texture_rect_original(texture_rect)
+					current_texture = texture_rect.texture
+				if current_texture is Texture2D:
+					texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
+					texture_rect.set_meta(META_ORIGINAL_TEXTURE, current_texture)
+				else:
+					texture_rect.remove_meta(META_ORIGINAL_TEXTURE)
+					texture_rect.remove_meta(META_SOURCE_SIZE)
+				stored_source_path = current_path
 		elif current_texture is Texture2D and (!texture_rect.has_meta(META_ORIGINAL_TEXTURE) or bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))):
 			texture_rect.set_meta(META_ORIGINAL_TEXTURE, current_texture)
 			texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
@@ -4686,10 +4968,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 		_restore_full_art_state(texture_rect)
 
 	if bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false)):
-		var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null) if texture_rect.has_meta(META_ORIGINAL_TEXTURE) else null
-		if original_texture is Texture2D:
-			texture_rect.texture = original_texture
-		texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+		_restore_texture_rect_original(texture_rect)
 	_apply_ancient_text_outside_layout(card_root)
 	texture_rect.set_meta(META_REFRESH_SIGNATURE, _build_refresh_signature(texture_rect, texture_rect.texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible))
 
