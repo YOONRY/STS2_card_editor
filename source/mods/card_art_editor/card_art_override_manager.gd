@@ -607,10 +607,6 @@ func get_source_path_for_card_node(card_node) -> String:
 	var portrait_canvas_group = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup")
 	var ancient_portrait = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
 	var portrait = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup/Portrait")
-	if card_node.has_meta(META_SOURCE_PATH):
-		var card_node_source = _canonicalize_source_key(String(card_node.get_meta(META_SOURCE_PATH, "")))
-		if card_node_source != "":
-			return card_node_source
 	if portrait_canvas_group != null:
 		var full_art_layer = portrait_canvas_group.get_node_or_null(FULL_ART_LAYER_NAME)
 		if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
@@ -631,6 +627,13 @@ func get_source_path_for_card_node(card_node) -> String:
 		var direct_portrait_path = _resolve_texture_source_path(portrait, portrait.texture)
 		if direct_portrait_path != "":
 			return direct_portrait_path
+	var model_source_path = _canonicalize_source_key(get_source_path_for_model(_get_card_model_from_root(card_node)))
+	if model_source_path != "":
+		return model_source_path
+	if card_node.has_meta(META_SOURCE_PATH):
+		var card_node_source = _canonicalize_source_key(String(card_node.get_meta(META_SOURCE_PATH, "")))
+		if card_node_source != "":
+			return card_node_source
 	var current = card_node
 	while current != null:
 		if current.has_meta(META_INSPECT_SOURCE_PATH):
@@ -642,9 +645,6 @@ func get_source_path_for_card_node(card_node) -> String:
 			if current_source != "":
 				return current_source
 		current = current.get_parent()
-	var model_source_path = _canonicalize_source_key(get_source_path_for_model(_get_card_model_from_root(card_node)))
-	if model_source_path != "":
-		return model_source_path
 	if ancient_portrait is TextureRect:
 		return get_source_path_for_texture_rect(ancient_portrait)
 	if portrait is TextureRect:
@@ -4189,6 +4189,7 @@ func _get_ancient_text_hover_tip_position(card_root, active_text_container = nul
 	var card_rect = _get_card_visual_rect_global(card_root)
 	if card_rect.size.x <= 0.0 or card_rect.size.y <= 0.0:
 		return Vector2.INF
+	var card_center_x = card_rect.position.x + card_rect.size.x * 0.5
 	var right_position = Vector2(card_rect.position.x + card_rect.size.x + 12.0, card_rect.position.y + 24.0)
 	var left_position = Vector2(card_rect.position.x - tooltip_size.x - 12.0, card_rect.position.y + 24.0)
 	var can_place_right = right_position.x + tooltip_size.x <= viewport_rect.position.x + viewport_rect.size.x - margin
@@ -4202,14 +4203,20 @@ func _get_ancient_text_hover_tip_position(card_root, active_text_container = nul
 	if effective_anchor is Control:
 		var text_container := effective_anchor as Control
 		var candidate_anchor = _get_control_rect_global(text_container)
-		if candidate_anchor.size.x > 0.0 and candidate_anchor.size.y > 0.0:
+		var candidate_center_x = candidate_anchor.position.x + candidate_anchor.size.x * 0.5
+		var anchor_on_expected_side = candidate_anchor.size.x > 0.0 and candidate_anchor.size.y > 0.0
+		if anchor_on_expected_side:
+			if prefer_right and candidate_center_x < card_center_x:
+				anchor_on_expected_side = false
+			elif !prefer_right and candidate_center_x > card_center_x:
+				anchor_on_expected_side = false
+		if anchor_on_expected_side:
 			anchor_rect = candidate_anchor
-	if anchor_rect.size.x <= 0.0 or anchor_rect.size.y <= 0.0:
-		var nearby_rect = _find_nearby_hover_tip_rect(card_rect, tooltip_size, prefer_right, _ancient_text_hover_tip)
-		if nearby_rect.size.x > 0.0 and nearby_rect.size.y > 0.0:
-			anchor_rect = nearby_rect
 	if anchor_rect.size.x > 0.0 and anchor_rect.size.y > 0.0:
-		next_position = anchor_rect.position + Vector2(0.0, anchor_rect.size.y + 5.0)
+		var anchor_x = anchor_rect.position.x
+		if !prefer_right:
+			anchor_x = anchor_rect.position.x + anchor_rect.size.x - tooltip_size.x
+		next_position = Vector2(anchor_x, anchor_rect.position.y + anchor_rect.size.y + 5.0)
 		if next_position.y + tooltip_size.y > viewport_rect.position.y + viewport_rect.size.y - margin:
 			next_position.y = anchor_rect.position.y - tooltip_size.y - 5.0
 	next_position.x = clamp(
@@ -4744,10 +4751,6 @@ func _get_card_root_source_path(card_root) -> String:
 			if inspect_source != "":
 				return inspect_source
 		current = current.get_parent()
-	if card_root.has_meta(META_SOURCE_PATH):
-		var card_root_source = _normalize_source_path(String(card_root.get_meta(META_SOURCE_PATH, "")))
-		if card_root_source != "" and _looks_like_card_art_source(card_root_source):
-			return card_root_source
 	var full_art_layer = _get_full_art_layer(card_root)
 	if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
 		var full_art_owner = _normalize_source_path(String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, "")))
@@ -4780,6 +4783,10 @@ func _get_card_root_source_path(card_root) -> String:
 	var model_source_path = _extract_model_portrait_path(_get_card_model_from_root(card_root))
 	if model_source_path != "":
 		return model_source_path
+	if card_root.has_meta(META_SOURCE_PATH):
+		var card_root_source = _normalize_source_path(String(card_root.get_meta(META_SOURCE_PATH, "")))
+		if card_root_source != "" and _looks_like_card_art_source(card_root_source):
+			return card_root_source
 	return ""
 
 
@@ -5090,10 +5097,6 @@ func _resolve_texture_source_path(texture_rect, current_texture: Texture2D) -> S
 			var inspect_source = _normalize_source_path(String(ancestor.get_meta(META_INSPECT_SOURCE_PATH, "")))
 			if inspect_source != "" and _looks_like_card_art_source(inspect_source):
 				return inspect_source
-		if ancestor.has_meta(META_SOURCE_PATH):
-			var ancestor_source = _normalize_source_path(String(ancestor.get_meta(META_SOURCE_PATH, "")))
-			if ancestor_source != "" and _looks_like_card_art_source(ancestor_source):
-				return ancestor_source
 		ancestor = ancestor.get_parent()
 
 	if texture_rect != null and texture_rect.has_meta(META_SOURCE_PATH):

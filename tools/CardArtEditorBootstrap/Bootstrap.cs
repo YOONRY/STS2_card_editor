@@ -324,21 +324,29 @@ public static class Bootstrap
                 string.Equals(model.Id.Entry ?? string.Empty, "INFECTION", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(model.GetType().Name ?? string.Empty, "Infection", StringComparison.OrdinalIgnoreCase);
             var infectionSuppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
-            var hasOverride = !string.IsNullOrEmpty(sourcePath) && manager.Call("has_override", sourcePath).AsBool();
-            var hasAncientTextOutside = !string.IsNullOrEmpty(sourcePath) && manager.Call("is_ancient_text_outside_enabled", sourcePath).AsBool();
-            var needsVisualRefresh = CardNeedsVisualRefresh(cardRoot);
-            if (!hasOverride && !hasAncientTextOutside && !(infectionSuppressionEnabled && isInfectionCard) && !needsVisualRefresh)
+            if (cardRoot is not null)
             {
-                return;
+                cardRoot.SetMeta("_card_art_source_path", sourcePath);
             }
 
             UpdateInspectCardMetadataFromCard(card);
-            if (cardRoot is not null)
+
+            var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
+            if (portrait is not null)
             {
-                manager.Call("refresh_card_visuals", cardRoot);
+                manager.Call("apply_override_to_texture_rect", portrait);
             }
 
-            TrySuppressSpecialCardEffects(card);
+            var ancientPortrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/AncientPortrait");
+            if (ancientPortrait is not null)
+            {
+                manager.Call("apply_override_to_texture_rect", ancientPortrait);
+            }
+
+            if (infectionSuppressionEnabled && isInfectionCard)
+            {
+                TrySuppressSpecialCardEffects(card);
+            }
         }
         catch (Exception ex)
         {
