@@ -60,7 +60,7 @@ const ANCIENT_TEXT_OUTSIDE_OFFSETS := {
 signal overrides_changed(source_path)
 signal art_packs_changed()
 
-var _portrait_refs := []
+var _portrait_refs: Dictionary = {}
 var _manifest := {}
 var _art_pack_registry := {"packs": {}}
 var _override_texture_cache := {}
@@ -3171,10 +3171,14 @@ func _apply_runtime_base_texture(texture_rect, source_path: String, restore_full
 
 
 func _clear_source_overrides_from_tracked_portraits(source_path: String) -> void:
-	for index in range(_portrait_refs.size() - 1, -1, -1):
-		var texture_rect = _portrait_refs[index].get_ref()
+	for portrait_id in _portrait_refs.keys():
+		var portrait_ref = _portrait_refs.get(portrait_id, null)
+		if !(portrait_ref is WeakRef):
+			_portrait_refs.erase(portrait_id)
+			continue
+		var texture_rect = portrait_ref.get_ref()
 		if texture_rect == null:
-			_portrait_refs.remove_at(index)
+			_portrait_refs.erase(portrait_id)
 			continue
 		var card_root = _find_card_root(texture_rect)
 		var tracked_source = String(texture_rect.get_meta(META_SOURCE_PATH, ""))
@@ -4008,9 +4012,14 @@ func _find_hovered_card_root_from_tracked_portraits(mouse_position: Vector2, all
 	var seen_card_roots := {}
 	var best_card_root = null
 	var best_score := INF
-	for index in range(_portrait_refs.size() - 1, -1, -1):
-		var texture_rect = _portrait_refs[index].get_ref()
+	for portrait_id in _portrait_refs.keys():
+		var portrait_ref = _portrait_refs.get(portrait_id, null)
+		if !(portrait_ref is WeakRef):
+			_portrait_refs.erase(portrait_id)
+			continue
+		var texture_rect = portrait_ref.get_ref()
 		if texture_rect == null:
+			_portrait_refs.erase(portrait_id)
 			continue
 		var card_root = _find_card_root(texture_rect)
 		if card_root == null or seen_card_roots.has(card_root):
@@ -4647,10 +4656,13 @@ func _register_existing(node) -> void:
 
 
 func _track_portrait(texture_rect) -> void:
-	for ref in _portrait_refs:
-		if ref.get_ref() == texture_rect:
-			return
-	_portrait_refs.append(weakref(texture_rect))
+	if texture_rect == null or !is_instance_valid(texture_rect):
+		return
+	var portrait_id = texture_rect.get_instance_id()
+	var existing_ref = _portrait_refs.get(portrait_id, null)
+	if existing_ref is WeakRef and existing_ref.get_ref() == texture_rect:
+		return
+	_portrait_refs[portrait_id] = weakref(texture_rect)
 	_needs_full_refresh = true
 	_refresh_accumulator = REFRESH_INTERVAL
 	var card_root = _find_card_root(texture_rect)
@@ -4704,10 +4716,14 @@ func _flush_queued_card_root_refreshes() -> void:
 
 func _refresh_tracked_portraits() -> void:
 	var refreshed_card_roots := {}
-	for index in range(_portrait_refs.size() - 1, -1, -1):
-		var texture_rect = _portrait_refs[index].get_ref()
+	for portrait_id in _portrait_refs.keys():
+		var portrait_ref = _portrait_refs.get(portrait_id, null)
+		if !(portrait_ref is WeakRef):
+			_portrait_refs.erase(portrait_id)
+			continue
+		var texture_rect = portrait_ref.get_ref()
 		if texture_rect == null:
-			_portrait_refs.remove_at(index)
+			_portrait_refs.erase(portrait_id)
 			continue
 		var card_root = _find_card_root(texture_rect)
 		if card_root != null and is_instance_valid(card_root):
@@ -4776,10 +4792,12 @@ func _get_card_root_source_path(card_root) -> String:
 
 func _build_refresh_signature(texture_rect, current_texture, stored_source_path: String, current_path: String, card_root, portrait_visible: bool, ancient_visible: bool) -> String:
 	var node_name = String(texture_rect.name)
-	var texture_size := Vector2i.ZERO
+	var texture_width := 0
+	var texture_height := 0
 	var texture_path := ""
 	if current_texture is Texture2D:
-		texture_size = Vector2i(current_texture.get_width(), current_texture.get_height())
+		texture_width = current_texture.get_width()
+		texture_height = current_texture.get_height()
 		texture_path = String(current_texture.resource_path)
 	var full_art_active := false
 	var full_art_owner := ""
@@ -4803,23 +4821,23 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 			var entry_frame_paths = entry.get("frame_paths", [])
 			if entry_frame_paths is Array:
 				frame_count = entry_frame_paths.size()
-	return JSON.stringify({
-		"node": node_name,
-		"tracked": tracked_source_path,
-		"stored": stored_source_path,
-		"override": has_override_for_path,
-		"mode": display_mode,
-		"entry_type": entry_type,
-		"entry_updated_at": entry_updated_at,
-		"frame_count": frame_count,
-		"portrait_visible": portrait_visible,
-		"ancient_visible": ancient_visible,
-		"full_art_active": full_art_active,
-		"full_art_owner": full_art_owner,
-		"texture_path": texture_path,
-		"texture_size": [texture_size.x, texture_size.y],
-		"override_active": bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))
-	})
+	return "|".join(PackedStringArray([
+		node_name,
+		tracked_source_path,
+		stored_source_path,
+		"1" if has_override_for_path else "0",
+		display_mode,
+		entry_type,
+		entry_updated_at,
+		str(frame_count),
+		"1" if portrait_visible else "0",
+		"1" if ancient_visible else "0",
+		"1" if full_art_active else "0",
+		full_art_owner,
+		texture_path,
+		"%d,%d" % [texture_width, texture_height],
+		"1" if bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false)) else "0"
+	]))
 
 
 func _refresh_portrait_node(texture_rect) -> void:
@@ -4879,7 +4897,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 		return
 
 	if current_path != "" and _looks_like_card_art_source(current_path):
-		var current_root = _find_card_root(texture_rect)
+		var current_root = card_root
 		var is_native_ancient_card = current_root != null and (_is_card_model_ancient(current_root) or (ancient_visible and !portrait_visible))
 		var preserve_native_ancient_layout = is_native_ancient_card and !is_full_art_mode(current_path)
 		if preserve_native_ancient_layout:
