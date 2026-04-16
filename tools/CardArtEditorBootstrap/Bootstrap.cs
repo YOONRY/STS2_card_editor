@@ -15,6 +15,7 @@ namespace CardArtEditorBootstrap;
 public static class Bootstrap
 {
     private static readonly Harmony Harmony = new("ysg05.card_art_editor");
+    private static readonly HashSet<string> LoggedCardEffectTrees = new();
     private static bool _loggedManagerLoadFailure;
     private static bool _loggedManagerInstantiateFailure;
     private static bool _loggedOverlayLoadFailure;
@@ -151,6 +152,7 @@ public static class Bootstrap
     {
         if (screen.GetNodeOrNull<Node>("CardArtEditorOverlay") is not null)
         {
+            Log("Overlay already attached.");
             return;
         }
 
@@ -169,6 +171,38 @@ public static class Bootstrap
         var overlay = overlayScene.Instantiate<Control>();
         overlay.Name = "CardArtEditorOverlay";
         screen.AddChild(overlay);
+        var overlayScript = overlay.GetScript();
+        var overlayScriptText = overlayScript.VariantType == Variant.Type.Nil ? "<null>" : overlayScript.ToString();
+        var button = overlay.GetNodeOrNull<Button>("EditArtButton");
+        var popup = overlay.GetNodeOrNull<Control>("EditorPopup");
+        Log(
+            "Overlay attached. " +
+            $"overlay_type={overlay.GetType().FullName}, " +
+            $"script={overlayScriptText}, " +
+            $"has_edit_method={overlay.HasMethod("_on_edit_art_pressed")}, " +
+            $"has_open_method={overlay.HasMethod("_open_editor_popup")}, " +
+            $"button_exists={button is not null}, " +
+            $"popup_exists={popup is not null}"
+        );
+
+        if (button is not null)
+        {
+            Log(
+                "EditArtButton state: " +
+                $"visible={button.Visible}, disabled={button.Disabled}, " +
+                $"position={button.Position}, size={button.Size}, mouse_filter={(int)button.MouseFilter}"
+            );
+            button.Pressed += () =>
+            {
+                var currentPopup = overlay.GetNodeOrNull<Control>("EditorPopup");
+                Log(
+                    "EditArtButton pressed from bootstrap. " +
+                    $"overlay_has_method={overlay.HasMethod("_on_edit_art_pressed")}, " +
+                    $"popup_exists={currentPopup is not null}, " +
+                    $"popup_visible_before={(currentPopup is null ? "<null>" : currentPopup.Visible.ToString())}"
+                );
+            };
+        }
     }
 
     private static void Log(string message)
@@ -222,6 +256,12 @@ public static class Bootstrap
                     card.SetMeta(InspectCardIdMeta, string.Empty);
                 }
 
+                var metadataCleared = existingSourcePath != string.Empty || existingCardId != string.Empty;
+                if (metadataCleared && manager is not null && cardRoot is not null)
+                {
+                    manager.Call("refresh_card_visuals", cardRoot);
+                }
+
                 return;
             }
 
@@ -233,16 +273,24 @@ public static class Bootstrap
             var currentCardId = card.HasMeta(InspectCardIdMeta)
                 ? card.GetMeta(InspectCardIdMeta, string.Empty).AsString()
                 : string.Empty;
+            var metadataChanged = false;
+
             if (currentSourcePath != nextSourcePath)
             {
                 card.SetMeta(InspectSourcePathMeta, nextSourcePath);
+                metadataChanged = true;
             }
 
             if (currentCardId != nextCardId)
             {
                 card.SetMeta(InspectCardIdMeta, nextCardId);
+                metadataChanged = true;
             }
 
+            if (metadataChanged && manager is not null && cardRoot is not null)
+            {
+                manager.Call("refresh_card_visuals", cardRoot);
+            }
         }
         catch (Exception ex)
         {
@@ -276,29 +324,29 @@ public static class Bootstrap
                 string.Equals(model.Id.Entry ?? string.Empty, "INFECTION", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(model.GetType().Name ?? string.Empty, "Infection", StringComparison.OrdinalIgnoreCase);
             var infectionSuppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
-            var hasOverride = !string.IsNullOrEmpty(sourcePath) && manager.Call("has_override", sourcePath).AsBool();
-            var hasAncientTextOutside = !string.IsNullOrEmpty(sourcePath) && manager.Call("is_ancient_text_outside_enabled", sourcePath).AsBool();
-            var needsVisualRefresh = CardNeedsVisualRefresh(cardRoot);
-            if (!hasOverride && !hasAncientTextOutside && !(infectionSuppressionEnabled && isInfectionCard) && !needsVisualRefresh)
-            {
-                return;
-            }
-
             if (cardRoot is not null)
             {
-                cardRoot.SetMeta(SourcePathMeta, sourcePath);
-                if (IsNodeInInspectScreen(cardRoot))
-                {
-                    UpdateInspectCardMetadataFromCard(card);
-                    manager.Call("request_card_root_refresh", cardRoot, 1);
-                }
-                else
-                {
-                    manager.Call("request_card_root_refresh", cardRoot, 1);
-                }
+                cardRoot.SetMeta("_card_art_source_path", sourcePath);
             }
 
-            TrySuppressSpecialCardEffects(card);
+            UpdateInspectCardMetadataFromCard(card);
+
+            var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
+            if (portrait is not null)
+            {
+                manager.Call("apply_override_to_texture_rect", portrait);
+            }
+
+            var ancientPortrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/AncientPortrait");
+            if (ancientPortrait is not null)
+            {
+                manager.Call("apply_override_to_texture_rect", ancientPortrait);
+            }
+
+            if (infectionSuppressionEnabled && isInfectionCard)
+            {
+                TrySuppressSpecialCardEffects(card);
+            }
         }
         catch (Exception ex)
         {
@@ -333,6 +381,13 @@ public static class Bootstrap
                 return;
             }
 
+            var logKey = $"{cardId}:{card.Name}";
+            if (LoggedCardEffectTrees.Add(logKey))
+            {
+                Log($"Infection card detected. Dumping node tree for {logKey}.");
+                DumpNodeTree(card, 0);
+            }
+
             HideInfectionEffectNodes(card);
         }
         catch (Exception ex)
@@ -349,12 +404,14 @@ public static class Bootstrap
             model = card.Model;
             return model is not null;
         }
-        catch (ModelNotFoundException)
+        catch (ModelNotFoundException ex)
         {
+            Log($"Skipping card '{card?.Name}' because model lookup failed: {ex.Message}");
             return false;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Log($"Unexpected card model lookup failure for '{card?.Name}': {ex}");
             return false;
         }
     }
@@ -442,22 +499,6 @@ public static class Bootstrap
         return false;
     }
 
-    private static bool IsNodeInInspectScreen(Node? node)
-    {
-        var current = node;
-        while (current is not null && GodotObject.IsInstanceValid(current))
-        {
-            if (string.Equals(current.Name?.ToString(), "InspectCardScreen", StringComparison.Ordinal))
-            {
-                return true;
-            }
-
-            current = current.GetParent();
-        }
-
-        return false;
-    }
-
     private static void HideInfectionEffectNodes(Node root)
     {
         foreach (var child in root.GetChildren())
@@ -489,9 +530,30 @@ public static class Bootstrap
                 {
                     canvasItem.Visible = false;
                 }
+                Log($"Suppressed Infection effect node: {childNode.GetPath()} [{childNode.GetType().Name}]");
             }
 
             HideInfectionEffectNodes(childNode);
+        }
+    }
+
+    private static void DumpNodeTree(Node node, int depth)
+    {
+        if (depth > 6)
+        {
+            return;
+        }
+
+        var indent = new string(' ', depth * 2);
+        var visibleInfo = node is CanvasItem canvasItem ? $" visible={canvasItem.Visible}" : string.Empty;
+        Log($"{indent}- {node.GetPath()} [{node.GetType().FullName}]{visibleInfo}");
+
+        foreach (var child in node.GetChildren())
+        {
+            if (child is Node childNode)
+            {
+                DumpNodeTree(childNode, depth + 1);
+            }
         }
     }
 

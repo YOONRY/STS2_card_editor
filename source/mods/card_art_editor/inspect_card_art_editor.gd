@@ -1471,15 +1471,6 @@ func _on_display_mode_pressed() -> void:
 		return
 	_current_source_path = source_path
 	var result = manager.toggle_display_mode(source_path)
-	var inspect_card = _get_inspect_card()
-	if inspect_card != null:
-		var card_root = inspect_card.get_node_or_null("CardContainer")
-		if card_root != null and manager.has_method("request_card_root_refresh"):
-			manager.request_card_root_refresh(card_root, 2)
-	if manager.has_method("request_source_path_refresh"):
-		manager.request_source_path_refresh(source_path, 2)
-	if manager.has_method("refresh_all_portraits"):
-		manager.refresh_all_portraits()
 	_set_status(String(result.get("message", "Unknown display mode result.")), !bool(result.get("ok", false)))
 	_update_context(true)
 
@@ -1626,14 +1617,6 @@ func _on_ancient_text_outside_pressed() -> void:
 		_ancient_text_outside_by_source = manager.get_ancient_text_outside_settings()
 	_save_ui_settings()
 	var inspect_card = _get_inspect_card()
-	if inspect_card != null:
-		var card_root = inspect_card.get_node_or_null("CardContainer")
-		if card_root != null and manager.has_method("request_card_root_refresh"):
-			manager.request_card_root_refresh(card_root, 2)
-	if manager.has_method("request_source_path_refresh"):
-		manager.request_source_path_refresh(source_path, 2)
-	if manager.has_method("refresh_all_portraits"):
-		manager.refresh_all_portraits()
 	if inspect_card != null and inspect_card.has_method("Reload"):
 		inspect_card.call_deferred("Reload")
 	var screen = get_parent()
