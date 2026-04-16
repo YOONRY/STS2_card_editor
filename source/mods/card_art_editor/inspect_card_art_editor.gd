@@ -510,6 +510,7 @@ func _refresh_ancient_text_outside_button() -> void:
 	var source_path = _get_effective_source_path()
 	var visible = _is_current_ancient_text_outside_supported_card() and source_path != ""
 	_ancient_text_outside_button.visible = visible
+	_ancient_text_outside_button.disabled = !visible or manager == null
 	if !visible or manager == null:
 		return
 	var enabled = bool(manager.is_ancient_text_outside_enabled(source_path))

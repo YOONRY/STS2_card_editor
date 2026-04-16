@@ -1630,29 +1630,7 @@ func _register_art_pack_animated_entry(pack_id: String, source_path: String, ima
 
 
 func _resolve_art_pack_ancient_text_outside(card_entry: Dictionary, source_path: String) -> bool:
-	source_path = _canonicalize_source_key(source_path)
-	if card_entry.has("ancient_text_outside"):
-		return bool(card_entry.get("ancient_text_outside", false))
-	if is_ancient_text_outside_enabled(source_path):
-		return true
-	if is_full_art_mode(source_path):
-		return true
-	var existing_entry = _manifest.get(source_path, null)
-	var display_mode = String(card_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
-	if display_mode == DISPLAY_MODE_DEFAULT and existing_entry is Dictionary:
-		display_mode = String(existing_entry.get("display_mode", DISPLAY_MODE_DEFAULT))
-	if display_mode == DISPLAY_MODE_FULL_ART:
-		return true
-	var adjust_zoom = float(card_entry.get("adjust_zoom", 1.0))
-	var adjust_offset_x = absf(float(card_entry.get("adjust_offset_x", 0.0)))
-	var adjust_offset_y = absf(float(card_entry.get("adjust_offset_y", 0.0)))
-	if absf(adjust_zoom - 1.0) > 0.001 or adjust_offset_x > 0.001 or adjust_offset_y > 0.001:
-		return true
-	var width = int(card_entry.get("width", 0))
-	var height = int(card_entry.get("height", 0))
-	if width > 0 and height > width:
-		return true
-	return _normalize_source_path(source_path).contains("ancient")
+	return false
 
 
 func _activate_registered_art_pack_entry(source_path: String, card_entry: Dictionary, pack_id: String, pack_name: String) -> Dictionary:
@@ -4768,6 +4746,12 @@ func _get_card_root_source_path(card_root) -> String:
 		var portrait_path = _resolve_texture_source_path(portrait, portrait.texture)
 		if portrait_path != "":
 			return portrait_path
+	var ancestor = card_root
+	while ancestor != null:
+		var model_path = _extract_model_portrait_path(ancestor.get("Model"))
+		if model_path != "":
+			return model_path
+		ancestor = ancestor.get_parent()
 	if ancient_visible:
 		return ""
 	if portrait_visible:
@@ -4897,13 +4881,26 @@ func _refresh_portrait_node(texture_rect) -> void:
 	if current_path != "" and _looks_like_card_art_source(current_path):
 		var current_root = _find_card_root(texture_rect)
 		var is_native_ancient_card = current_root != null and (_is_card_model_ancient(current_root) or (ancient_visible and !portrait_visible))
+		var preserve_native_ancient_layout = is_native_ancient_card and !is_full_art_mode(current_path)
+		if preserve_native_ancient_layout:
+			if String(texture_rect.name) == "AncientPortrait":
+				if _apply_runtime_base_texture(texture_rect, current_path, false):
+					current_texture = texture_rect.texture
+				if texture_rect is CanvasItem:
+					(texture_rect as CanvasItem).visible = true
+				texture_rect.self_modulate = Color(1, 1, 1, 1)
+			else:
+				var resolved_native_path = _resolve_texture_source_path(texture_rect, current_texture) if current_texture is Texture2D else ""
+				if resolved_native_path == "" or resolved_native_path != current_path:
+					if _apply_runtime_base_texture(texture_rect, current_path, false):
+						current_texture = texture_rect.texture
 		var full_art_layer = _get_full_art_layer(current_root)
 		if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
 			var owner_path = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
 			if owner_path != "" and owner_path != current_path:
 				_clear_custom_full_art_layer(current_root)
 		if stored_source_path != current_path:
-			if is_native_ancient_card:
+			if preserve_native_ancient_layout:
 				texture_rect.set_meta(META_SOURCE_PATH, current_path)
 				if current_texture is Texture2D:
 					texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))

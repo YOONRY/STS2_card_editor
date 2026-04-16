@@ -234,9 +234,6 @@ public static class Bootstrap
                 return;
             }
 
-            var manager = TryEnsureManager();
-            var cardRoot = card.GetNodeOrNull<Node>("CardContainer");
-
             if (!TryGetCardModel(card, out var model) || model is null)
             {
                 var existingSourcePath = card.HasMeta(InspectSourcePathMeta)
@@ -256,12 +253,6 @@ public static class Bootstrap
                     card.SetMeta(InspectCardIdMeta, string.Empty);
                 }
 
-                var metadataCleared = existingSourcePath != string.Empty || existingCardId != string.Empty;
-                if (metadataCleared && manager is not null && cardRoot is not null)
-                {
-                    manager.Call("refresh_card_visuals", cardRoot);
-                }
-
                 return;
             }
 
@@ -273,23 +264,14 @@ public static class Bootstrap
             var currentCardId = card.HasMeta(InspectCardIdMeta)
                 ? card.GetMeta(InspectCardIdMeta, string.Empty).AsString()
                 : string.Empty;
-            var metadataChanged = false;
-
             if (currentSourcePath != nextSourcePath)
             {
                 card.SetMeta(InspectSourcePathMeta, nextSourcePath);
-                metadataChanged = true;
             }
 
             if (currentCardId != nextCardId)
             {
                 card.SetMeta(InspectCardIdMeta, nextCardId);
-                metadataChanged = true;
-            }
-
-            if (metadataChanged && manager is not null && cardRoot is not null)
-            {
-                manager.Call("refresh_card_visuals", cardRoot);
             }
         }
         catch (Exception ex)
