@@ -49,6 +49,7 @@ const FULL_ART_INSET_STATIC := 0
 const FULL_ART_INSET_ANIMATED := 0
 const STARTUP_RESCAN_FRAMES := 0
 const STARTUP_RESCAN_STEP_INTERVAL := 6
+const MERCHANT_ROOM_REFRESH_DELAY_FRAMES := 2
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.1
 const ANCIENT_TEXT_OUTSIDE_OFFSETS := {
 	"left": -154.0,
@@ -98,6 +99,7 @@ var _hover_tips_container_cache: Node = null
 var _inspect_screen_refs := []
 var _queued_card_root_refreshes := {}
 var _queued_card_root_refresh_scheduled := false
+var _queued_merchant_room_refreshes := {}
 
 
 func _ready() -> void:
@@ -3107,8 +3109,10 @@ func apply_override_to_texture_rect(texture_rect) -> void:
 	_refresh_portrait_node(texture_rect)
 
 
-func refresh_card_visuals(card_root) -> void:
+func refresh_card_visuals(card_root, allow_merchant := false) -> void:
 	if card_root == null or !is_instance_valid(card_root):
+		return
+	if !allow_merchant and _is_in_merchant_room(card_root):
 		return
 	var portrait = _find_named_descendant(card_root, "Portrait")
 	if portrait is TextureRect:
@@ -3429,6 +3433,71 @@ func _is_card_root_in_inspect_screen(card_root) -> bool:
 			return true
 		current = current.get_parent()
 	return false
+
+
+func _get_merchant_room(node):
+	var current = node
+	while current != null and is_instance_valid(current):
+		if String(current.name) == "MerchantRoom":
+			return current
+		current = current.get_parent()
+	return null
+
+
+func _is_in_merchant_room(node) -> bool:
+	return _get_merchant_room(node) != null
+
+
+func _schedule_merchant_room_refresh(merchant_room) -> void:
+	if merchant_room == null or !is_instance_valid(merchant_room):
+		return
+	var merchant_room_id = merchant_room.get_instance_id()
+	if _queued_merchant_room_refreshes.has(merchant_room_id):
+		return
+	_queued_merchant_room_refreshes[merchant_room_id] = weakref(merchant_room)
+	call_deferred("_refresh_merchant_room_after_delay", merchant_room_id)
+
+
+func _collect_card_roots(node, output: Array) -> void:
+	if node == null or !is_instance_valid(node):
+		return
+	if String(node.name) == "CardContainer":
+		output.append(node)
+		return
+	for child in node.get_children():
+		_collect_card_roots(child, output)
+
+
+func _refresh_merchant_room_cards(merchant_room) -> void:
+	if merchant_room == null or !is_instance_valid(merchant_room):
+		return
+	var slots_container = merchant_room.get_node_or_null("Inventory/SlotsContainer")
+	if slots_container == null or !is_instance_valid(slots_container):
+		return
+	var card_roots: Array = []
+	_collect_card_roots(slots_container, card_roots)
+	for card_root in card_roots:
+		if card_root == null or !is_instance_valid(card_root):
+			continue
+		if !card_root.is_inside_tree():
+			continue
+		refresh_card_visuals(card_root, true)
+
+
+func _refresh_merchant_room_after_delay(merchant_room_id: int) -> void:
+	for _pass_index in range(MERCHANT_ROOM_REFRESH_DELAY_FRAMES):
+		await get_tree().process_frame
+	var merchant_room_ref = _queued_merchant_room_refreshes.get(merchant_room_id, null)
+	_queued_merchant_room_refreshes.erase(merchant_room_id)
+	if !(merchant_room_ref is WeakRef):
+		return
+	var merchant_room = merchant_room_ref.get_ref()
+	if merchant_room == null or !is_instance_valid(merchant_room):
+		return
+	_refresh_merchant_room_cards(merchant_room)
+	await get_tree().process_frame
+	if merchant_room != null and is_instance_valid(merchant_room):
+		_refresh_merchant_room_cards(merchant_room)
 
 
 func _is_node_in_active_inspect_screen(node) -> bool:
@@ -4637,7 +4706,9 @@ func _restore_texture_rect_original(texture_rect) -> void:
 
 
 func _on_node_added(node) -> void:
-	if _is_portrait_node(node):
+	if String(node.name) == "MerchantRoom":
+		_schedule_merchant_room_refresh(node)
+	elif _is_portrait_node(node):
 		_track_portrait(node)
 	elif node is Control and String(node.name) == "InspectCardScreen":
 		_track_inspect_screen(node)
@@ -4645,7 +4716,9 @@ func _on_node_added(node) -> void:
 
 
 func _register_existing(node) -> void:
-	if _is_portrait_node(node):
+	if String(node.name) == "MerchantRoom":
+		_schedule_merchant_room_refresh(node)
+	elif _is_portrait_node(node):
 		_track_portrait(node)
 	elif node is Control and String(node.name) == "InspectCardScreen":
 		_track_inspect_screen(node)
@@ -4658,6 +4731,11 @@ func _register_existing(node) -> void:
 func _track_portrait(texture_rect) -> void:
 	if texture_rect == null or !is_instance_valid(texture_rect):
 		return
+	var card_root = _find_card_root(texture_rect)
+	var merchant_room = _get_merchant_room(card_root if card_root != null else texture_rect)
+	if merchant_room != null:
+		_schedule_merchant_room_refresh(merchant_room)
+		return
 	var portrait_id = texture_rect.get_instance_id()
 	var existing_ref = _portrait_refs.get(portrait_id, null)
 	if existing_ref is WeakRef and existing_ref.get_ref() == texture_rect:
@@ -4665,7 +4743,6 @@ func _track_portrait(texture_rect) -> void:
 	_portrait_refs[portrait_id] = weakref(texture_rect)
 	_needs_full_refresh = true
 	_refresh_accumulator = REFRESH_INTERVAL
-	var card_root = _find_card_root(texture_rect)
 	if card_root != null and is_instance_valid(card_root):
 		_queue_card_root_refresh(card_root)
 
@@ -4727,6 +4804,9 @@ func _refresh_tracked_portraits() -> void:
 			continue
 		var card_root = _find_card_root(texture_rect)
 		if card_root != null and is_instance_valid(card_root):
+			if _is_in_merchant_room(card_root):
+				_portrait_refs.erase(portrait_id)
+				continue
 			var card_root_id = card_root.get_instance_id()
 			if !refreshed_card_roots.has(card_root_id):
 				refreshed_card_roots[card_root_id] = true

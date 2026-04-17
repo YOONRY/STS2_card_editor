@@ -56,6 +56,12 @@ public static class Bootstrap
                 return;
             }
 
+            if (!string.Equals(screen.Name?.ToString(), "InspectCardScreen", StringComparison.Ordinal))
+            {
+                Log($"Skipping overlay attach for non-inspect screen: {screen.Name}");
+                return;
+            }
+
             var manager = TryEnsureManager();
             if (manager is null)
             {
@@ -219,11 +225,99 @@ public static class Bootstrap
         }
     }
 
+    private static bool IsInMerchantRoom(Node? node)
+    {
+        var current = node;
+        while (current is not null && GodotObject.IsInstanceValid(current))
+        {
+            var nodeName = current.Name?.ToString() ?? string.Empty;
+            var typeName = current.GetType().Name ?? string.Empty;
+            if (string.Equals(nodeName, "MerchantRoom", StringComparison.Ordinal) ||
+                string.Equals(typeName, "NMerchantRoom", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            current = current.GetParent();
+        }
+
+        return false;
+    }
+
+    private static void CollectCardRoots(Node node, List<Node> output)
+    {
+        if (!GodotObject.IsInstanceValid(node))
+        {
+            return;
+        }
+
+        if (string.Equals(node.Name?.ToString(), "CardContainer", StringComparison.Ordinal))
+        {
+            output.Add(node);
+            return;
+        }
+
+        foreach (var child in node.GetChildren())
+        {
+            if (child is Node childNode)
+            {
+                CollectCardRoots(childNode, output);
+            }
+        }
+    }
+
+    internal static void QueueMerchantRoomCardRefresh(Node merchantRoom)
+    {
+        try
+        {
+            if (merchantRoom is null || !GodotObject.IsInstanceValid(merchantRoom))
+            {
+                return;
+            }
+
+            var manager = TryEnsureManager();
+            if (manager is null)
+            {
+                return;
+            }
+
+            var slotsContainer = merchantRoom.GetNodeOrNull<Node>("Inventory/SlotsContainer");
+            if (slotsContainer is null || !GodotObject.IsInstanceValid(slotsContainer))
+            {
+                Log($"Merchant room refresh skipped: slots container missing for {merchantRoom.Name}.");
+                return;
+            }
+
+            var cardRoots = new List<Node>();
+            CollectCardRoots(slotsContainer, cardRoots);
+            foreach (var cardRoot in cardRoots)
+            {
+                if (!cardRoot.IsInsideTree())
+                {
+                    continue;
+                }
+
+                manager.Call("queue_card_root_refresh", cardRoot);
+            }
+
+            Log($"Queued merchant room refresh for {cardRoots.Count} card roots.");
+        }
+        catch (Exception ex)
+        {
+            Log("QueueMerchantRoomCardRefresh failed: " + ex);
+        }
+    }
+
     internal static void UpdateInspectCardMetadata(NInspectCardScreen screen)
     {
         try
         {
             if (screen is null || !GodotObject.IsInstanceValid(screen))
+            {
+                return;
+            }
+
+            if (!string.Equals(screen.Name?.ToString(), "InspectCardScreen", StringComparison.Ordinal))
             {
                 return;
             }
@@ -312,6 +406,11 @@ public static class Bootstrap
             }
 
             UpdateInspectCardMetadataFromCard(card);
+
+            if (IsInMerchantRoom(cardRoot ?? card))
+            {
+                return;
+            }
 
             var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
             if (portrait is not null)
