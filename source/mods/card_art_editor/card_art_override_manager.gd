@@ -123,7 +123,7 @@ func _process(delta: float) -> void:
 	_ancient_text_hover_refresh_accumulator += delta
 	if _ancient_text_hover_refresh_accumulator >= ANCIENT_TEXT_HOVER_REFRESH_INTERVAL:
 		_ancient_text_hover_refresh_accumulator = 0.0
-		if _is_card_art_editor_popup_visible():
+		if _is_card_art_editor_popup_visible() or _is_card_library_visible():
 			_hide_ancient_text_hover_tip()
 		else:
 			_refresh_ancient_text_hover_tip()
@@ -3913,6 +3913,15 @@ func _is_card_art_editor_popup_visible() -> bool:
 	return editor_popup is CanvasItem and (editor_popup as CanvasItem).visible
 
 
+func _is_card_library_visible() -> bool:
+	var tree = get_tree()
+	var root = tree.root if tree != null else null
+	if root == null:
+		return false
+	var card_library = root.find_child("CardLibrary", true, false)
+	return card_library is CanvasItem and (card_library as CanvasItem).visible
+
+
 func _find_active_text_hover_tip_container(card_root = null):
 	var hover_tips_container = _get_hover_tips_container()
 	if hover_tips_container == null:
@@ -4301,6 +4310,9 @@ func _position_ancient_text_hover_tip(card_root, active_text_container = null) -
 
 
 func _refresh_ancient_text_hover_tip() -> void:
+	if _is_card_library_visible():
+		_hide_ancient_text_hover_tip()
+		return
 	var any_active_text_container = _find_active_text_hover_tip_container()
 	var hovered_card_root = _find_hovered_card_root(any_active_text_container != null)
 	var hovered_control = _get_gui_hovered_control()
@@ -4742,9 +4754,6 @@ func _track_portrait(texture_rect) -> void:
 		return
 	_portrait_refs[portrait_id] = weakref(texture_rect)
 	_needs_full_refresh = true
-	_refresh_accumulator = REFRESH_INTERVAL
-	if card_root != null and is_instance_valid(card_root):
-		_queue_card_root_refresh(card_root)
 
 
 func _queue_card_root_refresh(card_root) -> void:
