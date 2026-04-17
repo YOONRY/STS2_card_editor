@@ -28,6 +28,7 @@ public static class Bootstrap
     internal const string OverrideActiveMeta = "_card_art_override_active";
     internal const string FullArtActiveMeta = "_card_art_full_art_active";
     internal const string FullArtOwnerPathMeta = "_card_art_full_art_owner_path";
+    internal const string SpecialStackScreenMeta = "_card_art_special_stack_screen";
 
     public static void Init()
     {
@@ -244,6 +245,46 @@ public static class Bootstrap
         return false;
     }
 
+    private static bool IsInChooseABundleSelectionScreen(Node? node)
+    {
+        var current = node;
+        while (current is not null && GodotObject.IsInstanceValid(current))
+        {
+            var nodeName = current.Name?.ToString() ?? string.Empty;
+            var typeName = current.GetType().Name ?? string.Empty;
+            if (nodeName.IndexOf("ChooseABundle", StringComparison.Ordinal) >= 0 ||
+                typeName.IndexOf("ChooseABundle", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+
+            current = current.GetParent();
+        }
+
+        return false;
+    }
+
+    private static bool IsEffectivelyVisible(Node? node)
+    {
+        var current = node;
+        var sawCanvasItem = false;
+        while (current is not null && GodotObject.IsInstanceValid(current))
+        {
+            if (current is CanvasItem canvasItem)
+            {
+                sawCanvasItem = true;
+                if (!canvasItem.Visible || canvasItem.SelfModulate.A <= 0.001f)
+                {
+                    return false;
+                }
+            }
+
+            current = current.GetParent();
+        }
+
+        return sawCanvasItem;
+    }
+
     private static void CollectCardRoots(Node node, List<Node> output)
     {
         if (!GodotObject.IsInstanceValid(node))
@@ -400,14 +441,21 @@ public static class Bootstrap
                 string.Equals(model.Id.Entry ?? string.Empty, "INFECTION", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(model.GetType().Name ?? string.Empty, "Infection", StringComparison.OrdinalIgnoreCase);
             var infectionSuppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
+            var isSpecialStackScreen = IsInChooseABundleSelectionScreen(cardRoot ?? card);
             if (cardRoot is not null)
             {
                 cardRoot.SetMeta("_card_art_source_path", sourcePath);
+                cardRoot.SetMeta(SpecialStackScreenMeta, isSpecialStackScreen);
             }
 
             UpdateInspectCardMetadataFromCard(card);
 
             if (IsInMerchantRoom(cardRoot ?? card))
+            {
+                return;
+            }
+
+            if (isSpecialStackScreen && !IsEffectivelyVisible(cardRoot))
             {
                 return;
             }

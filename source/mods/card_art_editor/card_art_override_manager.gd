@@ -44,6 +44,7 @@ const META_PORTRAIT_GROUP_ORIGINAL_MATERIAL := "_card_art_portrait_group_origina
 const META_REFRESH_SIGNATURE := "_card_art_refresh_signature"
 const META_NAMED_NODE_CACHE := "_card_art_named_node_cache"
 const META_ANCIENT_TEXT_LAYOUT_DEFAULTS := "_card_art_ancient_text_layout_defaults"
+const META_SPECIAL_STACK_SCREEN := "_card_art_special_stack_screen"
 const FULL_ART_LAYER_NAME := "CardArtFullArtLayer"
 const FULL_ART_INSET_STATIC := 0
 const FULL_ART_INSET_ANIMATED := 0
@@ -3114,6 +3115,8 @@ func refresh_card_visuals(card_root, allow_merchant := false) -> void:
 		return
 	if !allow_merchant and _is_in_merchant_room(card_root):
 		return
+	if _is_in_choose_bundle_selection_screen(card_root) and !_is_node_effectively_visible(card_root):
+		return
 	var portrait = _find_named_descendant(card_root, "Portrait")
 	if portrait is TextureRect:
 		_refresh_portrait_node(portrait)
@@ -3446,6 +3449,31 @@ func _get_merchant_room(node):
 
 func _is_in_merchant_room(node) -> bool:
 	return _get_merchant_room(node) != null
+
+
+func _is_in_choose_bundle_selection_screen(node) -> bool:
+	var current = node
+	while current != null and is_instance_valid(current):
+		var current_name = String(current.name)
+		if current_name.contains("ChooseABundle"):
+			return true
+		if current.has_meta(META_SPECIAL_STACK_SCREEN) and bool(current.get_meta(META_SPECIAL_STACK_SCREEN, false)):
+			return true
+		current = current.get_parent()
+	return false
+
+
+func _is_node_effectively_visible(node) -> bool:
+	var current = node
+	var saw_canvas_item := false
+	while current != null and is_instance_valid(current):
+		if current is CanvasItem:
+			saw_canvas_item = true
+			var canvas_item := current as CanvasItem
+			if !canvas_item.visible or canvas_item.self_modulate.a <= 0.001:
+				return false
+		current = current.get_parent()
+	return saw_canvas_item
 
 
 func _schedule_merchant_room_refresh(merchant_room) -> void:
@@ -4787,6 +4815,8 @@ func _flush_queued_card_root_refreshes() -> void:
 		var card_root = card_root_ref.get_ref()
 		if card_root == null or !is_instance_valid(card_root):
 			continue
+		if _is_in_choose_bundle_selection_screen(card_root) and !_is_node_effectively_visible(card_root):
+			continue
 		refresh_card_visuals(card_root)
 		var remaining_passes = int(entry.get("passes", 1)) - 1
 		if remaining_passes > 0:
@@ -4815,6 +4845,8 @@ func _refresh_tracked_portraits() -> void:
 		if card_root != null and is_instance_valid(card_root):
 			if _is_in_merchant_room(card_root):
 				_portrait_refs.erase(portrait_id)
+				continue
+			if _is_in_choose_bundle_selection_screen(card_root) and !_is_node_effectively_visible(card_root):
 				continue
 			var card_root_id = card_root.get_instance_id()
 			if !refreshed_card_roots.has(card_root_id):
@@ -4933,6 +4965,8 @@ func _refresh_portrait_node(texture_rect) -> void:
 	var current_texture = texture_rect.texture
 
 	var card_root = _find_card_root(texture_rect)
+	if _is_in_choose_bundle_selection_screen(card_root) and !_is_node_effectively_visible(card_root):
+		return
 	var node_name = String(texture_rect.name)
 	var portrait_visible := false
 	var ancient_visible := false
