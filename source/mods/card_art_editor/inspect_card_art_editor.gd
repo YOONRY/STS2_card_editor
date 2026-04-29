@@ -53,6 +53,8 @@ const TRANSLATIONS := {
 		"browser_image_error": "이미지를 미리보기로 불러올 수 없습니다.",
 		"browser_gif_preview": "\nGIF 미리보기",
 		"export_current_png": "PNG로 내보내기",
+		"ancient_text_outside_enable": "텍스트 밖으로 빼기",
+		"ancient_text_outside_disable": "텍스트 원위치",
 		"toggle_language": "English"
 	},
 	"en": {
@@ -95,6 +97,8 @@ const TRANSLATIONS := {
 		"browser_image_error": "Could not load the image preview.",
 		"browser_gif_preview": "\nGIF preview",
 		"export_current_png": "Save Current Card PNG",
+		"ancient_text_outside_enable": "Move Text Outside",
+		"ancient_text_outside_disable": "Restore Text",
 		"toggle_language": "한국어"
 	}
 }
@@ -156,6 +160,7 @@ var _gif_settings_button: Button
 var _adjust_button: Button
 var _display_mode_button: Button
 var _infection_effect_button: Button
+var _ancient_text_outside_button: Button
 var _favorite_add_button: Button
 var _favorites_menu_button: MenuButton
 var _adjust_panel: PanelContainer
@@ -301,17 +306,23 @@ func _load_ui_settings() -> void:
 
 func _save_ui_settings() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(UI_SETTINGS_PATH).get_base_dir())
+	var settings: Dictionary = {}
+	if FileAccess.file_exists(UI_SETTINGS_PATH):
+		var existing_file = FileAccess.open(UI_SETTINGS_PATH, FileAccess.READ)
+		if existing_file != null:
+			var parsed = JSON.parse_string(existing_file.get_as_text())
+			if parsed is Dictionary:
+				settings = parsed.duplicate(true)
+	settings["locale"] = _locale
+	settings["browser_last_dirs"] = _browser_last_dirs
+	settings["export_last_dirs"] = _export_last_dirs
+	settings["favorite_dirs"] = _favorite_dirs
+	settings["gif_processing_settings"] = _gif_processing_settings
+	settings["infection_effect_hidden_enabled"] = _infection_effect_hidden_enabled
 	var file = FileAccess.open(UI_SETTINGS_PATH, FileAccess.WRITE)
 	if file == null:
 		return
-	file.store_string(JSON.stringify({
-		"locale": _locale,
-		"browser_last_dirs": _browser_last_dirs,
-		"export_last_dirs": _export_last_dirs,
-		"favorite_dirs": _favorite_dirs,
-		"gif_processing_settings": _gif_processing_settings,
-		"infection_effect_hidden_enabled": _infection_effect_hidden_enabled
-	}))
+	file.store_string(JSON.stringify(settings))
 	file.flush()
 
 
@@ -353,6 +364,7 @@ func _apply_locale() -> void:
 		_adjust_button.text = _tr("adjust_button")
 	if _display_mode_button != null:
 		_display_mode_button.text = _get_display_mode_button_text()
+	_refresh_ancient_text_outside_button()
 	if _adjust_title_label != null:
 		_adjust_title_label.text = _tr("adjust_title")
 	if _adjust_preview_label != null and (_adjust_source_image == null or _adjust_preview.texture == null):
@@ -374,6 +386,7 @@ func _apply_locale() -> void:
 		_refresh_favorites_menu()
 	_refresh_art_pack_manager_ui()
 	_refresh_infection_effect_button()
+	_refresh_ancient_text_outside_button()
 	_refresh_card_label()
 
 
@@ -424,6 +437,48 @@ func _refresh_infection_effect_button() -> void:
 		_infection_effect_button.text = "Show Infection Effect" if hidden_enabled else "Hide Infection Effect"
 	else:
 		_infection_effect_button.text = "감염 이펙트 켜기" if hidden_enabled else "감염 이펙트 끄기"
+
+
+func _is_current_ancient_card() -> bool:
+	var inspect_card = _get_inspect_card()
+	if inspect_card == null:
+		return false
+	var ancient_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
+	if ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible:
+		return true
+	var model = inspect_card.get("Model")
+	if model != null:
+		var rarity = model.get("Rarity")
+		if rarity != null and String(rarity).to_lower() == "ancient":
+			return true
+	return _get_effective_source_path().to_lower().contains("ancient")
+
+
+func _is_current_ancient_text_outside_supported_card() -> bool:
+	var manager = _manager()
+	if manager == null or !manager.has_method("is_ancient_text_outside_enabled"):
+		return false
+	var source_path = _get_effective_source_path()
+	if source_path == "":
+		return false
+	if _is_current_ancient_card():
+		return true
+	return manager.has_override(source_path) and manager.is_full_art_mode(source_path)
+
+
+func _refresh_ancient_text_outside_button() -> void:
+	if _ancient_text_outside_button == null:
+		return
+	var manager = _manager()
+	var source_path = _get_effective_source_path()
+	var visible = manager != null and source_path != "" and _is_current_ancient_text_outside_supported_card()
+	_ancient_text_outside_button.visible = visible
+	if !visible:
+		_ancient_text_outside_button.disabled = true
+		return
+	_ancient_text_outside_button.disabled = false
+	var enabled = bool(manager.is_ancient_text_outside_enabled(source_path))
+	_ancient_text_outside_button.text = _tr("ancient_text_outside_disable") if enabled else _tr("ancient_text_outside_enable")
 
 
 func _apply_gif_processing_settings_to_manager() -> void:
@@ -490,6 +545,11 @@ func _build_adjust_ui() -> void:
 	_infection_effect_button.visible = false
 	footer_row.add_child(_infection_effect_button)
 	footer_row.move_child(_infection_effect_button, 4)
+
+	_ancient_text_outside_button = Button.new()
+	_ancient_text_outside_button.visible = false
+	footer_row.add_child(_ancient_text_outside_button)
+	footer_row.move_child(_ancient_text_outside_button, 5)
 
 	_adjust_panel = PanelContainer.new()
 	_adjust_panel.name = "AdjustPanel"
@@ -1362,6 +1422,33 @@ func _on_infection_effect_pressed() -> void:
 		_set_status("Infection border effect hidden." if next_hidden_enabled else "Infection border effect shown.", false)
 
 
+func _on_ancient_text_outside_pressed() -> void:
+	var manager = _manager()
+	if manager == null or !manager.has_method("set_ancient_text_outside_enabled"):
+		_set_status("The card art manager is not available.", true)
+		return
+	var source_path = _get_effective_source_path()
+	if source_path == "" or !_is_current_ancient_text_outside_supported_card():
+		_set_status("풀아트 또는 고대 카드에서만 사용할 수 있습니다." if _locale == "ko" else "This option is only available for full-art or Ancient cards.", true)
+		return
+	var next_enabled = !bool(manager.is_ancient_text_outside_enabled(source_path))
+	manager.set_ancient_text_outside_enabled(source_path, next_enabled)
+	_save_ui_settings()
+	var inspect_card = _get_inspect_card()
+	if inspect_card != null and inspect_card.has_method("Reload"):
+		inspect_card.call_deferred("Reload")
+	var screen = get_parent()
+	if screen != null and screen.has_method("UpdateCardDisplay"):
+		screen.call_deferred("UpdateCardDisplay")
+	if manager.has_method("refresh_all_portraits"):
+		manager.refresh_all_portraits()
+	_refresh_ancient_text_outside_button()
+	if _locale == "ko":
+		_set_status("카드 텍스트를 밖으로 뺐습니다." if next_enabled else "카드 텍스트를 원위치로 되돌렸습니다.", false)
+	else:
+		_set_status("Card text moved outside." if next_enabled else "Card text restored.", false)
+
+
 func _on_adjust_preview_gui_input(event: InputEvent) -> void:
 	if _adjust_panel == null or !_adjust_panel.visible:
 		return
@@ -1568,6 +1655,8 @@ func _update_context(force_refresh: bool) -> void:
 		_edit_art_button.disabled = true
 		_restore_button.disabled = true
 		_display_mode_button.disabled = true
+		if _ancient_text_outside_button != null:
+			_ancient_text_outside_button.disabled = true
 		return
 
 	var next_source_path = ""
@@ -1622,6 +1711,7 @@ func _update_context(force_refresh: bool) -> void:
 	_restore_all_button.disabled = manager.get_override_count() == 0
 	_refresh_art_pack_manager_ui()
 	_refresh_infection_effect_button()
+	_refresh_ancient_text_outside_button()
 
 
 func _refresh_card_label() -> void:
@@ -1765,6 +1855,7 @@ func _bind_signals() -> void:
 	_adjust_button.pressed.connect(_on_adjust_pressed)
 	_display_mode_button.pressed.connect(_on_display_mode_pressed)
 	_infection_effect_button.pressed.connect(_on_infection_effect_pressed)
+	_ancient_text_outside_button.pressed.connect(_on_ancient_text_outside_pressed)
 	_choose_image_button.pressed.connect(_on_choose_image_pressed)
 	_import_pack_button.pressed.connect(_on_import_shared_pressed)
 	_import_mod_button.pressed.connect(_on_import_mod_pressed)
@@ -1816,6 +1907,8 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 	_display_mode_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.has_override(effective_source_path) or !manager.can_toggle_full_art(effective_source_path)
 	if _infection_effect_button != null:
 		_infection_effect_button.disabled = is_busy or !_is_current_infection_card()
+	if _ancient_text_outside_button != null:
+		_ancient_text_outside_button.disabled = is_busy or !_is_current_ancient_text_outside_supported_card() or effective_source_path == ""
 	if _art_pack_remove_button != null:
 		_art_pack_remove_button.disabled = is_busy or _art_pack_list_ids.is_empty()
 	_restore_all_button.disabled = is_busy or manager == null or manager.get_override_count() == 0
