@@ -24,11 +24,6 @@ public static class Bootstrap
     private const string OverlayScenePath = "res://mods/card_art_editor/inspect_card_art_editor.tscn";
     internal const string InspectSourcePathMeta = "_card_art_inspect_source_path";
     internal const string InspectCardIdMeta = "_card_art_inspect_card_id";
-    internal const string SourcePathMeta = "_card_art_source_path";
-    internal const string OverrideActiveMeta = "_card_art_override_active";
-    internal const string FullArtActiveMeta = "_card_art_full_art_active";
-    internal const string FullArtOwnerPathMeta = "_card_art_full_art_owner_path";
-    internal const string SpecialStackScreenMeta = "_card_art_special_stack_screen";
 
     public static void Init()
     {
@@ -54,12 +49,6 @@ public static class Bootstrap
             Log($"Inspect screen ready: {screen?.Name}");
             if (screen is null || !GodotObject.IsInstanceValid(screen))
             {
-                return;
-            }
-
-            if (!string.Equals(screen.Name?.ToString(), "InspectCardScreen", StringComparison.Ordinal))
-            {
-                Log($"Skipping overlay attach for non-inspect screen: {screen.Name}");
                 return;
             }
 
@@ -226,139 +215,11 @@ public static class Bootstrap
         }
     }
 
-    private static bool IsInMerchantRoom(Node? node)
-    {
-        var current = node;
-        while (current is not null && GodotObject.IsInstanceValid(current))
-        {
-            var nodeName = current.Name?.ToString() ?? string.Empty;
-            var typeName = current.GetType().Name ?? string.Empty;
-            if (string.Equals(nodeName, "MerchantRoom", StringComparison.Ordinal) ||
-                string.Equals(typeName, "NMerchantRoom", StringComparison.Ordinal))
-            {
-                return true;
-            }
-
-            current = current.GetParent();
-        }
-
-        return false;
-    }
-
-    private static bool IsInChooseABundleSelectionScreen(Node? node)
-    {
-        var current = node;
-        while (current is not null && GodotObject.IsInstanceValid(current))
-        {
-            var nodeName = current.Name?.ToString() ?? string.Empty;
-            var typeName = current.GetType().Name ?? string.Empty;
-            if (nodeName.IndexOf("ChooseABundle", StringComparison.Ordinal) >= 0 ||
-                typeName.IndexOf("ChooseABundle", StringComparison.Ordinal) >= 0)
-            {
-                return true;
-            }
-
-            current = current.GetParent();
-        }
-
-        return false;
-    }
-
-    private static bool IsEffectivelyVisible(Node? node)
-    {
-        var current = node;
-        var sawCanvasItem = false;
-        while (current is not null && GodotObject.IsInstanceValid(current))
-        {
-            if (current is CanvasItem canvasItem)
-            {
-                sawCanvasItem = true;
-                if (!canvasItem.Visible || canvasItem.SelfModulate.A <= 0.001f)
-                {
-                    return false;
-                }
-            }
-
-            current = current.GetParent();
-        }
-
-        return sawCanvasItem;
-    }
-
-    private static void CollectCardRoots(Node node, List<Node> output)
-    {
-        if (!GodotObject.IsInstanceValid(node))
-        {
-            return;
-        }
-
-        if (string.Equals(node.Name?.ToString(), "CardContainer", StringComparison.Ordinal))
-        {
-            output.Add(node);
-            return;
-        }
-
-        foreach (var child in node.GetChildren())
-        {
-            if (child is Node childNode)
-            {
-                CollectCardRoots(childNode, output);
-            }
-        }
-    }
-
-    internal static void QueueMerchantRoomCardRefresh(Node merchantRoom)
-    {
-        try
-        {
-            if (merchantRoom is null || !GodotObject.IsInstanceValid(merchantRoom))
-            {
-                return;
-            }
-
-            var manager = TryEnsureManager();
-            if (manager is null)
-            {
-                return;
-            }
-
-            var slotsContainer = merchantRoom.GetNodeOrNull<Node>("Inventory/SlotsContainer");
-            if (slotsContainer is null || !GodotObject.IsInstanceValid(slotsContainer))
-            {
-                Log($"Merchant room refresh skipped: slots container missing for {merchantRoom.Name}.");
-                return;
-            }
-
-            var cardRoots = new List<Node>();
-            CollectCardRoots(slotsContainer, cardRoots);
-            foreach (var cardRoot in cardRoots)
-            {
-                if (!cardRoot.IsInsideTree())
-                {
-                    continue;
-                }
-
-                manager.Call("queue_card_root_refresh", cardRoot);
-            }
-
-            Log($"Queued merchant room refresh for {cardRoots.Count} card roots.");
-        }
-        catch (Exception ex)
-        {
-            Log("QueueMerchantRoomCardRefresh failed: " + ex);
-        }
-    }
-
     internal static void UpdateInspectCardMetadata(NInspectCardScreen screen)
     {
         try
         {
             if (screen is null || !GodotObject.IsInstanceValid(screen))
-            {
-                return;
-            }
-
-            if (!string.Equals(screen.Name?.ToString(), "InspectCardScreen", StringComparison.Ordinal))
             {
                 return;
             }
@@ -371,43 +232,13 @@ public static class Bootstrap
 
             if (!TryGetCardModel(card, out var model) || model is null)
             {
-                var existingSourcePath = card.HasMeta(InspectSourcePathMeta)
-                    ? card.GetMeta(InspectSourcePathMeta, string.Empty).AsString()
-                    : string.Empty;
-                var existingCardId = card.HasMeta(InspectCardIdMeta)
-                    ? card.GetMeta(InspectCardIdMeta, string.Empty).AsString()
-                    : string.Empty;
-
-                if (existingSourcePath != string.Empty)
-                {
-                    card.SetMeta(InspectSourcePathMeta, string.Empty);
-                }
-
-                if (existingCardId != string.Empty)
-                {
-                    card.SetMeta(InspectCardIdMeta, string.Empty);
-                }
-
+                card.SetMeta(InspectSourcePathMeta, string.Empty);
+                card.SetMeta(InspectCardIdMeta, string.Empty);
                 return;
             }
 
-            var nextSourcePath = model.PortraitPath ?? string.Empty;
-            var nextCardId = model.Id.Entry ?? string.Empty;
-            var currentSourcePath = card.HasMeta(InspectSourcePathMeta)
-                ? card.GetMeta(InspectSourcePathMeta, string.Empty).AsString()
-                : string.Empty;
-            var currentCardId = card.HasMeta(InspectCardIdMeta)
-                ? card.GetMeta(InspectCardIdMeta, string.Empty).AsString()
-                : string.Empty;
-            if (currentSourcePath != nextSourcePath)
-            {
-                card.SetMeta(InspectSourcePathMeta, nextSourcePath);
-            }
-
-            if (currentCardId != nextCardId)
-            {
-                card.SetMeta(InspectCardIdMeta, nextCardId);
-            }
+            card.SetMeta(InspectSourcePathMeta, model.PortraitPath ?? string.Empty);
+            card.SetMeta(InspectCardIdMeta, model.Id.Entry ?? string.Empty);
         }
         catch (Exception ex)
         {
@@ -430,35 +261,13 @@ public static class Bootstrap
                 return;
             }
 
-            if (!TryGetCardModel(card, out var model) || model is null)
+            if (!TryGetCardModel(card, out _))
             {
+                Log($"Skipping override refresh for card '{card.Name}' because its model is unavailable.");
                 return;
-            }
-
-            var sourcePath = model.PortraitPath ?? string.Empty;
-            var cardRoot = card.GetNodeOrNull<Node>("CardContainer");
-            var isInfectionCard =
-                string.Equals(model.Id.Entry ?? string.Empty, "INFECTION", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(model.GetType().Name ?? string.Empty, "Infection", StringComparison.OrdinalIgnoreCase);
-            var infectionSuppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
-            var isSpecialStackScreen = IsInChooseABundleSelectionScreen(cardRoot ?? card);
-            if (cardRoot is not null)
-            {
-                cardRoot.SetMeta("_card_art_source_path", sourcePath);
-                cardRoot.SetMeta(SpecialStackScreenMeta, isSpecialStackScreen);
             }
 
             UpdateInspectCardMetadataFromCard(card);
-
-            if (IsInMerchantRoom(cardRoot ?? card))
-            {
-                return;
-            }
-
-            if (isSpecialStackScreen && !IsEffectivelyVisible(cardRoot))
-            {
-                return;
-            }
 
             var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
             if (portrait is not null)
@@ -472,10 +281,7 @@ public static class Bootstrap
                 manager.Call("apply_override_to_texture_rect", ancientPortrait);
             }
 
-            if (infectionSuppressionEnabled && isInfectionCard)
-            {
-                TrySuppressSpecialCardEffects(card);
-            }
+            TrySuppressSpecialCardEffects(card);
         }
         catch (Exception ex)
         {
@@ -568,64 +374,6 @@ public static class Bootstrap
         {
             Log("UpdateInspectCardMetadataFromCard failed: " + ex);
         }
-    }
-
-    private static bool CardNeedsVisualRefresh(Node? cardRoot)
-    {
-        if (cardRoot is null || !GodotObject.IsInstanceValid(cardRoot))
-        {
-            return false;
-        }
-
-        var portrait = cardRoot.GetNodeOrNull<TextureRect>("PortraitCanvasGroup/Portrait");
-        if (NodeHasRefreshState(portrait))
-        {
-            return true;
-        }
-
-        var ancientPortrait = cardRoot.GetNodeOrNull<TextureRect>("PortraitCanvasGroup/AncientPortrait");
-        if (NodeHasRefreshState(ancientPortrait))
-        {
-            return true;
-        }
-
-        var fullArtLayer = cardRoot.GetNodeOrNull<TextureRect>("PortraitCanvasGroup/CardArtFullArtLayer");
-        if (NodeHasRefreshState(fullArtLayer))
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool NodeHasRefreshState(Node? node)
-    {
-        if (node is null || !GodotObject.IsInstanceValid(node))
-        {
-            return false;
-        }
-
-        if (node.HasMeta(SourcePathMeta) && !string.IsNullOrEmpty(node.GetMeta(SourcePathMeta, string.Empty).AsString()))
-        {
-            return true;
-        }
-
-        if (node.HasMeta(OverrideActiveMeta) && node.GetMeta(OverrideActiveMeta, false).AsBool())
-        {
-            return true;
-        }
-
-        if (node.HasMeta(FullArtActiveMeta) && node.GetMeta(FullArtActiveMeta, false).AsBool())
-        {
-            return true;
-        }
-
-        if (node.HasMeta(FullArtOwnerPathMeta) && !string.IsNullOrEmpty(node.GetMeta(FullArtOwnerPathMeta, string.Empty).AsString()))
-        {
-            return true;
-        }
-
-        return false;
     }
 
     private static void HideInfectionEffectNodes(Node root)

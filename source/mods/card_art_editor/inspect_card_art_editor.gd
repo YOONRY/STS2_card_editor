@@ -53,9 +53,7 @@ const TRANSLATIONS := {
 		"browser_image_error": "이미지를 미리보기로 불러올 수 없습니다.",
 		"browser_gif_preview": "\nGIF 미리보기",
 		"export_current_png": "PNG로 내보내기",
-		"toggle_language": "English",
-		"ancient_text_outside_enable": "고대 텍스트 밖으로",
-		"ancient_text_outside_disable": "고대 텍스트 원위치"
+		"toggle_language": "English"
 	},
 	"en": {
 		"edit_button": "Edit Card Art",
@@ -97,9 +95,7 @@ const TRANSLATIONS := {
 		"browser_image_error": "Could not load the image preview.",
 		"browser_gif_preview": "\nGIF preview",
 		"export_current_png": "Save Current Card PNG",
-		"toggle_language": "한국어",
-		"ancient_text_outside_enable": "Move Ancient Text Outside",
-		"ancient_text_outside_disable": "Restore Ancient Text"
+		"toggle_language": "한국어"
 	}
 }
 
@@ -160,10 +156,6 @@ var _gif_settings_button: Button
 var _adjust_button: Button
 var _display_mode_button: Button
 var _infection_effect_button: Button
-var _ancient_text_outside_button: Button
-var _ancient_text_panel: PanelContainer
-var _ancient_text_panel_title: Label
-var _ancient_text_panel_body: RichTextLabel
 var _favorite_add_button: Button
 var _favorites_menu_button: MenuButton
 var _adjust_panel: PanelContainer
@@ -214,8 +206,6 @@ var _gif_processing_settings := {
 	"max_frames": 36
 }
 var _infection_effect_hidden_enabled := true
-var _ancient_text_outside_by_source := {}
-var _ui_initialized := false
 
 
 func _manager():
@@ -248,8 +238,6 @@ func _pick_best_source_path(manager, candidates: Array) -> String:
 
 
 func _get_effective_source_path() -> String:
-	if _current_source_path != "":
-		return _current_source_path
 	var manager = _manager()
 	var candidates: Array = []
 	if _current_source_path != "":
@@ -270,25 +258,6 @@ func _get_effective_source_path() -> String:
 			candidates.append(model_path)
 			candidates.append(portrait_path)
 	return _pick_best_source_path(manager, candidates)
-
-
-func _get_context_source_path_fast() -> String:
-	var manager = _manager()
-	if manager == null:
-		return ""
-	var inspect_card = _get_inspect_card()
-	if inspect_card != null:
-		var model = inspect_card.get("Model")
-		var model_path = manager.get_source_path_for_model(model)
-		if model_path != "":
-			return model_path
-		if inspect_card.has_meta("_card_art_inspect_source_path"):
-			var inspect_meta_path = String(inspect_card.get_meta("_card_art_inspect_source_path", ""))
-			if inspect_meta_path != "":
-				return inspect_meta_path
-	if _current_source_path != "":
-		return _current_source_path
-	return ""
 
 
 func _tr(key: String) -> String:
@@ -328,9 +297,6 @@ func _load_ui_settings() -> void:
 			_gif_processing_settings["use_frame_limit"] = bool(parsed_gif_settings.get("use_frame_limit", false))
 			_gif_processing_settings["max_frames"] = clamp(int(parsed_gif_settings.get("max_frames", 36)), 1, 300)
 		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", true))
-		var parsed_ancient_settings = parsed.get("ancient_text_outside_by_source", {})
-		if parsed_ancient_settings is Dictionary:
-			_ancient_text_outside_by_source = parsed_ancient_settings.duplicate(true)
 
 
 func _save_ui_settings() -> void:
@@ -338,16 +304,13 @@ func _save_ui_settings() -> void:
 	var file = FileAccess.open(UI_SETTINGS_PATH, FileAccess.WRITE)
 	if file == null:
 		return
-	var manager = _manager()
-	var ancient_settings = manager.get_ancient_text_outside_settings() if manager != null and manager.has_method("get_ancient_text_outside_settings") else _ancient_text_outside_by_source
 	file.store_string(JSON.stringify({
 		"locale": _locale,
 		"browser_last_dirs": _browser_last_dirs,
 		"export_last_dirs": _export_last_dirs,
 		"favorite_dirs": _favorite_dirs,
 		"gif_processing_settings": _gif_processing_settings,
-		"infection_effect_hidden_enabled": _infection_effect_hidden_enabled,
-		"ancient_text_outside_by_source": ancient_settings
+		"infection_effect_hidden_enabled": _infection_effect_hidden_enabled
 	}))
 	file.flush()
 
@@ -409,12 +372,9 @@ func _apply_locale() -> void:
 	if _favorites_menu_button != null:
 		_favorites_menu_button.text = "즐겨찾기" if _locale == "ko" else "Favorites"
 		_refresh_favorites_menu()
-	if _editor_popup.visible or _current_source_path != "":
-		_refresh_art_pack_manager_ui()
-		_refresh_infection_effect_button()
-		_refresh_ancient_text_outside_button()
-		_refresh_ancient_text_panel()
-		_refresh_card_label()
+	_refresh_art_pack_manager_ui()
+	_refresh_infection_effect_button()
+	_refresh_card_label()
 
 
 func _get_display_mode_button_text() -> String:
@@ -464,110 +424,6 @@ func _refresh_infection_effect_button() -> void:
 		_infection_effect_button.text = "Show Infection Effect" if hidden_enabled else "Hide Infection Effect"
 	else:
 		_infection_effect_button.text = "감염 이펙트 켜기" if hidden_enabled else "감염 이펙트 끄기"
-
-
-func _is_current_ancient_card() -> bool:
-	var inspect_card = _get_inspect_card()
-	if inspect_card == null:
-		return false
-	var ancient_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
-	if ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible:
-		return true
-	var model = inspect_card.get("Model")
-	if model == null:
-		return false
-	var rarity = model.get("Rarity")
-	if _is_ancient_rarity_value(rarity):
-		return true
-	var effective_source_path = _get_effective_source_path().to_lower()
-	return effective_source_path.contains("ancient")
-
-
-func _is_ancient_rarity_value(rarity) -> bool:
-	if rarity == null:
-		return false
-	var rarity_type = typeof(rarity)
-	if rarity_type == TYPE_INT or rarity_type == TYPE_FLOAT:
-		return int(rarity) == 5
-	var rarity_text = String(rarity).strip_edges().to_lower()
-	return rarity_text == "ancient" or rarity_text.ends_with(".ancient") or rarity_text == "5"
-
-
-func _is_current_ancient_text_outside_supported_card() -> bool:
-	var source_path = _get_effective_source_path()
-	if source_path == "":
-		return false
-	var manager = _manager()
-	if manager != null and manager.is_full_art_mode(source_path):
-		return true
-	return _is_current_ancient_card()
-
-
-func _refresh_ancient_text_outside_button() -> void:
-	if _ancient_text_outside_button == null:
-		return
-	var manager = _manager()
-	var source_path = _get_effective_source_path()
-	var visible = _is_current_ancient_text_outside_supported_card() and source_path != ""
-	_ancient_text_outside_button.visible = visible
-	_ancient_text_outside_button.disabled = !visible or manager == null
-	if !visible or manager == null:
-		return
-	var enabled = bool(manager.is_ancient_text_outside_enabled(source_path))
-	_ancient_text_outside_button.text = _tr("ancient_text_outside_disable") if enabled else _tr("ancient_text_outside_enable")
-
-
-func _get_current_description_text() -> String:
-	var inspect_card = _get_inspect_card()
-	if inspect_card == null:
-		return ""
-	var description_label = inspect_card.get_node_or_null("CardContainer/DescriptionLabel")
-	if description_label is RichTextLabel:
-		return String((description_label as RichTextLabel).text)
-	return ""
-
-
-func _normalize_ancient_text_panel_bbcode(text: String) -> String:
-	var normalized = text.strip_edges()
-	normalized = normalized.replace("[center]", "")
-	normalized = normalized.replace("[/center]", "")
-	var tag_regex := RegEx.new()
-	if tag_regex.compile("\\[[^\\]]+\\]") == OK:
-		normalized = tag_regex.sub(normalized, "", true)
-	normalized = normalized.replace("\r", "")
-	var line_regex := RegEx.new()
-	if line_regex.compile("\\n{3,}") == OK:
-		normalized = line_regex.sub(normalized, "\n\n", true)
-	return normalized
-
-
-func _layout_ancient_text_panel() -> void:
-	if _ancient_text_panel == null or !_ancient_text_panel.visible:
-		return
-	var screen = get_parent()
-	if screen == null:
-		return
-	var hover_tip_rect = screen.get_node_or_null("HoverTipRect")
-	if hover_tip_rect is Control:
-		var anchor = hover_tip_rect as Control
-		var anchor_right = anchor.global_position.x + (anchor.size.x * anchor.scale.x)
-		var anchor_top = anchor.global_position.y
-		_ancient_text_panel.global_position = Vector2(anchor_right + 10.0, anchor_top + 125.0)
-
-
-func _update_ancient_text_panel_metrics() -> void:
-	if _ancient_text_panel == null or _ancient_text_panel_body == null or !_ancient_text_panel.visible:
-		return
-	var content_height = _ancient_text_panel_body.get_content_height()
-	var panel_height = clampf(content_height + 52.0, 118.0, 260.0)
-	_ancient_text_panel.size = Vector2(400.0, panel_height)
-	_layout_ancient_text_panel()
-
-
-func _refresh_ancient_text_panel() -> void:
-	if _ancient_text_panel == null:
-		return
-	_ancient_text_panel.visible = false
 
 
 func _apply_gif_processing_settings_to_manager() -> void:
@@ -634,94 +490,6 @@ func _build_adjust_ui() -> void:
 	_infection_effect_button.visible = false
 	footer_row.add_child(_infection_effect_button)
 	footer_row.move_child(_infection_effect_button, 4)
-
-	_ancient_text_outside_button = Button.new()
-	_ancient_text_outside_button.visible = false
-	footer_row.add_child(_ancient_text_outside_button)
-	footer_row.move_child(_ancient_text_outside_button, 5)
-
-	_ancient_text_panel = PanelContainer.new()
-	_ancient_text_panel.name = "AncientTextPanel"
-	_ancient_text_panel.visible = false
-	_ancient_text_panel.top_level = true
-	_ancient_text_panel.z_as_relative = false
-	_ancient_text_panel.z_index = 1150
-	_ancient_text_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_ancient_text_panel.set_anchors_preset(Control.PRESET_CENTER)
-	_ancient_text_panel.offset_left = 0
-	_ancient_text_panel.offset_top = 0
-	_ancient_text_panel.offset_right = 400
-	_ancient_text_panel.offset_bottom = 140
-	add_child(_ancient_text_panel)
-
-	var hover_tip_texture = load("res://images/ui/hover_tip.png")
-	var shadow = NinePatchRect.new()
-	shadow.modulate = Color(0, 0, 0, 0.25098)
-	shadow.texture = hover_tip_texture
-	shadow.region_rect = Rect2(-8, -8, 339, 107)
-	shadow.patch_margin_left = 55
-	shadow.patch_margin_top = 43
-	shadow.patch_margin_right = 91
-	shadow.patch_margin_bottom = 32
-	shadow.axis_stretch_horizontal = NinePatchRect.AXIS_STRETCH_MODE_TILE_FIT
-	shadow.axis_stretch_vertical = NinePatchRect.AXIS_STRETCH_MODE_TILE_FIT
-	shadow.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_ancient_text_panel.add_child(shadow)
-
-	var bg = NinePatchRect.new()
-	bg.texture = hover_tip_texture
-	bg.region_rect = Rect2(0, 0, 339, 107)
-	bg.patch_margin_left = 55
-	bg.patch_margin_top = 43
-	bg.patch_margin_right = 91
-	bg.patch_margin_bottom = 32
-	bg.axis_stretch_horizontal = NinePatchRect.AXIS_STRETCH_MODE_TILE_FIT
-	bg.axis_stretch_vertical = NinePatchRect.AXIS_STRETCH_MODE_TILE_FIT
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_ancient_text_panel.add_child(bg)
-
-	var ancient_margin = MarginContainer.new()
-	ancient_margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	ancient_margin.add_theme_constant_override("margin_left", 22)
-	ancient_margin.add_theme_constant_override("margin_top", 16)
-	ancient_margin.add_theme_constant_override("margin_right", 45)
-	ancient_margin.add_theme_constant_override("margin_bottom", 28)
-	_ancient_text_panel.add_child(ancient_margin)
-
-	var ancient_root = VBoxContainer.new()
-	ancient_root.add_theme_constant_override("separation", 0)
-	ancient_margin.add_child(ancient_root)
-
-	var title_row = HBoxContainer.new()
-	title_row.add_theme_constant_override("separation", 5)
-	ancient_root.add_child(title_row)
-
-	_ancient_text_panel_title = Label.new()
-	_ancient_text_panel_title.text = "카드 텍스트"
-	_ancient_text_panel_title.add_theme_color_override("font_color", Color(0.937255, 0.784314, 0.317647, 1))
-	_ancient_text_panel_title.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.25098))
-	_ancient_text_panel_title.add_theme_constant_override("shadow_offset_x", 3)
-	_ancient_text_panel_title.add_theme_constant_override("shadow_offset_y", 2)
-	_ancient_text_panel_title.add_theme_font_override("font", load("res://themes/kreon_bold_glyph_space_one.tres"))
-	_ancient_text_panel_title.add_theme_font_size_override("font_size", 22)
-	title_row.add_child(_ancient_text_panel_title)
-
-	_ancient_text_panel_body = RichTextLabel.new()
-	_ancient_text_panel_body.bbcode_enabled = true
-	_ancient_text_panel_body.fit_content = true
-	_ancient_text_panel_body.scroll_active = false
-	_ancient_text_panel_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_ancient_text_panel_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_ancient_text_panel_body.custom_minimum_size = Vector2(300, 0)
-	_ancient_text_panel_body.add_theme_color_override("default_color", Color(1, 0.964706, 0.886275, 1))
-	_ancient_text_panel_body.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.25098))
-	_ancient_text_panel_body.add_theme_constant_override("line_separation", -2)
-	_ancient_text_panel_body.add_theme_constant_override("shadow_offset_x", 3)
-	_ancient_text_panel_body.add_theme_constant_override("shadow_offset_y", 2)
-	_ancient_text_panel_body.add_theme_font_override("normal_font", load("res://themes/kreon_regular_glyph_space_one.tres"))
-	_ancient_text_panel_body.add_theme_font_override("bold_font", load("res://themes/kreon_bold_glyph_space_one.tres"))
-	_ancient_text_panel_body.add_theme_font_size_override("normal_font_size", 22)
-	ancient_root.add_child(_ancient_text_panel_body)
 
 	_adjust_panel = PanelContainer.new()
 	_adjust_panel.name = "AdjustPanel"
@@ -922,17 +690,6 @@ func _make_adjust_slider_row(label_text: String, slider_property: String, min_va
 
 
 func _ready() -> void:
-	_load_ui_settings()
-	_edit_art_button.text = _tr("edit_button")
-	if !_edit_art_button.pressed.is_connected(_on_edit_art_pressed):
-		_edit_art_button.pressed.connect(_on_edit_art_pressed)
-	_status_label.text = _tr("status_ready")
-
-
-func _initialize_editor_ui_once() -> void:
-	if _ui_initialized:
-		return
-	_ui_initialized = true
 	_build_adjust_ui()
 	_build_progress_ui()
 	_build_browser_shortcuts_ui()
@@ -940,6 +697,7 @@ func _initialize_editor_ui_once() -> void:
 	_configure_quality_options()
 	_configure_file_dialog()
 	_bind_signals()
+	_load_ui_settings()
 	_api_key_input.secret = true
 	var manager = _manager()
 	_api_key_input.text = manager.get_session_api_key() if manager != null else ""
@@ -951,6 +709,7 @@ func _initialize_editor_ui_once() -> void:
 	if manager != null and manager.has_method("set_infection_effect_hidden_enabled"):
 		manager.set_infection_effect_hidden_enabled(_infection_effect_hidden_enabled)
 	_status_label.text = _tr("status_ready")
+	_update_context(true)
 
 
 func _build_browser_shortcuts_ui() -> void:
@@ -1049,6 +808,8 @@ func _build_art_pack_manager_ui() -> void:
 
 	_art_pack_apply_button = Button.new()
 	variant_row.add_child(_art_pack_apply_button)
+
+	_refresh_art_pack_manager_ui()
 
 
 func _refresh_art_pack_manager_ui() -> void:
@@ -1152,27 +913,25 @@ func _on_import_progress(current: int, total: int, label: String = "") -> void:
 
 
 func _process(delta: float) -> void:
-	if !_editor_popup.visible:
-		_refresh_accumulator = 0.0
-		return
 	_refresh_accumulator += delta
-	if _refresh_accumulator < 0.35:
+	if _refresh_accumulator < 0.15:
 		return
 	_refresh_accumulator = 0.0
 	_update_context(false)
 
 
 func _on_edit_art_pressed() -> void:
-	_initialize_editor_ui_once()
 	if _editor_popup.visible:
 		_close_adjust_panel()
 		_close_file_browser()
 		_editor_popup.hide()
 		return
+	_update_context(true)
 	var manager = _manager()
 	_api_key_input.text = manager.get_session_api_key() if manager != null else ""
 	_open_editor_popup()
-	call_deferred("_refresh_editor_context_after_open")
+	if _get_effective_source_path() == "":
+		_set_status("Open a card inspection view first.", true)
 
 
 func _on_close_pressed() -> void:
@@ -1603,34 +1362,6 @@ func _on_infection_effect_pressed() -> void:
 		_set_status("Infection border effect hidden." if next_hidden_enabled else "Infection border effect shown.", false)
 
 
-func _on_ancient_text_outside_pressed() -> void:
-	var manager = _manager()
-	if manager == null:
-		_set_status("The card art manager is not available.", true)
-		return
-	var source_path = _get_effective_source_path()
-	if source_path == "" or !_is_current_ancient_text_outside_supported_card():
-		_set_status("고대 카드 또는 풀아트 카드에서만 사용할 수 있습니다." if _locale == "ko" else "This option is only available for Ancient or full-art cards.", true)
-		return
-	var next_enabled = !bool(manager.is_ancient_text_outside_enabled(source_path))
-	manager.set_ancient_text_outside_enabled(source_path, next_enabled)
-	if manager.has_method("get_ancient_text_outside_settings"):
-		_ancient_text_outside_by_source = manager.get_ancient_text_outside_settings()
-	_save_ui_settings()
-	var inspect_card = _get_inspect_card()
-	if inspect_card != null and inspect_card.has_method("Reload"):
-		inspect_card.call_deferred("Reload")
-	var screen = get_parent()
-	if screen != null and screen.has_method("UpdateCardDisplay"):
-		screen.call_deferred("UpdateCardDisplay")
-	_refresh_ancient_text_outside_button()
-	_refresh_ancient_text_panel()
-	if _locale == "ko":
-		_set_status("고대 카드 텍스트를 카드 밖으로 이동했습니다." if next_enabled else "고대 카드 텍스트를 카드 안으로 되돌렸습니다.", false)
-	else:
-		_set_status("Ancient card text moved outside the card." if next_enabled else "Ancient card text restored inside the card.", false)
-
-
 func _on_adjust_preview_gui_input(event: InputEvent) -> void:
 	if _adjust_panel == null or !_adjust_panel.visible:
 		return
@@ -1839,11 +1570,33 @@ func _update_context(force_refresh: bool) -> void:
 		_display_mode_button.disabled = true
 		return
 
-	var next_source_path = _get_context_source_path_fast()
+	var next_source_path = ""
+	var model_source_path = ""
+	var card_node_source_path = ""
+	var portrait_source_path = ""
+	var screen = get_parent()
+	if screen != null:
+		var inspect_card = screen.get_node_or_null("Card")
+		if inspect_card != null:
+			var inspect_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/Portrait")
+			var inspect_ancient_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
+			if inspect_ancient_portrait is TextureRect and (inspect_ancient_portrait as CanvasItem).visible:
+				portrait_source_path = manager.get_source_path_for_texture_rect(inspect_ancient_portrait)
+				next_source_path = portrait_source_path
+			elif inspect_portrait is TextureRect and (inspect_portrait as CanvasItem).visible:
+				portrait_source_path = manager.get_source_path_for_texture_rect(inspect_portrait)
+				next_source_path = portrait_source_path
+			if next_source_path == "":
+				card_node_source_path = manager.get_source_path_for_card_node(inspect_card)
+				next_source_path = card_node_source_path
+			if next_source_path == "":
+				model_source_path = manager.get_source_path_for_model(inspect_card.get("Model"))
+				next_source_path = model_source_path
 	if next_source_path == "":
 		var portrait = _get_active_portrait()
 		if portrait != null:
-			next_source_path = manager.get_source_path_for_texture_rect(portrait)
+			portrait_source_path = manager.get_source_path_for_texture_rect(portrait)
+			next_source_path = portrait_source_path
 
 	if force_refresh or next_source_path != _current_source_path:
 		var source_changed = next_source_path != _current_source_path
@@ -1869,14 +1622,6 @@ func _update_context(force_refresh: bool) -> void:
 	_restore_all_button.disabled = manager.get_override_count() == 0
 	_refresh_art_pack_manager_ui()
 	_refresh_infection_effect_button()
-	_refresh_ancient_text_outside_button()
-	_refresh_ancient_text_panel()
-
-
-func _refresh_editor_context_after_open() -> void:
-	_update_context(true)
-	if _get_effective_source_path() == "":
-		_set_status("Open a card inspection view first.", true)
 
 
 func _refresh_card_label() -> void:
@@ -2011,6 +1756,7 @@ func _configure_file_dialog() -> void:
 
 
 func _bind_signals() -> void:
+	_edit_art_button.pressed.connect(_on_edit_art_pressed)
 	_language_button.pressed.connect(_toggle_locale)
 	_gif_settings_button.pressed.connect(_on_gif_settings_pressed)
 	_close_button.pressed.connect(_on_close_pressed)
@@ -2019,7 +1765,6 @@ func _bind_signals() -> void:
 	_adjust_button.pressed.connect(_on_adjust_pressed)
 	_display_mode_button.pressed.connect(_on_display_mode_pressed)
 	_infection_effect_button.pressed.connect(_on_infection_effect_pressed)
-	_ancient_text_outside_button.pressed.connect(_on_ancient_text_outside_pressed)
 	_choose_image_button.pressed.connect(_on_choose_image_pressed)
 	_import_pack_button.pressed.connect(_on_import_shared_pressed)
 	_import_mod_button.pressed.connect(_on_import_mod_pressed)
@@ -2071,8 +1816,6 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 	_display_mode_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.has_override(effective_source_path) or !manager.can_toggle_full_art(effective_source_path)
 	if _infection_effect_button != null:
 		_infection_effect_button.disabled = is_busy or !_is_current_infection_card()
-	if _ancient_text_outside_button != null:
-		_ancient_text_outside_button.disabled = is_busy or !_is_current_ancient_text_outside_supported_card() or effective_source_path == ""
 	if _art_pack_remove_button != null:
 		_art_pack_remove_button.disabled = is_busy or _art_pack_list_ids.is_empty()
 	_restore_all_button.disabled = is_busy or manager == null or manager.get_override_count() == 0
