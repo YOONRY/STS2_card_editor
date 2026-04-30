@@ -44,7 +44,10 @@ const META_ANCIENT_TEXT_LAYOUT_DEFAULTS := "_card_art_ancient_text_layout_defaul
 const META_REFRESH_SIGNATURE := "_card_art_refresh_signature"
 const META_NAMED_NODE_CACHE := "_card_art_named_node_cache"
 const META_ANCIENT_TEXT_HITBOX_CONNECTED := "_card_art_ancient_text_hitbox_connected"
+const META_GIF_PLAYBACK_ACTIVE := "_card_art_gif_playback_active"
+const META_GIF_PLAYBACK_SOURCE := "_card_art_gif_playback_source"
 const FULL_ART_LAYER_NAME := "CardArtFullArtLayer"
+const STATIC_OVERRIDE_CACHE_SUFFIX := "::static"
 const FULL_ART_INSET_STATIC := 0
 const FULL_ART_INSET_ANIMATED := 0
 const STARTUP_RESCAN_FRAMES := 180
@@ -53,6 +56,7 @@ const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
 const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
 const ANCIENT_TEXT_DRAG_SUPPRESS_DISTANCE := 12.0
+const GIF_PLAYBACK_REFRESH_INTERVAL := 0.08
 
 signal overrides_changed(source_path)
 signal art_packs_changed()
@@ -63,6 +67,7 @@ var _art_pack_registry := {"packs": {}}
 var _override_texture_cache := {}
 var _refresh_accumulator := 0.0
 var _ancient_text_hover_refresh_accumulator := 0.0
+var _gif_playback_refresh_accumulator := 0.0
 var _session_api_key := ""
 var _overlay_scene := preload("res://mods/card_art_editor/inspect_card_art_editor.tscn")
 var _startup_rescan_frames_remaining := STARTUP_RESCAN_FRAMES
@@ -74,7 +79,8 @@ var _gif_processing_settings := {
 	"use_cache": true,
 	"skip_duplicate_frames": true,
 	"use_frame_limit": false,
-	"max_frames": 36
+	"max_frames": 36,
+	"play_on_hover_only": true
 }
 var _batch_update_depth := 0
 var _batch_manifest_dirty := false
@@ -98,6 +104,8 @@ var _pending_ancient_text_click_from_hitbox := false
 var _ancient_text_left_mouse_down := false
 var _ancient_text_press_position := Vector2.INF
 var _ancient_text_dragging := false
+var _pressed_gif_card_root: Node = null
+var _pressed_gif_card_source_path := ""
 var _hover_tips_container_cache: Node = null
 
 
@@ -133,6 +141,11 @@ func _process(delta: float) -> void:
 			if _ancient_text_hover_refresh_accumulator >= ANCIENT_TEXT_HOVER_REFRESH_INTERVAL:
 				_ancient_text_hover_refresh_accumulator = 0.0
 				_refresh_ancient_text_hover_tip()
+	if _is_gif_hover_playback_only_enabled() and _has_animated_overrides():
+		_gif_playback_refresh_accumulator += delta
+		if _gif_playback_refresh_accumulator >= GIF_PLAYBACK_REFRESH_INTERVAL:
+			_gif_playback_refresh_accumulator = 0.0
+			_refresh_gif_playback_state()
 	if !_needs_full_refresh:
 		return
 	if REFRESH_INTERVAL <= 0.0:
@@ -169,6 +182,7 @@ func _input(event) -> void:
 			_ancient_text_left_mouse_down = true
 			_ancient_text_press_position = click_position
 			_ancient_text_dragging = false
+			_set_pressed_gif_card(_find_animated_gif_card_root_at_position(click_position))
 			_pending_ancient_text_click_position = click_position
 			if !_pending_ancient_text_click_from_hitbox:
 				_hide_ancient_text_hover_tip()
@@ -179,6 +193,7 @@ func _input(event) -> void:
 			if _ancient_text_dragging:
 				_clear_pending_ancient_text_click()
 				_hide_ancient_text_hover_tip()
+				_clear_pressed_gif_card()
 				call_deferred("_reset_ancient_text_drag_state")
 				return
 			_reset_ancient_text_drag_state()
@@ -189,6 +204,7 @@ func _input(event) -> void:
 					_set_pending_ancient_text_click_card(released_card_root)
 			_pending_ancient_text_click_frames = ANCIENT_TEXT_CLICK_PENDING_FRAMES
 			call_deferred("_try_show_pending_ancient_text_click_tip")
+			_clear_pressed_gif_card()
 
 
 func _get_current_mouse_position(fallback_position: Vector2 = Vector2.INF) -> Vector2:
@@ -210,6 +226,29 @@ func _reset_ancient_text_drag_state() -> void:
 	_ancient_text_left_mouse_down = false
 	_ancient_text_press_position = Vector2.INF
 	_ancient_text_dragging = false
+
+
+func _set_pressed_gif_card(card_root) -> void:
+	_pressed_gif_card_root = null
+	_pressed_gif_card_source_path = ""
+	if card_root == null:
+		_refresh_gif_playback_state()
+		return
+	var source_path = _get_gif_override_source_for_card_root(card_root)
+	if source_path == "":
+		_refresh_gif_playback_state()
+		return
+	_pressed_gif_card_root = card_root
+	_pressed_gif_card_source_path = source_path
+	_refresh_gif_playback_state()
+
+
+func _clear_pressed_gif_card() -> void:
+	if _pressed_gif_card_root == null and _pressed_gif_card_source_path == "":
+		return
+	_pressed_gif_card_root = null
+	_pressed_gif_card_source_path = ""
+	_refresh_gif_playback_state()
 
 
 func _set_pending_ancient_text_click_card(card_root) -> bool:
@@ -262,10 +301,19 @@ func get_gif_processing_settings() -> Dictionary:
 func set_gif_processing_settings(settings: Dictionary) -> void:
 	if !(settings is Dictionary):
 		return
+	var previous_hover_only = _is_gif_hover_playback_only_enabled()
 	_gif_processing_settings["use_cache"] = bool(settings.get("use_cache", true))
 	_gif_processing_settings["skip_duplicate_frames"] = bool(settings.get("skip_duplicate_frames", true))
 	_gif_processing_settings["use_frame_limit"] = bool(settings.get("use_frame_limit", false))
 	_gif_processing_settings["max_frames"] = clamp(int(settings.get("max_frames", 36)), 1, 300)
+	_gif_processing_settings["play_on_hover_only"] = bool(settings.get("play_on_hover_only", true))
+	if previous_hover_only != _is_gif_hover_playback_only_enabled():
+		_refresh_gif_playback_state()
+		_needs_full_refresh = true
+
+
+func _is_gif_hover_playback_only_enabled() -> bool:
+	return bool(_gif_processing_settings.get("play_on_hover_only", true))
 
 
 func has_override(source_path: String) -> bool:
@@ -2627,7 +2675,7 @@ func save_animated_override_images(source_path: String, images: Array, delays: A
 		"provider_pack_name": provider_pack_name,
 		"updated_at": Time.get_datetime_string_from_system()
 	}
-	_override_texture_cache.erase(source_path)
+	_erase_override_texture_cache(source_path)
 	_save_manifest()
 	refresh_all_portraits()
 	_notify_override_changed(source_path)
@@ -2701,7 +2749,7 @@ func _save_static_override_data(source_path: String, normalized_image, edit_sour
 		"provider_pack_name": provider_pack_name,
 		"updated_at": Time.get_datetime_string_from_system()
 	}
-	_override_texture_cache.erase(source_path)
+	_erase_override_texture_cache(source_path)
 	_save_manifest()
 	refresh_all_portraits()
 	_notify_override_changed(source_path)
@@ -2723,7 +2771,7 @@ func remove_override(source_path: String) -> Dictionary:
 	_remove_entry_files(_manifest[source_path])
 
 	_manifest.erase(source_path)
-	_override_texture_cache.erase(source_path)
+	_erase_override_texture_cache(source_path)
 	_save_manifest()
 	_clear_source_overrides_from_tracked_portraits(source_path)
 	_clear_source_overrides_in_tree(get_tree().root, source_path)
@@ -3654,6 +3702,170 @@ func _is_hover_valid_ancient_text_card_root(card_root) -> bool:
 	return is_ancient_text_outside_enabled(source_path)
 
 
+func _has_animated_overrides() -> bool:
+	for source_path in _manifest.keys():
+		if _is_animated_override_source(String(source_path)):
+			return true
+	return false
+
+
+func _is_animated_override_source(source_path: String) -> bool:
+	source_path = _canonicalize_source_key(source_path)
+	if source_path == "" or !_manifest.has(source_path):
+		return false
+	return _is_animated_entry(_manifest.get(source_path, null))
+
+
+func _get_gif_override_source_for_card_root(card_root) -> String:
+	if card_root == null or !is_instance_valid(card_root):
+		return ""
+	if !_is_node_visible_in_tree(card_root):
+		return ""
+	var source_path = _canonicalize_source_key(_get_ancient_text_layout_source_path(card_root))
+	if _is_animated_override_source(source_path):
+		return source_path
+	return ""
+
+
+func _is_valid_gif_card_root(card_root) -> bool:
+	return _get_gif_override_source_for_card_root(card_root) != ""
+
+
+func _find_animated_gif_card_root_at_position(mouse_position: Vector2):
+	var best_root = null
+	var best_area: float = INF
+	var seen_roots := {}
+	for index in range(_portrait_refs.size() - 1, -1, -1):
+		var texture_rect = _portrait_refs[index].get_ref()
+		if texture_rect == null:
+			_portrait_refs.remove_at(index)
+			continue
+		var card_root = _find_card_root(texture_rect)
+		if card_root == null or seen_roots.has(card_root):
+			continue
+		seen_roots[card_root] = true
+		if !_is_valid_gif_card_root(card_root):
+			continue
+		var card_rect = _get_card_hover_rect_global(card_root)
+		if card_rect.size.x <= 0.0 or card_rect.size.y <= 0.0 or !card_rect.has_point(mouse_position):
+			continue
+		var area = card_rect.size.x * card_rect.size.y
+		if area < best_area:
+			best_area = area
+			best_root = card_root
+	return best_root
+
+
+func _get_active_gif_card_root():
+	if _ancient_text_left_mouse_down and _pressed_gif_card_root != null and is_instance_valid(_pressed_gif_card_root):
+		if _get_gif_override_source_for_card_root(_pressed_gif_card_root) == _pressed_gif_card_source_path:
+			return _pressed_gif_card_root
+	var tree = get_tree()
+	if tree != null:
+		var inspect_card_root = _find_visible_gif_inspect_card_root(tree.root)
+		if inspect_card_root != null:
+			return inspect_card_root
+	var viewport = get_viewport()
+	if viewport == null:
+		return null
+	return _find_animated_gif_card_root_at_position(viewport.get_mouse_position())
+
+
+func _should_animate_gif_card(card_root, source_path: String, active_root = null) -> bool:
+	source_path = _canonicalize_source_key(source_path)
+	if source_path == "" or !_is_animated_override_source(source_path):
+		return false
+	if !_is_gif_hover_playback_only_enabled():
+		return true
+	if card_root == null or !is_instance_valid(card_root):
+		return false
+	if active_root == null:
+		active_root = _get_active_gif_card_root()
+	return active_root != null and is_instance_valid(active_root) and card_root == active_root
+
+
+func _find_gif_card_root_in_node(node):
+	if node == null or !is_instance_valid(node):
+		return null
+	if String(node.name) == "CardContainer" and _is_valid_gif_card_root(node):
+		return node
+	var children = node.get_children()
+	for index in range(children.size() - 1, -1, -1):
+		var found = _find_gif_card_root_in_node(children[index])
+		if found != null:
+			return found
+	return null
+
+
+func _find_visible_gif_inspect_card_root(node):
+	if node == null or !is_instance_valid(node):
+		return null
+	if String(node.name) == "InspectCardScreen" and _is_node_visible_in_tree(node):
+		var screen_card = _find_gif_card_root_in_node(node)
+		if screen_card != null:
+			return screen_card
+	var children = node.get_children()
+	for index in range(children.size() - 1, -1, -1):
+		var found = _find_visible_gif_inspect_card_root(children[index])
+		if found != null:
+			return found
+	return null
+
+
+func _apply_gif_texture_to_target(target, source_path: String, texture, animate: bool) -> void:
+	if !(target is TextureRect) or !(texture is Texture2D):
+		return
+	var texture_rect = target as TextureRect
+	if texture_rect.texture != texture:
+		texture_rect.texture = texture
+	texture_rect.set_meta(META_GIF_PLAYBACK_ACTIVE, animate)
+	texture_rect.set_meta(META_GIF_PLAYBACK_SOURCE, source_path)
+
+
+func _sync_gif_texture_for_portrait(texture_rect, active_root) -> void:
+	if !(texture_rect is TextureRect):
+		return
+	var card_root = _find_card_root(texture_rect)
+	if card_root == null or !is_instance_valid(card_root) or !_is_node_visible_in_tree(card_root):
+		return
+	var source_path = _get_gif_override_source_for_card_root(card_root)
+	if source_path == "":
+		return
+	var entry = _manifest.get(source_path, null)
+	if !(entry is Dictionary):
+		return
+	var display_mode = String(entry.get("display_mode", DISPLAY_MODE_DEFAULT))
+	var should_animate = _should_animate_gif_card(card_root, source_path, active_root)
+	var override_texture = _get_override_texture(source_path, should_animate)
+	if override_texture == null:
+		return
+	var node_name = String(texture_rect.name)
+	if display_mode == DISPLAY_MODE_FULL_ART:
+		if node_name != "Portrait":
+			return
+		var full_art_layer = _get_full_art_layer(card_root)
+		if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)) and String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, "")) == source_path:
+			_apply_gif_texture_to_target(full_art_layer, source_path, override_texture, should_animate)
+		return
+	if node_name != "Portrait" and node_name != "AncientPortrait":
+		return
+	if texture_rect is CanvasItem and !(texture_rect as CanvasItem).is_visible_in_tree():
+		return
+	_apply_gif_texture_to_target(texture_rect, source_path, override_texture, should_animate)
+
+
+func _refresh_gif_playback_state() -> void:
+	if !_has_animated_overrides():
+		return
+	var active_root = _get_active_gif_card_root()
+	for index in range(_portrait_refs.size() - 1, -1, -1):
+		var texture_rect = _portrait_refs[index].get_ref()
+		if texture_rect == null:
+			_portrait_refs.remove_at(index)
+			continue
+		_sync_gif_texture_for_portrait(texture_rect, active_root)
+
+
 func _find_ancient_text_card_root_at_position(mouse_position: Vector2):
 	var best_root = null
 	var best_area: float = INF
@@ -4554,7 +4766,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 		texture_rect.set_meta(META_REFRESH_SIGNATURE, refresh_signature)
 		return
 
-	var override_texture = _get_override_texture(stored_source_path)
+	var override_texture = _get_override_texture(stored_source_path, _should_animate_gif_card(card_root, stored_source_path))
 	if override_texture != null:
 		var entry = _manifest.get(stored_source_path, null)
 		var display_mode = String(entry.get("display_mode", DISPLAY_MODE_DEFAULT)) if entry is Dictionary else DISPLAY_MODE_DEFAULT
@@ -4594,12 +4806,18 @@ func _refresh_portrait_node(texture_rect) -> void:
 	texture_rect.set_meta(META_REFRESH_SIGNATURE, _build_refresh_signature(texture_rect, texture_rect.texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible))
 
 
-func _get_override_texture(source_path: String):
+func _get_override_texture_cache_key(source_path: String, animate: bool = true) -> String:
+	return source_path if animate else "%s%s" % [source_path, STATIC_OVERRIDE_CACHE_SUFFIX]
+
+
+func _erase_override_texture_cache(source_path: String) -> void:
+	_override_texture_cache.erase(source_path)
+	_override_texture_cache.erase(_get_override_texture_cache_key(source_path, false))
+
+
+func _get_override_texture(source_path: String, animate: bool = true):
 	if !_manifest.has(source_path):
 		return null
-
-	if _override_texture_cache.has(source_path):
-		return _override_texture_cache[source_path]
 
 	var entry = _manifest[source_path]
 	if !(entry is Dictionary):
@@ -4607,6 +4825,9 @@ func _get_override_texture(source_path: String):
 	var display_mode = String(entry.get("display_mode", DISPLAY_MODE_DEFAULT))
 
 	if _is_animated_entry(entry):
+		var animated_cache_key = _get_override_texture_cache_key(source_path, animate)
+		if _override_texture_cache.has(animated_cache_key):
+			return _override_texture_cache[animated_cache_key]
 		var frame_paths = entry.get("source_frame_paths", entry.get("frame_paths", [])) if display_mode == DISPLAY_MODE_FULL_ART else entry.get("frame_paths", [])
 		var frame_delays = entry.get("frame_delays", [])
 		if !(frame_paths is Array) or frame_paths.is_empty():
@@ -4627,12 +4848,20 @@ func _get_override_texture(source_path: String):
 				"texture": ImageTexture.create_from_image(frame_image),
 				"delay": max(0.02, float(frame_delays[index]) if index < frame_delays.size() else 0.1)
 			})
+			if !animate:
+				break
 
 		if loaded_frames.is_empty():
 			_remove_entry_files(entry)
 			_manifest.erase(source_path)
+			_erase_override_texture_cache(source_path)
 			_save_manifest()
 			return null
+
+		if !animate:
+			var static_texture = loaded_frames[0]["texture"]
+			_override_texture_cache[animated_cache_key] = static_texture
+			return static_texture
 
 		var animated_texture := AnimatedTexture.new()
 		animated_texture.frames = loaded_frames.size()
@@ -4642,8 +4871,11 @@ func _get_override_texture(source_path: String):
 			animated_texture.set_frame_texture(index, frame_entry["texture"])
 			animated_texture.set_frame_duration(index, frame_entry["delay"])
 
-		_override_texture_cache[source_path] = animated_texture
+		_override_texture_cache[animated_cache_key] = animated_texture
 		return animated_texture
+
+	if _override_texture_cache.has(source_path):
+		return _override_texture_cache[source_path]
 
 	if !entry.has("override_path"):
 		return null
@@ -4816,7 +5048,7 @@ func _sanitize_manifest_for_missing_sources() -> void:
 		if entry is Dictionary:
 			_remove_entry_files(entry)
 		_manifest.erase(source_path)
-		_override_texture_cache.erase(source_path)
+		_erase_override_texture_cache(source_path)
 		removed_any = true
 	if removed_any:
 		_save_manifest_now()

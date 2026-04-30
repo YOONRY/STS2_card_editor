@@ -201,6 +201,7 @@ var _gif_preset_quality_button: Button
 var _gif_cache_check: CheckBox
 var _gif_dedupe_check: CheckBox
 var _gif_limit_check: CheckBox
+var _gif_hover_playback_check: CheckBox
 var _gif_limit_spinbox: SpinBox
 var _gif_settings_apply_button: Button
 var _gif_settings_close_button: Button
@@ -209,7 +210,8 @@ var _gif_processing_settings := {
 	"use_cache": true,
 	"skip_duplicate_frames": true,
 	"use_frame_limit": false,
-	"max_frames": 36
+	"max_frames": 36,
+	"play_on_hover_only": true
 }
 var _gif_processing_settings_draft := {}
 var _infection_effect_hidden_enabled := true
@@ -303,6 +305,7 @@ func _load_ui_settings() -> void:
 			_gif_processing_settings["skip_duplicate_frames"] = bool(parsed_gif_settings.get("skip_duplicate_frames", true))
 			_gif_processing_settings["use_frame_limit"] = bool(parsed_gif_settings.get("use_frame_limit", false))
 			_gif_processing_settings["max_frames"] = clamp(int(parsed_gif_settings.get("max_frames", 36)), 1, 300)
+			_gif_processing_settings["play_on_hover_only"] = bool(parsed_gif_settings.get("play_on_hover_only", true))
 		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", true))
 
 
@@ -494,7 +497,8 @@ func _normalize_gif_processing_settings(settings: Dictionary) -> Dictionary:
 		"use_cache": bool(settings.get("use_cache", true)),
 		"skip_duplicate_frames": bool(settings.get("skip_duplicate_frames", true)),
 		"use_frame_limit": bool(settings.get("use_frame_limit", false)),
-		"max_frames": clamp(int(settings.get("max_frames", 36)), 1, 300)
+		"max_frames": clamp(int(settings.get("max_frames", 36)), 1, 300),
+		"play_on_hover_only": bool(settings.get("play_on_hover_only", true))
 	}
 
 
@@ -511,8 +515,16 @@ func _sync_gif_settings_draft_from_ui() -> void:
 		"use_cache": _gif_cache_check.button_pressed,
 		"skip_duplicate_frames": _gif_dedupe_check.button_pressed,
 		"use_frame_limit": _gif_limit_check.button_pressed,
-		"max_frames": int(_gif_limit_spinbox.value)
+		"max_frames": int(_gif_limit_spinbox.value),
+		"play_on_hover_only": _gif_hover_playback_check.button_pressed
 	})
+
+
+func _gif_settings_require_rebuild(previous_settings: Dictionary, next_settings: Dictionary) -> bool:
+	for key in ["use_cache", "skip_duplicate_frames", "use_frame_limit", "max_frames"]:
+		if previous_settings.get(key, null) != next_settings.get(key, null):
+			return true
+	return false
 
 
 func _refresh_gif_settings_ui() -> void:
@@ -536,6 +548,8 @@ func _refresh_gif_settings_ui() -> void:
 	_gif_cache_check.text = "GIF 캐시 사용" if is_ko else "Use GIF cache"
 	_gif_dedupe_check.text = "중복 프레임 건너뛰기" if is_ko else "Skip duplicate frames"
 	_gif_limit_check.text = "프레임 제한 사용" if is_ko else "Use frame limit"
+	if _gif_hover_playback_check != null:
+		_gif_hover_playback_check.text = "마우스 오버/선택 시에만 GIF 재생" if is_ko else "Play GIFs only on hover/selection"
 	if _gif_settings_apply_button != null:
 		_gif_settings_apply_button.text = "적용" if is_ko else "Apply"
 	_gif_settings_close_button.text = "닫기" if is_ko else "Close"
@@ -544,6 +558,8 @@ func _refresh_gif_settings_ui() -> void:
 	_gif_cache_check.button_pressed = bool(ui_settings.get("use_cache", true))
 	_gif_dedupe_check.button_pressed = bool(ui_settings.get("skip_duplicate_frames", true))
 	_gif_limit_check.button_pressed = bool(ui_settings.get("use_frame_limit", false))
+	if _gif_hover_playback_check != null:
+		_gif_hover_playback_check.button_pressed = bool(ui_settings.get("play_on_hover_only", true))
 	_gif_limit_spinbox.value = int(ui_settings.get("max_frames", 36))
 	_gif_limit_spinbox.editable = _gif_limit_check.button_pressed
 	_gif_settings_ui_syncing = false
@@ -735,6 +751,9 @@ func _build_adjust_ui() -> void:
 
 	_gif_limit_check = CheckBox.new()
 	gif_root.add_child(_gif_limit_check)
+
+	_gif_hover_playback_check = CheckBox.new()
+	gif_root.add_child(_gif_hover_playback_check)
 
 	var limit_row = HBoxContainer.new()
 	limit_row.add_theme_constant_override("separation", 8)
@@ -1062,13 +1081,19 @@ func _on_gif_settings_apply_pressed() -> void:
 	_sync_gif_settings_draft_from_ui()
 	if _gif_processing_settings_draft.is_empty():
 		return
-	_gif_processing_settings = _normalize_gif_processing_settings(_gif_processing_settings_draft)
+	var previous_settings = _normalize_gif_processing_settings(_gif_processing_settings)
+	var next_settings = _normalize_gif_processing_settings(_gif_processing_settings_draft)
+	var requires_rebuild = _gif_settings_require_rebuild(previous_settings, next_settings)
+	_gif_processing_settings = next_settings
 	_gif_processing_settings_draft.clear()
 	_apply_gif_processing_settings_to_manager()
 	_save_ui_settings()
 	if _gif_settings_popup != null:
 		_gif_settings_popup.hide()
-	await _reapply_gif_settings_globally()
+	if requires_rebuild:
+		await _reapply_gif_settings_globally()
+	else:
+		_set_status("GIF 설정을 적용했습니다." if _locale == "ko" else "GIF settings applied.", false)
 
 
 func _on_gif_settings_changed(_value = null) -> void:
@@ -1928,6 +1953,7 @@ func _bind_signals() -> void:
 	_gif_cache_check.toggled.connect(_on_gif_settings_changed)
 	_gif_dedupe_check.toggled.connect(_on_gif_settings_changed)
 	_gif_limit_check.toggled.connect(_on_gif_settings_changed)
+	_gif_hover_playback_check.toggled.connect(_on_gif_settings_changed)
 	_gif_limit_spinbox.value_changed.connect(_on_gif_settings_changed)
 	_gif_preset_fast_button.pressed.connect(_on_gif_preset_fast_pressed)
 	_gif_preset_balanced_button.pressed.connect(_on_gif_preset_balanced_pressed)
