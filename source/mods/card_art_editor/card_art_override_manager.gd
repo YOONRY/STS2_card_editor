@@ -52,6 +52,7 @@ const STARTUP_RESCAN_STEP_INTERVAL := 6
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
 const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
+const ANCIENT_TEXT_DRAG_SUPPRESS_DISTANCE := 12.0
 
 signal overrides_changed(source_path)
 signal art_packs_changed()
@@ -94,6 +95,9 @@ var _pending_ancient_text_click_position := Vector2.INF
 var _pending_ancient_text_click_card_root: Node = null
 var _pending_ancient_text_click_source_path := ""
 var _pending_ancient_text_click_from_hitbox := false
+var _ancient_text_left_mouse_down := false
+var _ancient_text_press_position := Vector2.INF
+var _ancient_text_dragging := false
 var _hover_tips_container_cache: Node = null
 
 
@@ -116,15 +120,19 @@ func _process(delta: float) -> void:
 			_register_existing(get_tree().root)
 		_startup_rescan_frames_remaining -= 1
 		_needs_full_refresh = true
-	if _pending_ancient_text_click_frames > 0:
-		_pending_ancient_text_click_frames -= 1
-		if _try_show_pending_ancient_text_click_tip():
-			_pending_ancient_text_click_frames = 0
-	if _pending_ancient_text_click_frames <= 0 and (!_ancient_text_outside_by_source.is_empty() or _ancient_text_hover_tip != null):
-		_ancient_text_hover_refresh_accumulator += delta
-		if _ancient_text_hover_refresh_accumulator >= ANCIENT_TEXT_HOVER_REFRESH_INTERVAL:
-			_ancient_text_hover_refresh_accumulator = 0.0
-			_refresh_ancient_text_hover_tip()
+	if _ancient_text_dragging:
+		_clear_pending_ancient_text_click()
+		_hide_ancient_text_hover_tip()
+	else:
+		if _pending_ancient_text_click_frames > 0:
+			_pending_ancient_text_click_frames -= 1
+			if _try_show_pending_ancient_text_click_tip():
+				_pending_ancient_text_click_frames = 0
+		if _pending_ancient_text_click_frames <= 0 and (!_ancient_text_outside_by_source.is_empty() or _ancient_text_hover_tip != null):
+			_ancient_text_hover_refresh_accumulator += delta
+			if _ancient_text_hover_refresh_accumulator >= ANCIENT_TEXT_HOVER_REFRESH_INTERVAL:
+				_ancient_text_hover_refresh_accumulator = 0.0
+				_refresh_ancient_text_hover_tip()
 	if !_needs_full_refresh:
 		return
 	if REFRESH_INTERVAL <= 0.0:
@@ -140,6 +148,15 @@ func _process(delta: float) -> void:
 
 
 func _input(event) -> void:
+	if event is InputEventMouseMotion:
+		if _ancient_text_left_mouse_down:
+			var motion_event = event as InputEventMouseMotion
+			var motion_position = _get_current_mouse_position(motion_event.position)
+			if !_ancient_text_dragging and _ancient_text_press_position != Vector2.INF and _ancient_text_press_position.distance_to(motion_position) >= ANCIENT_TEXT_DRAG_SUPPRESS_DISTANCE:
+				_ancient_text_dragging = true
+				_clear_pending_ancient_text_click()
+				_hide_ancient_text_hover_tip()
+		return
 	if event is InputEventMouseButton:
 		var mouse_event = event as InputEventMouseButton
 		if mouse_event.button_index != MOUSE_BUTTON_LEFT:
@@ -149,6 +166,9 @@ func _input(event) -> void:
 		if viewport != null:
 			click_position = viewport.get_mouse_position()
 		if mouse_event.pressed:
+			_ancient_text_left_mouse_down = true
+			_ancient_text_press_position = click_position
+			_ancient_text_dragging = false
 			_pending_ancient_text_click_position = click_position
 			if !_pending_ancient_text_click_from_hitbox:
 				_hide_ancient_text_hover_tip()
@@ -156,6 +176,12 @@ func _input(event) -> void:
 				_pending_ancient_text_click_source_path = ""
 			_pending_ancient_text_click_frames = 0
 		else:
+			if _ancient_text_dragging:
+				_clear_pending_ancient_text_click()
+				_hide_ancient_text_hover_tip()
+				call_deferred("_reset_ancient_text_drag_state")
+				return
+			_reset_ancient_text_drag_state()
 			_pending_ancient_text_click_position = click_position
 			if !_pending_ancient_text_click_from_hitbox:
 				var released_card_root = _find_ancient_text_card_root_at_position(click_position)
@@ -170,6 +196,20 @@ func _get_current_mouse_position(fallback_position: Vector2 = Vector2.INF) -> Ve
 	if viewport != null:
 		return viewport.get_mouse_position()
 	return fallback_position
+
+
+func _clear_pending_ancient_text_click() -> void:
+	_pending_ancient_text_click_frames = 0
+	_pending_ancient_text_click_position = Vector2.INF
+	_pending_ancient_text_click_card_root = null
+	_pending_ancient_text_click_source_path = ""
+	_pending_ancient_text_click_from_hitbox = false
+
+
+func _reset_ancient_text_drag_state() -> void:
+	_ancient_text_left_mouse_down = false
+	_ancient_text_press_position = Vector2.INF
+	_ancient_text_dragging = false
 
 
 func _set_pending_ancient_text_click_card(card_root) -> bool:
@@ -195,6 +235,10 @@ func _on_ancient_text_card_hitbox_gui_input(event, card_root) -> void:
 		_pending_ancient_text_click_position = click_position
 		_pending_ancient_text_click_from_hitbox = _set_pending_ancient_text_click_card(card_root)
 		_pending_ancient_text_click_frames = 0
+		return
+	if _ancient_text_dragging:
+		_clear_pending_ancient_text_click()
+		_hide_ancient_text_hover_tip()
 		return
 	_pending_ancient_text_click_position = click_position
 	if _set_pending_ancient_text_click_card(card_root):
@@ -3679,6 +3723,10 @@ func _find_visible_ancient_text_inspect_card_root_for_source(node, source_path: 
 
 
 func _try_show_pending_ancient_text_click_tip() -> bool:
+	if _ancient_text_dragging:
+		_clear_pending_ancient_text_click()
+		_hide_ancient_text_hover_tip()
+		return false
 	if _pending_ancient_text_click_position == Vector2.INF:
 		return false
 	var tree = get_tree()
@@ -3912,6 +3960,8 @@ func _position_ancient_text_hover_tip(card_root) -> void:
 
 
 func _show_ancient_text_tip_for_card(card_root, locked: bool) -> bool:
+	if _ancient_text_dragging:
+		return false
 	if !_is_hover_valid_ancient_text_card_root(card_root):
 		return false
 	var description_text = _normalize_ancient_text_tooltip_text(_get_card_description_text(card_root))
@@ -3942,6 +3992,9 @@ func _show_ancient_text_tip_for_card(card_root, locked: bool) -> bool:
 
 
 func _refresh_ancient_text_hover_tip() -> void:
+	if _ancient_text_dragging:
+		_hide_ancient_text_hover_tip()
+		return
 	var card_root = _find_hovered_ancient_text_card_root()
 	if _ancient_text_hover_tip_locked:
 		if _is_hover_valid_ancient_text_card_root(_ancient_text_hover_tip_owner):
