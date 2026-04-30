@@ -46,8 +46,13 @@ const META_NAMED_NODE_CACHE := "_card_art_named_node_cache"
 const META_ANCIENT_TEXT_HITBOX_CONNECTED := "_card_art_ancient_text_hitbox_connected"
 const META_GIF_PLAYBACK_ACTIVE := "_card_art_gif_playback_active"
 const META_GIF_PLAYBACK_SOURCE := "_card_art_gif_playback_source"
+const META_FULL_ART_FIRE_ORIGINAL_STATE := "_card_art_full_art_fire_original_state"
 const FULL_ART_LAYER_NAME := "CardArtFullArtLayer"
 const STATIC_OVERRIDE_CACHE_SUFFIX := "::static"
+const FULL_ART_HIGHLIGHT_COMMON_COLOR := Color(0.72, 0.74, 0.78, 1.0)
+const FULL_ART_HIGHLIGHT_UNCOMMON_COLOR := Color(0.10, 0.22, 0.72, 1.0)
+const FULL_ART_HIGHLIGHT_RARE_COLOR := Color(1.0, 0.72, 0.16, 1.0)
+const FULL_ART_FIRE_SHADER_CODE := "shader_type canvas_item;\nuniform vec4 tint_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);\nvoid fragment() {\n\tvec4 tex_color = texture(TEXTURE, UV) * COLOR;\n\tfloat brightness = max(max(tex_color.r, tex_color.g), tex_color.b);\n\tCOLOR = vec4(tint_color.rgb * brightness, tex_color.a * tint_color.a);\n}\n"
 const FULL_ART_INSET_STATIC := 0
 const FULL_ART_INSET_ANIMATED := 0
 const STARTUP_RESCAN_FRAMES := 180
@@ -72,6 +77,7 @@ var _session_api_key := ""
 var _overlay_scene := preload("res://mods/card_art_editor/inspect_card_art_editor.tscn")
 var _startup_rescan_frames_remaining := STARTUP_RESCAN_FRAMES
 var _infection_effect_hidden_enabled := true
+var _full_art_rarity_fire_enabled := true
 var _ancient_text_outside_by_source := {}
 var _needs_full_refresh := true
 var _startup_rescan_tick := 0
@@ -107,6 +113,7 @@ var _ancient_text_dragging := false
 var _pressed_gif_card_root: Node = null
 var _pressed_gif_card_source_path := ""
 var _hover_tips_container_cache: Node = null
+var _full_art_fire_shader = null
 
 
 func _ready() -> void:
@@ -513,6 +520,18 @@ func set_infection_effect_hidden_enabled(enabled: bool) -> void:
 	_save_persistent_preferences()
 
 
+func is_full_art_rarity_fire_enabled() -> bool:
+	return _full_art_rarity_fire_enabled
+
+
+func set_full_art_rarity_fire_enabled(enabled: bool) -> void:
+	if _full_art_rarity_fire_enabled == enabled:
+		return
+	_full_art_rarity_fire_enabled = enabled
+	_save_persistent_preferences()
+	refresh_all_portraits()
+
+
 func get_ancient_text_outside_settings() -> Dictionary:
 	return _ancient_text_outside_by_source.duplicate(true)
 
@@ -545,6 +564,7 @@ func _load_persistent_preferences() -> void:
 	var parsed = JSON.parse_string(file.get_as_text())
 	if parsed is Dictionary:
 		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", _infection_effect_hidden_enabled))
+		_full_art_rarity_fire_enabled = bool(parsed.get("full_art_rarity_fire_enabled", _full_art_rarity_fire_enabled))
 		var parsed_ancient_settings = parsed.get("ancient_text_outside_by_source", {})
 		if parsed_ancient_settings is Dictionary:
 			_ancient_text_outside_by_source.clear()
@@ -565,6 +585,7 @@ func _save_persistent_preferences() -> void:
 			if parsed is Dictionary:
 				settings = parsed.duplicate(true)
 	settings["infection_effect_hidden_enabled"] = _infection_effect_hidden_enabled
+	settings["full_art_rarity_fire_enabled"] = _full_art_rarity_fire_enabled
 	settings["ancient_text_outside_by_source"] = _ancient_text_outside_by_source.duplicate(true)
 	var file = FileAccess.open(STORAGE_UI_SETTINGS_PATH, FileAccess.WRITE)
 	if file == null:
@@ -4232,6 +4253,157 @@ func _get_card_model_from_root(card_root):
 	return null
 
 
+func _normalize_card_rarity_name(raw_value) -> String:
+	if raw_value == null:
+		return ""
+	match typeof(raw_value):
+		TYPE_INT, TYPE_FLOAT:
+			match int(raw_value):
+				0:
+					return "basic"
+				1:
+					return "common"
+				2:
+					return "uncommon"
+				3:
+					return "rare"
+				_:
+					return ""
+	var normalized := String(raw_value).strip_edges().to_lower()
+	if normalized == "":
+		return ""
+	if normalized.ends_with(".basic") or normalized == "basic" or normalized == "starter":
+		return "basic"
+	if normalized.ends_with(".common") or normalized == "common" or normalized == "일반":
+		return "common"
+	if normalized.ends_with(".uncommon") or normalized == "uncommon" or normalized == "고급":
+		return "uncommon"
+	if normalized.ends_with(".rare") or normalized == "rare" or normalized == "희귀" or normalized == "진귀":
+		return "rare"
+	if normalized.contains("uncommon"):
+		return "uncommon"
+	if normalized.contains("common"):
+		return "common"
+	if normalized.contains("rare"):
+		return "rare"
+	return normalized
+
+
+func _get_card_rarity_name_from_model(model) -> String:
+	if model == null:
+		return ""
+	return _normalize_card_rarity_name(model.get("Rarity"))
+
+
+func _get_rarity_name_from_material(material) -> String:
+	if material == null:
+		return ""
+	var material_path = String(material.resource_path).to_lower() if material is Resource else ""
+	var material_name = String(material.resource_name).to_lower() if material is Resource else ""
+	var combined := "%s %s %s" % [material_path, material_name, String(material).to_lower()]
+	if combined.contains("uncommon"):
+		return "uncommon"
+	if combined.contains("rare"):
+		return "rare"
+	if combined.contains("common"):
+		return "common"
+	return ""
+
+
+func _get_card_rarity_name_from_visuals(card_root) -> String:
+	if card_root == null:
+		return ""
+	for node_name in ["TitleBanner", "PortraitBorder", "Frame"]:
+		var node = _find_named_descendant(card_root, node_name)
+		if node is CanvasItem:
+			var rarity_name = _get_rarity_name_from_material((node as CanvasItem).material)
+			if rarity_name != "":
+				return rarity_name
+	return ""
+
+
+func _get_full_art_highlight_color_for_card(card_root) -> Color:
+	var rarity_name = _get_card_rarity_name_from_visuals(card_root)
+	if rarity_name == "":
+		rarity_name = _get_card_rarity_name_from_model(_get_card_model_from_root(card_root))
+	match rarity_name:
+		"rare":
+			return FULL_ART_HIGHLIGHT_RARE_COLOR
+		"uncommon":
+			return FULL_ART_HIGHLIGHT_UNCOMMON_COLOR
+		"basic", "common":
+			return FULL_ART_HIGHLIGHT_COMMON_COLOR
+		_:
+			return FULL_ART_HIGHLIGHT_COMMON_COLOR
+
+
+func _find_ancient_fire_node(card_root):
+	if card_root == null:
+		return null
+	var ancient_banner = _find_named_descendant(card_root, "AncientBanner")
+	if ancient_banner != null:
+		var fire = _find_named_descendant(ancient_banner, "Fire")
+		if fire != null:
+			return fire
+	return _find_named_descendant(card_root, "Fire")
+
+
+func _get_full_art_fire_shader():
+	if _full_art_fire_shader is Shader:
+		return _full_art_fire_shader
+	var shader := Shader.new()
+	shader.code = FULL_ART_FIRE_SHADER_CODE
+	_full_art_fire_shader = shader
+	return _full_art_fire_shader
+
+
+func _store_full_art_fire_original_state(fire) -> void:
+	if !(fire is CanvasItem):
+		return
+	if fire.has_meta(META_FULL_ART_FIRE_ORIGINAL_STATE):
+		return
+	var canvas_item = fire as CanvasItem
+	fire.set_meta(META_FULL_ART_FIRE_ORIGINAL_STATE, {
+		"material": canvas_item.material,
+		"self_modulate": canvas_item.self_modulate
+	})
+
+
+func _restore_full_art_fire_rarity_color(card_root) -> void:
+	var fire = _find_ancient_fire_node(card_root)
+	if !(fire is CanvasItem):
+		return
+	var canvas_item = fire as CanvasItem
+	if fire.has_meta(META_FULL_ART_FIRE_ORIGINAL_STATE):
+		var state = fire.get_meta(META_FULL_ART_FIRE_ORIGINAL_STATE)
+		if state is Dictionary:
+			canvas_item.material = state.get("material", null)
+			var original_modulate = state.get("self_modulate", null)
+			if original_modulate is Color:
+				canvas_item.self_modulate = original_modulate
+		fire.remove_meta(META_FULL_ART_FIRE_ORIGINAL_STATE)
+
+
+func _apply_full_art_fire_rarity_color(card_root) -> void:
+	var fire = _find_ancient_fire_node(card_root)
+	if !(fire is CanvasItem):
+		return
+	if !_full_art_rarity_fire_enabled:
+		_restore_full_art_fire_rarity_color(card_root)
+		return
+	_store_full_art_fire_original_state(fire)
+	var shader = _get_full_art_fire_shader()
+	if !(shader is Shader):
+		return
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	material.set_shader_parameter("tint_color", _get_full_art_highlight_color_for_card(card_root))
+	var canvas_item = fire as CanvasItem
+	canvas_item.material = material
+	canvas_item.self_modulate = Color(1, 1, 1, 1)
+	canvas_item.visible = true
+
+
 func _get_effective_ancient_card_type_name(model) -> String:
 	if model == null:
 		return ""
@@ -4437,6 +4609,7 @@ func _apply_full_art_state(texture_rect, source_path: String, override_texture) 
 		ancient_text_bg.visible = true
 	if ancient_banner is CanvasItem:
 		ancient_banner.visible = true
+	_apply_full_art_fire_rarity_color(card_root)
 	texture_rect.set_meta(META_FULL_ART_ACTIVE, true)
 	_apply_ancient_text_outside_layout(card_root)
 	return true
@@ -4470,6 +4643,7 @@ func _clear_custom_full_art_layer(card_root) -> void:
 		(portrait as TextureRect).self_modulate = Color(1, 1, 1, 1)
 	if ancient_portrait is TextureRect:
 		(ancient_portrait as TextureRect).self_modulate = Color(1, 1, 1, 1)
+	_restore_full_art_fire_rarity_color(card_root)
 	if is_ancient_layout:
 		if portrait_border is CanvasItem:
 			portrait_border.visible = false
@@ -4537,6 +4711,7 @@ func _restore_full_art_state(texture_rect) -> void:
 		frame.visible = true
 	if title_banner is CanvasItem:
 		title_banner.visible = true
+	_restore_full_art_fire_rarity_color(card_root)
 	if ancient_highlight is CanvasItem:
 		ancient_highlight.visible = false
 	if ancient_border is CanvasItem:
@@ -4681,6 +4856,7 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 		"ancient_visible": ancient_visible,
 		"full_art_active": full_art_active,
 		"full_art_owner": full_art_owner,
+		"full_art_rarity_fire_enabled": _full_art_rarity_fire_enabled,
 		"texture_path": texture_path,
 		"texture_size": [texture_size.x, texture_size.y],
 		"override_active": bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))
