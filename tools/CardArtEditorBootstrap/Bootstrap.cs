@@ -407,7 +407,7 @@ public static class Bootstrap
                 {
                     canvasItem.Visible = false;
                 }
-                Log($"Suppressed Infection effect node: {childNode.GetPath()} [{childNode.GetType().Name}]");
+                Log($"Suppressed Infection effect node: {DescribeNodePath(childNode)} [{childNode.GetType().Name}]");
             }
 
             HideInfectionEffectNodes(childNode);
@@ -423,7 +423,7 @@ public static class Bootstrap
 
         var indent = new string(' ', depth * 2);
         var visibleInfo = node is CanvasItem canvasItem ? $" visible={canvasItem.Visible}" : string.Empty;
-        Log($"{indent}- {node.GetPath()} [{node.GetType().FullName}]{visibleInfo}");
+        Log($"{indent}- {DescribeNodePath(node)} [{node.GetType().FullName}]{visibleInfo}");
 
         foreach (var child in node.GetChildren())
         {
@@ -431,6 +431,37 @@ public static class Bootstrap
             {
                 DumpNodeTree(childNode, depth + 1);
             }
+        }
+    }
+
+    private static string DescribeNodePath(Node node)
+    {
+        try
+        {
+            if (node is null || !GodotObject.IsInstanceValid(node))
+            {
+                return "<invalid>";
+            }
+
+            if (node.IsInsideTree())
+            {
+                return node.GetPath().ToString();
+            }
+
+            var parts = new List<string>();
+            var current = node;
+            while (current is not null && GodotObject.IsInstanceValid(current))
+            {
+                parts.Add(current.Name.ToString());
+                current = current.GetParent();
+            }
+
+            parts.Reverse();
+            return "<detached>/" + string.Join("/", parts);
+        }
+        catch (Exception ex)
+        {
+            return $"<path unavailable: {ex.GetType().Name}>";
         }
     }
 

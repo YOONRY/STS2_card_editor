@@ -77,7 +77,7 @@ var _session_api_key := ""
 var _overlay_scene := preload("res://mods/card_art_editor/inspect_card_art_editor.tscn")
 var _startup_rescan_frames_remaining := STARTUP_RESCAN_FRAMES
 var _infection_effect_hidden_enabled := true
-var _full_art_rarity_fire_enabled := true
+var _full_art_rarity_fire_enabled := false
 var _full_art_rarity_fire_by_source := {}
 var _ancient_text_outside_by_source := {}
 var _needs_full_refresh := true
@@ -87,7 +87,7 @@ var _gif_processing_settings := {
 	"skip_duplicate_frames": true,
 	"use_frame_limit": false,
 	"max_frames": 36,
-	"play_on_hover_only": true
+	"play_on_hover_only": false
 }
 var _batch_update_depth := 0
 var _batch_manifest_dirty := false
@@ -314,7 +314,7 @@ func set_gif_processing_settings(settings: Dictionary) -> void:
 	_gif_processing_settings["skip_duplicate_frames"] = bool(settings.get("skip_duplicate_frames", true))
 	_gif_processing_settings["use_frame_limit"] = bool(settings.get("use_frame_limit", false))
 	_gif_processing_settings["max_frames"] = clamp(int(settings.get("max_frames", 36)), 1, 300)
-	_gif_processing_settings["play_on_hover_only"] = bool(settings.get("play_on_hover_only", true))
+	_gif_processing_settings["play_on_hover_only"] = bool(settings.get("play_on_hover_only", false))
 	if previous_hover_only != _is_gif_hover_playback_only_enabled():
 		_refresh_gif_playback_state()
 		_needs_full_refresh = true
@@ -327,11 +327,11 @@ func _load_gif_processing_settings_from_dictionary(settings: Dictionary) -> void
 	_gif_processing_settings["skip_duplicate_frames"] = bool(settings.get("skip_duplicate_frames", true))
 	_gif_processing_settings["use_frame_limit"] = bool(settings.get("use_frame_limit", false))
 	_gif_processing_settings["max_frames"] = clamp(int(settings.get("max_frames", 36)), 1, 300)
-	_gif_processing_settings["play_on_hover_only"] = bool(settings.get("play_on_hover_only", true))
+	_gif_processing_settings["play_on_hover_only"] = bool(settings.get("play_on_hover_only", false))
 
 
 func _is_gif_hover_playback_only_enabled() -> bool:
-	return bool(_gif_processing_settings.get("play_on_hover_only", true))
+	return bool(_gif_processing_settings.get("play_on_hover_only", false))
 
 
 func has_override(source_path: String) -> bool:
@@ -576,7 +576,7 @@ func set_full_art_rarity_fire_enabled_for_source(source_path: String, enabled: b
 
 func reset_card_art_editor_settings() -> void:
 	_infection_effect_hidden_enabled = true
-	_full_art_rarity_fire_enabled = true
+	_full_art_rarity_fire_enabled = false
 	_full_art_rarity_fire_by_source.clear()
 	_ancient_text_outside_by_source.clear()
 	_gif_processing_settings = {
@@ -584,7 +584,7 @@ func reset_card_art_editor_settings() -> void:
 		"skip_duplicate_frames": true,
 		"use_frame_limit": false,
 		"max_frames": 36,
-		"play_on_hover_only": true
+		"play_on_hover_only": false
 	}
 	_save_persistent_preferences()
 	_refresh_gif_playback_state()

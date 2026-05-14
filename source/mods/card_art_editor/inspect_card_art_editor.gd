@@ -244,11 +244,11 @@ var _gif_processing_settings := {
 	"skip_duplicate_frames": true,
 	"use_frame_limit": false,
 	"max_frames": 36,
-	"play_on_hover_only": true
+	"play_on_hover_only": false
 }
 var _gif_processing_settings_draft := {}
 var _infection_effect_hidden_enabled := true
-var _full_art_rarity_fire_enabled := true
+var _full_art_rarity_fire_enabled := false
 
 
 func _manager():
@@ -339,9 +339,9 @@ func _load_ui_settings() -> void:
 			_gif_processing_settings["skip_duplicate_frames"] = bool(parsed_gif_settings.get("skip_duplicate_frames", true))
 			_gif_processing_settings["use_frame_limit"] = bool(parsed_gif_settings.get("use_frame_limit", false))
 			_gif_processing_settings["max_frames"] = clamp(int(parsed_gif_settings.get("max_frames", 36)), 1, 300)
-			_gif_processing_settings["play_on_hover_only"] = bool(parsed_gif_settings.get("play_on_hover_only", true))
+			_gif_processing_settings["play_on_hover_only"] = bool(parsed_gif_settings.get("play_on_hover_only", false))
 		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", true))
-		_full_art_rarity_fire_enabled = bool(parsed.get("full_art_rarity_fire_enabled", true))
+		_full_art_rarity_fire_enabled = bool(parsed.get("full_art_rarity_fire_enabled", false))
 
 
 func _save_ui_settings() -> void:
@@ -598,7 +598,7 @@ func _normalize_gif_processing_settings(settings: Dictionary) -> Dictionary:
 		"skip_duplicate_frames": bool(settings.get("skip_duplicate_frames", true)),
 		"use_frame_limit": bool(settings.get("use_frame_limit", false)),
 		"max_frames": clamp(int(settings.get("max_frames", 36)), 1, 300),
-		"play_on_hover_only": bool(settings.get("play_on_hover_only", true))
+		"play_on_hover_only": bool(settings.get("play_on_hover_only", false))
 	}
 
 
@@ -659,7 +659,7 @@ func _refresh_gif_settings_ui() -> void:
 	_gif_dedupe_check.button_pressed = bool(ui_settings.get("skip_duplicate_frames", true))
 	_gif_limit_check.button_pressed = bool(ui_settings.get("use_frame_limit", false))
 	if _gif_hover_playback_check != null:
-		_gif_hover_playback_check.button_pressed = bool(ui_settings.get("play_on_hover_only", true))
+		_gif_hover_playback_check.button_pressed = bool(ui_settings.get("play_on_hover_only", false))
 	_gif_limit_spinbox.value = int(ui_settings.get("max_frames", 36))
 	_gif_limit_spinbox.editable = _gif_limit_check.button_pressed
 	_gif_settings_ui_syncing = false
@@ -1833,11 +1833,11 @@ func _on_reset_settings_pressed() -> void:
 		"skip_duplicate_frames": true,
 		"use_frame_limit": false,
 		"max_frames": 36,
-		"play_on_hover_only": true
+		"play_on_hover_only": false
 	}
 	_gif_processing_settings_draft.clear()
 	_infection_effect_hidden_enabled = true
-	_full_art_rarity_fire_enabled = true
+	_full_art_rarity_fire_enabled = false
 	if manager.has_method("reset_card_art_editor_settings"):
 		manager.reset_card_art_editor_settings()
 	else:
