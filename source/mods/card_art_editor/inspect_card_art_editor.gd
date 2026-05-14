@@ -57,6 +57,8 @@ const TRANSLATIONS := {
 		"browser_pack_hint": "선택한 아트팩 파일:\n%s",
 		"browser_image_error": "이미지를 미리보기로 불러올 수 없습니다.",
 		"browser_gif_preview": "\nGIF 미리보기",
+		"gif_hover_all": "모든 카드 마우스 오버/선택 시에만 GIF 재생",
+		"gif_hover_card": "이 카드 마우스 오버/선택 시에만 GIF 재생",
 		"export_current_png": "PNG로 내보내기",
 		"full_art_rarity_fire_all_enable": "모든 카드 레어도 불꽃 켜기",
 		"full_art_rarity_fire_all_disable": "모든 카드 레어도 불꽃 끄기",
@@ -111,6 +113,8 @@ const TRANSLATIONS := {
 		"browser_pack_hint": "Selected art pack file:\n%s",
 		"browser_image_error": "Could not load the image preview.",
 		"browser_gif_preview": "\nGIF preview",
+		"gif_hover_all": "Play GIFs only on hover/selection for All Cards",
+		"gif_hover_card": "Play GIF only on hover/selection for This Card",
 		"export_current_png": "Save Current Card PNG",
 		"full_art_rarity_fire_all_enable": "Enable Rarity Flame for All Cards",
 		"full_art_rarity_fire_all_disable": "Disable Rarity Flame for All Cards",
@@ -234,7 +238,8 @@ var _gif_preset_quality_button: Button
 var _gif_cache_check: CheckBox
 var _gif_dedupe_check: CheckBox
 var _gif_limit_check: CheckBox
-var _gif_hover_playback_check: CheckBox
+var _gif_hover_playback_all_button: Button
+var _gif_hover_playback_card_check: CheckBox
 var _gif_limit_spinbox: SpinBox
 var _gif_settings_apply_button: Button
 var _gif_settings_close_button: Button
@@ -247,6 +252,9 @@ var _gif_processing_settings := {
 	"play_on_hover_only": false
 }
 var _gif_processing_settings_draft := {}
+var _gif_hover_playback_card_draft_set := false
+var _gif_hover_playback_card_draft_enabled := false
+var _gif_settings_source_path := ""
 var _infection_effect_hidden_enabled := true
 var _full_art_rarity_fire_enabled := false
 
@@ -592,6 +600,25 @@ func _apply_gif_processing_settings_to_manager() -> void:
 		manager.set_gif_processing_settings(_gif_processing_settings)
 
 
+func _get_gif_settings_source_path() -> String:
+	return _gif_settings_source_path if _gif_settings_source_path != "" else _get_effective_source_path()
+
+
+func _get_current_gif_hover_playback_enabled() -> bool:
+	var manager = _manager()
+	var source_path = _get_gif_settings_source_path()
+	if manager != null and source_path != "" and manager.has_method("is_gif_hover_playback_only_enabled_for_source"):
+		return bool(manager.is_gif_hover_playback_only_enabled_for_source(source_path))
+	return bool(_gif_processing_settings.get("play_on_hover_only", false))
+
+
+func _get_global_gif_hover_playback_enabled() -> bool:
+	var manager = _manager()
+	if manager != null and manager.has_method("is_gif_hover_playback_only_enabled"):
+		return bool(manager.is_gif_hover_playback_only_enabled())
+	return bool(_gif_processing_settings.get("play_on_hover_only", false))
+
+
 func _normalize_gif_processing_settings(settings: Dictionary) -> Dictionary:
 	return {
 		"use_cache": bool(settings.get("use_cache", true)),
@@ -611,13 +638,33 @@ func _get_gif_settings_ui_values() -> Dictionary:
 func _sync_gif_settings_draft_from_ui() -> void:
 	if _gif_cache_check == null:
 		return
+	var all_hover_enabled = _get_global_gif_hover_playback_enabled()
+	var previous_card_enabled = _get_current_gif_hover_playback_enabled()
 	_gif_processing_settings_draft = _normalize_gif_processing_settings({
 		"use_cache": _gif_cache_check.button_pressed,
 		"skip_duplicate_frames": _gif_dedupe_check.button_pressed,
 		"use_frame_limit": _gif_limit_check.button_pressed,
 		"max_frames": int(_gif_limit_spinbox.value),
-		"play_on_hover_only": _gif_hover_playback_check.button_pressed
+		"play_on_hover_only": all_hover_enabled
 	})
+	if _gif_hover_playback_card_check != null and !_gif_hover_playback_card_check.disabled:
+		var next_card_enabled = _gif_hover_playback_card_check.button_pressed
+		if next_card_enabled != previous_card_enabled or _gif_hover_playback_card_draft_set:
+			_gif_hover_playback_card_draft_set = true
+			_gif_hover_playback_card_draft_enabled = next_card_enabled
+
+
+func _refresh_gif_hover_card_check() -> void:
+	if _gif_hover_playback_card_check == null:
+		return
+	var source_path = _get_gif_settings_source_path()
+	var manager = _manager()
+	var can_apply_to_card = manager != null and source_path != "" and manager.has_method("is_gif_hover_playback_only_enabled_for_source")
+	_gif_hover_playback_card_check.disabled = !can_apply_to_card
+	if _gif_hover_playback_card_draft_set:
+		_gif_hover_playback_card_check.button_pressed = _gif_hover_playback_card_draft_enabled
+	else:
+		_gif_hover_playback_card_check.button_pressed = _get_current_gif_hover_playback_enabled()
 
 
 func _gif_settings_require_rebuild(previous_settings: Dictionary, next_settings: Dictionary) -> bool:
@@ -648,8 +695,11 @@ func _refresh_gif_settings_ui() -> void:
 	_gif_cache_check.text = "GIF 캐시 사용" if is_ko else "Use GIF cache"
 	_gif_dedupe_check.text = "중복 프레임 건너뛰기" if is_ko else "Skip duplicate frames"
 	_gif_limit_check.text = "프레임 제한 사용" if is_ko else "Use frame limit"
-	if _gif_hover_playback_check != null:
-		_gif_hover_playback_check.text = "마우스 오버/선택 시에만 GIF 재생" if is_ko else "Play GIFs only on hover/selection"
+	if _gif_hover_playback_all_button != null:
+		var all_hover_enabled = _get_global_gif_hover_playback_enabled()
+		_gif_hover_playback_all_button.text = ("모든 카드 마우스 오버시 GIF 재생 끄기" if all_hover_enabled else "모든 카드 마우스 오버시 GIF 재생 켜기") if is_ko else ("Disable GIF Hover Playback for All Cards" if all_hover_enabled else "Enable GIF Hover Playback for All Cards")
+	if _gif_hover_playback_card_check != null:
+		_gif_hover_playback_card_check.text = _tr("gif_hover_card")
 	if _gif_settings_apply_button != null:
 		_gif_settings_apply_button.text = "적용" if is_ko else "Apply"
 	_gif_settings_close_button.text = "닫기" if is_ko else "Close"
@@ -658,8 +708,7 @@ func _refresh_gif_settings_ui() -> void:
 	_gif_cache_check.button_pressed = bool(ui_settings.get("use_cache", true))
 	_gif_dedupe_check.button_pressed = bool(ui_settings.get("skip_duplicate_frames", true))
 	_gif_limit_check.button_pressed = bool(ui_settings.get("use_frame_limit", false))
-	if _gif_hover_playback_check != null:
-		_gif_hover_playback_check.button_pressed = bool(ui_settings.get("play_on_hover_only", false))
+	_refresh_gif_hover_card_check()
 	_gif_limit_spinbox.value = int(ui_settings.get("max_frames", 36))
 	_gif_limit_spinbox.editable = _gif_limit_check.button_pressed
 	_gif_settings_ui_syncing = false
@@ -909,9 +958,9 @@ func _build_adjust_ui() -> void:
 	_gif_settings_popup.mouse_filter = Control.MOUSE_FILTER_STOP
 	_gif_settings_popup.set_anchors_preset(Control.PRESET_CENTER)
 	_gif_settings_popup.offset_left = -220
-	_gif_settings_popup.offset_top = -120
+	_gif_settings_popup.offset_top = -145
 	_gif_settings_popup.offset_right = 220
-	_gif_settings_popup.offset_bottom = 120
+	_gif_settings_popup.offset_bottom = 145
 	var gif_popup_style = StyleBoxFlat.new()
 	gif_popup_style.bg_color = Color(0.10, 0.10, 0.12, 1.0)
 	gif_popup_style.border_color = Color(0.72, 0.72, 0.76, 1.0)
@@ -976,8 +1025,12 @@ func _build_adjust_ui() -> void:
 	_gif_limit_check = CheckBox.new()
 	gif_root.add_child(_gif_limit_check)
 
-	_gif_hover_playback_check = CheckBox.new()
-	gif_root.add_child(_gif_hover_playback_check)
+	_gif_hover_playback_card_check = CheckBox.new()
+	gif_root.add_child(_gif_hover_playback_card_check)
+
+	_gif_hover_playback_all_button = Button.new()
+	_gif_hover_playback_all_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gif_root.add_child(_gif_hover_playback_all_button)
 
 	var limit_row = HBoxContainer.new()
 	limit_row.add_theme_constant_override("separation", 8)
@@ -1324,6 +1377,8 @@ func _on_edit_art_pressed() -> void:
 func _on_close_pressed() -> void:
 	_close_adjust_panel()
 	_gif_processing_settings_draft.clear()
+	_gif_hover_playback_card_draft_set = false
+	_gif_settings_source_path = ""
 	if _gif_settings_popup != null:
 		_gif_settings_popup.hide()
 	if _settings_panel != null:
@@ -1336,6 +1391,9 @@ func _on_gif_settings_pressed() -> void:
 	if _gif_settings_popup == null:
 		return
 	_gif_processing_settings_draft = _gif_processing_settings.duplicate(true)
+	_gif_hover_playback_card_draft_set = false
+	_gif_hover_playback_card_draft_enabled = false
+	_gif_settings_source_path = _get_effective_source_path()
 	_refresh_gif_settings_ui()
 	var popup_rect = _editor_popup.get_global_rect()
 	_gif_settings_popup.position = Vector2(
@@ -1348,6 +1406,8 @@ func _on_gif_settings_pressed() -> void:
 
 func _on_gif_settings_close_pressed() -> void:
 	_gif_processing_settings_draft.clear()
+	_gif_hover_playback_card_draft_set = false
+	_gif_settings_source_path = ""
 	if _gif_settings_popup != null:
 		_gif_settings_popup.hide()
 
@@ -1359,9 +1419,16 @@ func _on_gif_settings_apply_pressed() -> void:
 	var previous_settings = _normalize_gif_processing_settings(_gif_processing_settings)
 	var next_settings = _normalize_gif_processing_settings(_gif_processing_settings_draft)
 	var requires_rebuild = _gif_settings_require_rebuild(previous_settings, next_settings)
+	var card_hover_source_path = _get_gif_settings_source_path()
+	var apply_card_hover = _gif_hover_playback_card_draft_set and card_hover_source_path != ""
 	_gif_processing_settings = next_settings
 	_gif_processing_settings_draft.clear()
+	var manager = _manager()
 	_apply_gif_processing_settings_to_manager()
+	if manager != null and apply_card_hover and manager.has_method("set_gif_hover_playback_only_enabled_for_source"):
+		manager.set_gif_hover_playback_only_enabled_for_source(card_hover_source_path, _gif_hover_playback_card_draft_enabled)
+	_gif_hover_playback_card_draft_set = false
+	_gif_settings_source_path = ""
 	_save_ui_settings()
 	if _gif_settings_popup != null:
 		_gif_settings_popup.hide()
@@ -1371,11 +1438,33 @@ func _on_gif_settings_apply_pressed() -> void:
 		_set_status("GIF 설정을 적용했습니다." if _locale == "ko" else "GIF settings applied.", false)
 
 
+func _on_gif_hover_all_pressed() -> void:
+	var manager = _manager()
+	var next_enabled = !_get_global_gif_hover_playback_enabled()
+	_gif_processing_settings["play_on_hover_only"] = next_enabled
+	if !_gif_processing_settings_draft.is_empty():
+		_gif_processing_settings_draft["play_on_hover_only"] = next_enabled
+	_gif_hover_playback_card_draft_set = false
+	if manager != null and manager.has_method("set_all_gif_hover_playback_only_enabled"):
+		manager.set_all_gif_hover_playback_only_enabled(next_enabled)
+	else:
+		_apply_gif_processing_settings_to_manager()
+	_save_ui_settings()
+	_refresh_gif_settings_ui()
+	if _locale == "ko":
+		_set_status("모든 GIF 카드가 마우스 오버/선택 시에만 재생됩니다." if next_enabled else "모든 GIF 카드가 항상 재생됩니다.", false)
+	else:
+		_set_status("All GIF cards now play only on hover/selection." if next_enabled else "All GIF cards now play normally.", false)
+
+
 func _on_gif_settings_changed(_value = null) -> void:
 	if _gif_cache_check == null or _gif_settings_ui_syncing:
 		return
 	_sync_gif_settings_draft_from_ui()
 	_gif_limit_spinbox.editable = _gif_limit_check.button_pressed
+	_gif_settings_ui_syncing = true
+	_refresh_gif_hover_card_check()
+	_gif_settings_ui_syncing = false
 
 
 func _apply_gif_preset(preset_id: String) -> void:
@@ -1836,6 +1925,8 @@ func _on_reset_settings_pressed() -> void:
 		"play_on_hover_only": false
 	}
 	_gif_processing_settings_draft.clear()
+	_gif_hover_playback_card_draft_set = false
+	_gif_settings_source_path = ""
 	_infection_effect_hidden_enabled = true
 	_full_art_rarity_fire_enabled = false
 	if manager.has_method("reset_card_art_editor_settings"):
@@ -2333,7 +2424,8 @@ func _bind_signals() -> void:
 	_gif_cache_check.toggled.connect(_on_gif_settings_changed)
 	_gif_dedupe_check.toggled.connect(_on_gif_settings_changed)
 	_gif_limit_check.toggled.connect(_on_gif_settings_changed)
-	_gif_hover_playback_check.toggled.connect(_on_gif_settings_changed)
+	_gif_hover_playback_all_button.pressed.connect(_on_gif_hover_all_pressed)
+	_gif_hover_playback_card_check.toggled.connect(_on_gif_settings_changed)
 	_gif_limit_spinbox.value_changed.connect(_on_gif_settings_changed)
 	_gif_preset_fast_button.pressed.connect(_on_gif_preset_fast_pressed)
 	_gif_preset_balanced_button.pressed.connect(_on_gif_preset_balanced_pressed)

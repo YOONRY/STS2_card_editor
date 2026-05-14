@@ -89,6 +89,7 @@ var _gif_processing_settings := {
 	"max_frames": 36,
 	"play_on_hover_only": false
 }
+var _gif_hover_playback_by_source := {}
 var _batch_update_depth := 0
 var _batch_manifest_dirty := false
 var _batch_registry_dirty := false
@@ -149,7 +150,7 @@ func _process(delta: float) -> void:
 			if _ancient_text_hover_refresh_accumulator >= ANCIENT_TEXT_HOVER_REFRESH_INTERVAL:
 				_ancient_text_hover_refresh_accumulator = 0.0
 				_refresh_ancient_text_hover_tip()
-	if _is_gif_hover_playback_only_enabled() and _has_animated_overrides():
+	if _has_gif_hover_playback_rules() and _has_animated_overrides():
 		_gif_playback_refresh_accumulator += delta
 		if _gif_playback_refresh_accumulator >= GIF_PLAYBACK_REFRESH_INTERVAL:
 			_gif_playback_refresh_accumulator = 0.0
@@ -309,13 +310,13 @@ func get_gif_processing_settings() -> Dictionary:
 func set_gif_processing_settings(settings: Dictionary) -> void:
 	if !(settings is Dictionary):
 		return
-	var previous_hover_only = _is_gif_hover_playback_only_enabled()
+	var previous_hover_rules = _has_gif_hover_playback_rules()
 	_gif_processing_settings["use_cache"] = bool(settings.get("use_cache", true))
 	_gif_processing_settings["skip_duplicate_frames"] = bool(settings.get("skip_duplicate_frames", true))
 	_gif_processing_settings["use_frame_limit"] = bool(settings.get("use_frame_limit", false))
 	_gif_processing_settings["max_frames"] = clamp(int(settings.get("max_frames", 36)), 1, 300)
 	_gif_processing_settings["play_on_hover_only"] = bool(settings.get("play_on_hover_only", false))
-	if previous_hover_only != _is_gif_hover_playback_only_enabled():
+	if previous_hover_rules != _has_gif_hover_playback_rules():
 		_refresh_gif_playback_state()
 		_needs_full_refresh = true
 
@@ -332,6 +333,52 @@ func _load_gif_processing_settings_from_dictionary(settings: Dictionary) -> void
 
 func _is_gif_hover_playback_only_enabled() -> bool:
 	return bool(_gif_processing_settings.get("play_on_hover_only", false))
+
+
+func _has_gif_hover_playback_rules() -> bool:
+	return _is_gif_hover_playback_only_enabled() or !_gif_hover_playback_by_source.is_empty()
+
+
+func is_gif_hover_playback_only_enabled() -> bool:
+	return _is_gif_hover_playback_only_enabled()
+
+
+func set_all_gif_hover_playback_only_enabled(enabled: bool) -> void:
+	var changed = _is_gif_hover_playback_only_enabled() != enabled or !_gif_hover_playback_by_source.is_empty()
+	_gif_processing_settings["play_on_hover_only"] = enabled
+	_gif_hover_playback_by_source.clear()
+	if !changed:
+		return
+	_save_persistent_preferences()
+	_refresh_gif_playback_state()
+	_needs_full_refresh = true
+
+
+func is_gif_hover_playback_only_enabled_for_source(source_path: String) -> bool:
+	source_path = _canonicalize_source_key(source_path)
+	if source_path == "":
+		return _is_gif_hover_playback_only_enabled()
+	if _gif_hover_playback_by_source.has(source_path):
+		return bool(_gif_hover_playback_by_source[source_path])
+	return _is_gif_hover_playback_only_enabled()
+
+
+func has_gif_hover_playback_override_for_source(source_path: String) -> bool:
+	source_path = _canonicalize_source_key(source_path)
+	return source_path != "" and _gif_hover_playback_by_source.has(source_path)
+
+
+func set_gif_hover_playback_only_enabled_for_source(source_path: String, enabled: bool) -> void:
+	source_path = _canonicalize_source_key(source_path)
+	if source_path == "":
+		return
+	if enabled == _is_gif_hover_playback_only_enabled():
+		_gif_hover_playback_by_source.erase(source_path)
+	else:
+		_gif_hover_playback_by_source[source_path] = enabled
+	_save_persistent_preferences()
+	_refresh_gif_playback_state()
+	_needs_full_refresh = true
 
 
 func has_override(source_path: String) -> bool:
@@ -578,6 +625,7 @@ func reset_card_art_editor_settings() -> void:
 	_infection_effect_hidden_enabled = true
 	_full_art_rarity_fire_enabled = false
 	_full_art_rarity_fire_by_source.clear()
+	_gif_hover_playback_by_source.clear()
 	_ancient_text_outside_by_source.clear()
 	_gif_processing_settings = {
 		"use_cache": true,
@@ -626,6 +674,13 @@ func _load_persistent_preferences() -> void:
 		var parsed_gif_settings = parsed.get("gif_processing_settings", {})
 		if parsed_gif_settings is Dictionary:
 			_load_gif_processing_settings_from_dictionary(parsed_gif_settings)
+		var parsed_gif_hover_settings = parsed.get("gif_hover_playback_by_source", {})
+		if parsed_gif_hover_settings is Dictionary:
+			_gif_hover_playback_by_source.clear()
+			for source_path in parsed_gif_hover_settings.keys():
+				var normalized_gif_path = _canonicalize_source_key(String(source_path))
+				if normalized_gif_path != "":
+					_gif_hover_playback_by_source[normalized_gif_path] = bool(parsed_gif_hover_settings[source_path])
 		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", _infection_effect_hidden_enabled))
 		_full_art_rarity_fire_enabled = bool(parsed.get("full_art_rarity_fire_enabled", _full_art_rarity_fire_enabled))
 		var parsed_rarity_fire_settings = parsed.get("full_art_rarity_fire_by_source", {})
@@ -657,6 +712,7 @@ func _save_persistent_preferences() -> void:
 	settings["infection_effect_hidden_enabled"] = _infection_effect_hidden_enabled
 	settings["full_art_rarity_fire_enabled"] = _full_art_rarity_fire_enabled
 	settings["full_art_rarity_fire_by_source"] = _full_art_rarity_fire_by_source.duplicate(true)
+	settings["gif_hover_playback_by_source"] = _gif_hover_playback_by_source.duplicate(true)
 	settings["ancient_text_outside_by_source"] = _ancient_text_outside_by_source.duplicate(true)
 	settings["gif_processing_settings"] = _gif_processing_settings.duplicate(true)
 	var file = FileAccess.open(STORAGE_UI_SETTINGS_PATH, FileAccess.WRITE)
@@ -3868,7 +3924,7 @@ func _should_animate_gif_card(card_root, source_path: String, active_root = null
 	source_path = _canonicalize_source_key(source_path)
 	if source_path == "" or !_is_animated_override_source(source_path):
 		return false
-	if !_is_gif_hover_playback_only_enabled():
+	if !is_gif_hover_playback_only_enabled_for_source(source_path):
 		return true
 	if card_root == null or !is_instance_valid(card_root):
 		return false
@@ -4903,6 +4959,7 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 	var tracked_source_path = current_path if current_path != "" else stored_source_path
 	var has_override_for_path = tracked_source_path != "" and _manifest.has(tracked_source_path)
 	var rarity_fire_source_path = full_art_owner if full_art_owner != "" else tracked_source_path
+	var gif_hover_source_path = full_art_owner if full_art_owner != "" else tracked_source_path
 	var display_mode = DISPLAY_MODE_DEFAULT
 	var entry_type = "static"
 	var entry_updated_at = ""
@@ -4932,6 +4989,9 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 		"full_art_rarity_fire_enabled": _full_art_rarity_fire_enabled,
 		"full_art_rarity_fire_source": rarity_fire_source_path,
 		"full_art_rarity_fire_source_enabled": is_full_art_rarity_fire_enabled_for_source(rarity_fire_source_path),
+		"gif_hover_playback_enabled": _is_gif_hover_playback_only_enabled(),
+		"gif_hover_playback_source": gif_hover_source_path,
+		"gif_hover_playback_source_enabled": is_gif_hover_playback_only_enabled_for_source(gif_hover_source_path),
 		"texture_path": texture_path,
 		"texture_size": [texture_size.x, texture_size.y],
 		"override_active": bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))
