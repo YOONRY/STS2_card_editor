@@ -29,6 +29,11 @@ const TRANSLATIONS := {
 		"restore_all": "전체 복원",
 		"close": "닫기",
 		"status_ready": "카드 이미지를 수정할 준비가 되었습니다.",
+		"settings": "설정",
+		"settings_hint": "자주 쓰지 않는 옵션과 전체 동작을 여기에서 관리합니다.",
+		"settings_general": "일반",
+		"settings_card": "현재 카드 옵션",
+		"settings_maintenance": "관리",
 		"adjust_button": "이미지 조정",
 		"adjust_title": "이미지 조정",
 		"adjust_hint": "현재 적용된 이미지를 다시 배치합니다.",
@@ -53,8 +58,11 @@ const TRANSLATIONS := {
 		"browser_image_error": "이미지를 미리보기로 불러올 수 없습니다.",
 		"browser_gif_preview": "\nGIF 미리보기",
 		"export_current_png": "PNG로 내보내기",
-		"full_art_rarity_fire_enable": "레어도 불꽃 켜기",
-		"full_art_rarity_fire_disable": "레어도 불꽃 끄기",
+		"full_art_rarity_fire_all_enable": "모든 카드 레어도 불꽃 켜기",
+		"full_art_rarity_fire_all_disable": "모든 카드 레어도 불꽃 끄기",
+		"full_art_rarity_fire_card_enable": "이 카드 레어도 불꽃 켜기",
+		"full_art_rarity_fire_card_disable": "이 카드 레어도 불꽃 끄기",
+		"reset_settings": "전체 설정 초기화",
 		"ancient_text_outside_enable": "텍스트 밖으로 빼기",
 		"ancient_text_outside_disable": "텍스트 원위치",
 		"toggle_language": "English"
@@ -75,6 +83,11 @@ const TRANSLATIONS := {
 		"restore_all": "Restore All",
 		"close": "Close",
 		"status_ready": "Ready to edit card art.",
+		"settings": "Settings",
+		"settings_hint": "Manage less frequent options and global actions here.",
+		"settings_general": "General",
+		"settings_card": "Current Card Options",
+		"settings_maintenance": "Maintenance",
 		"adjust_button": "Adjust Image",
 		"adjust_title": "Adjust Image",
 		"adjust_hint": "Reposition the currently applied image.",
@@ -99,8 +112,11 @@ const TRANSLATIONS := {
 		"browser_image_error": "Could not load the image preview.",
 		"browser_gif_preview": "\nGIF preview",
 		"export_current_png": "Save Current Card PNG",
-		"full_art_rarity_fire_enable": "Enable Rarity Flame",
-		"full_art_rarity_fire_disable": "Disable Rarity Flame",
+		"full_art_rarity_fire_all_enable": "Enable Rarity Flame for All Cards",
+		"full_art_rarity_fire_all_disable": "Disable Rarity Flame for All Cards",
+		"full_art_rarity_fire_card_enable": "Enable Rarity Flame for This Card",
+		"full_art_rarity_fire_card_disable": "Disable Rarity Flame for This Card",
+		"reset_settings": "Reset All Settings",
 		"ancient_text_outside_enable": "Move Text Outside",
 		"ancient_text_outside_disable": "Restore Text",
 		"toggle_language": "한국어"
@@ -160,12 +176,24 @@ var _favorite_dirs: Array = []
 var _thumbnail_cache := {}
 var _locale := "ko"
 var _language_button: Button
+var _settings_button: Button
+var _settings_panel: PanelContainer
+var _settings_title_label: Label
+var _settings_hint_label: Label
+var _settings_general_label: Label
+var _settings_card_label: Label
+var _settings_maintenance_label: Label
+var _settings_general_box: VBoxContainer
+var _settings_card_box: VBoxContainer
+var _settings_maintenance_box: VBoxContainer
 var _gif_settings_button: Button
 var _adjust_button: Button
 var _display_mode_button: Button
+var _full_art_rarity_fire_all_button: Button
 var _full_art_rarity_fire_button: Button
 var _infection_effect_button: Button
 var _ancient_text_outside_button: Button
+var _reset_settings_button: Button
 var _favorite_add_button: Button
 var _favorites_menu_button: MenuButton
 var _adjust_panel: PanelContainer
@@ -359,6 +387,7 @@ func _apply_locale() -> void:
 	_restore_button.text = _tr("restore_current")
 	_restore_all_button.text = _tr("restore_all")
 	_close_button.text = _tr("close")
+	_refresh_settings_panel_texts()
 	_browser_path_input.placeholder_text = _tr("browser_path_placeholder")
 	_browser_pick_folder_button.text = _tr("browser_move")
 	_browser_up_button.text = _tr("browser_up")
@@ -401,6 +430,7 @@ func _apply_locale() -> void:
 	_refresh_full_art_rarity_fire_button()
 	_refresh_infection_effect_button()
 	_refresh_ancient_text_outside_button()
+	_refresh_settings_panel_visibility()
 	_refresh_card_label()
 
 
@@ -411,6 +441,24 @@ func _get_display_mode_button_text() -> String:
 	if _locale == "en":
 		return "Disable Full Art" if is_full_art else "Enable Full Art"
 	return "풀아트 끄기" if is_full_art else "풀아트 켜기"
+
+
+func _refresh_settings_panel_texts() -> void:
+	if _settings_button != null:
+		_settings_button.text = "⚙"
+		_settings_button.tooltip_text = _tr("settings")
+	if _settings_title_label != null:
+		_settings_title_label.text = _tr("settings")
+	if _settings_hint_label != null:
+		_settings_hint_label.text = _tr("settings_hint")
+	if _settings_general_label != null:
+		_settings_general_label.text = _tr("settings_general")
+	if _settings_card_label != null:
+		_settings_card_label.text = _tr("settings_card")
+	if _settings_maintenance_label != null:
+		_settings_maintenance_label.text = _tr("settings_maintenance")
+	if _reset_settings_button != null:
+		_reset_settings_button.text = _tr("reset_settings")
 
 
 func _is_current_infection_card() -> bool:
@@ -455,7 +503,7 @@ func _refresh_infection_effect_button() -> void:
 
 func _is_current_full_art_rarity_fire_supported_card() -> bool:
 	var manager = _manager()
-	if manager == null or !manager.has_method("is_full_art_rarity_fire_enabled"):
+	if manager == null or !manager.has_method("is_full_art_rarity_fire_enabled_for_source"):
 		return false
 	var source_path = _get_effective_source_path()
 	if source_path == "":
@@ -463,10 +511,26 @@ func _is_current_full_art_rarity_fire_supported_card() -> bool:
 	return manager.has_override(source_path) and manager.can_toggle_full_art(source_path)
 
 
+func _refresh_full_art_rarity_fire_all_button() -> void:
+	if _full_art_rarity_fire_all_button == null:
+		return
+	var manager = _manager()
+	if manager == null:
+		_full_art_rarity_fire_all_button.disabled = true
+		return
+	_full_art_rarity_fire_all_button.disabled = false
+	var enabled = _full_art_rarity_fire_enabled
+	if manager.has_method("is_full_art_rarity_fire_enabled"):
+		enabled = bool(manager.is_full_art_rarity_fire_enabled())
+	_full_art_rarity_fire_enabled = enabled
+	_full_art_rarity_fire_all_button.text = _tr("full_art_rarity_fire_all_disable") if enabled else _tr("full_art_rarity_fire_all_enable")
+
+
 func _refresh_full_art_rarity_fire_button() -> void:
 	if _full_art_rarity_fire_button == null:
 		return
 	var manager = _manager()
+	_refresh_full_art_rarity_fire_all_button()
 	var visible = _is_current_full_art_rarity_fire_supported_card()
 	_full_art_rarity_fire_button.visible = visible
 	if !visible or manager == null:
@@ -474,10 +538,10 @@ func _refresh_full_art_rarity_fire_button() -> void:
 		return
 	_full_art_rarity_fire_button.disabled = false
 	var enabled = _full_art_rarity_fire_enabled
-	if manager.has_method("is_full_art_rarity_fire_enabled"):
-		enabled = bool(manager.is_full_art_rarity_fire_enabled())
-	_full_art_rarity_fire_enabled = enabled
-	_full_art_rarity_fire_button.text = _tr("full_art_rarity_fire_disable") if enabled else _tr("full_art_rarity_fire_enable")
+	var source_path = _get_effective_source_path()
+	if manager.has_method("is_full_art_rarity_fire_enabled_for_source"):
+		enabled = bool(manager.is_full_art_rarity_fire_enabled_for_source(source_path))
+	_full_art_rarity_fire_button.text = _tr("full_art_rarity_fire_card_disable") if enabled else _tr("full_art_rarity_fire_card_enable")
 
 
 func _is_current_ancient_card() -> bool:
@@ -601,43 +665,162 @@ func _refresh_gif_settings_ui() -> void:
 	_gif_settings_ui_syncing = false
 
 
+func _make_settings_section_label(label_text: String) -> Label:
+	var label = Label.new()
+	label.text = label_text
+	label.modulate = Color(0.86, 0.88, 0.94, 1.0)
+	label.add_theme_font_size_override("font_size", 14)
+	return label
+
+
+func _build_settings_shell() -> void:
+	var root_vbox = _editor_popup.get_node_or_null("MarginContainer/RootVBox")
+	if root_vbox == null:
+		return
+	if _settings_button == null:
+		var title_index = _title_label.get_index()
+		var header_row = HBoxContainer.new()
+		header_row.name = "HeaderRow"
+		header_row.add_theme_constant_override("separation", 8)
+		root_vbox.add_child(header_row)
+		root_vbox.move_child(header_row, title_index)
+		root_vbox.remove_child(_title_label)
+		_title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		header_row.add_child(_title_label)
+
+		_settings_button = Button.new()
+		_settings_button.text = "⚙"
+		_settings_button.tooltip_text = _tr("settings")
+		_settings_button.custom_minimum_size = Vector2(42, 34)
+		_settings_button.mouse_filter = Control.MOUSE_FILTER_STOP
+		header_row.add_child(_settings_button)
+
+	if _settings_panel != null:
+		return
+	_settings_panel = PanelContainer.new()
+	_settings_panel.name = "SettingsPanel"
+	_settings_panel.visible = false
+	_settings_panel.top_level = true
+	_settings_panel.z_as_relative = false
+	_settings_panel.z_index = 1208
+	_settings_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_settings_panel.custom_minimum_size = Vector2(280, 0)
+	var panel_style = StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.09, 0.09, 0.11, 0.96)
+	panel_style.border_color = Color(0.72, 0.72, 0.76, 1.0)
+	panel_style.border_width_left = 1
+	panel_style.border_width_top = 1
+	panel_style.border_width_right = 1
+	panel_style.border_width_bottom = 1
+	panel_style.corner_radius_top_left = 10
+	panel_style.corner_radius_top_right = 10
+	panel_style.corner_radius_bottom_left = 10
+	panel_style.corner_radius_bottom_right = 10
+	_settings_panel.add_theme_stylebox_override("panel", panel_style)
+	add_child(_settings_panel)
+
+	var margin = MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 14)
+	margin.add_theme_constant_override("margin_top", 14)
+	margin.add_theme_constant_override("margin_right", 14)
+	margin.add_theme_constant_override("margin_bottom", 14)
+	_settings_panel.add_child(margin)
+
+	var root = VBoxContainer.new()
+	root.add_theme_constant_override("separation", 10)
+	margin.add_child(root)
+
+	_settings_title_label = Label.new()
+	_settings_title_label.text = _tr("settings")
+	_settings_title_label.add_theme_font_size_override("font_size", 18)
+	root.add_child(_settings_title_label)
+
+	_settings_hint_label = Label.new()
+	_settings_hint_label.text = _tr("settings_hint")
+	_settings_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_settings_hint_label.modulate = Color(0.78, 0.82, 0.90, 1.0)
+	_settings_hint_label.add_theme_font_size_override("font_size", 12)
+	root.add_child(_settings_hint_label)
+
+	_settings_general_label = _make_settings_section_label(_tr("settings_general"))
+	root.add_child(_settings_general_label)
+	_settings_general_box = VBoxContainer.new()
+	_settings_general_box.add_theme_constant_override("separation", 6)
+	root.add_child(_settings_general_box)
+
+	_settings_card_label = _make_settings_section_label(_tr("settings_card"))
+	root.add_child(_settings_card_label)
+	_settings_card_box = VBoxContainer.new()
+	_settings_card_box.add_theme_constant_override("separation", 6)
+	root.add_child(_settings_card_box)
+
+	_settings_maintenance_label = _make_settings_section_label(_tr("settings_maintenance"))
+	root.add_child(_settings_maintenance_label)
+	_settings_maintenance_box = VBoxContainer.new()
+	_settings_maintenance_box.add_theme_constant_override("separation", 6)
+	root.add_child(_settings_maintenance_box)
+
+
 func _build_adjust_ui() -> void:
 	var footer_row = _restore_button.get_parent()
+	_build_settings_shell()
+	if _restore_all_button.get_parent() != null:
+		_restore_all_button.get_parent().remove_child(_restore_all_button)
+	_restore_all_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_maintenance_box != null:
+		_settings_maintenance_box.add_child(_restore_all_button)
+
 	_language_button = Button.new()
 	_language_button.text = "English"
-	footer_row.add_child(_language_button)
-	footer_row.move_child(_language_button, 0)
+	_language_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_general_box != null:
+		_settings_general_box.add_child(_language_button)
 	_gif_settings_button = Button.new()
 	_gif_settings_button.text = "GIF Settings"
 	_gif_settings_button.tooltip_text = "GIF Settings"
-	footer_row.add_child(_gif_settings_button)
-	footer_row.move_child(_gif_settings_button, 1)
+	_gif_settings_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_general_box != null:
+		_settings_general_box.add_child(_gif_settings_button)
 	_gif_settings_button.visible = true
 	_gif_settings_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	_full_art_rarity_fire_all_button = Button.new()
+	_full_art_rarity_fire_all_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_general_box != null:
+		_settings_general_box.add_child(_full_art_rarity_fire_all_button)
+
 	_adjust_button = Button.new()
 	_adjust_button.text = "이미지 조정"
 	footer_row.add_child(_adjust_button)
-	footer_row.move_child(_adjust_button, 2)
+	footer_row.move_child(_adjust_button, 1)
 
 	_display_mode_button = Button.new()
 	_display_mode_button.text = "Enable Full Art"
 	footer_row.add_child(_display_mode_button)
-	footer_row.move_child(_display_mode_button, 3)
+	footer_row.move_child(_display_mode_button, 2)
 
 	_full_art_rarity_fire_button = Button.new()
 	_full_art_rarity_fire_button.visible = false
-	footer_row.add_child(_full_art_rarity_fire_button)
-	footer_row.move_child(_full_art_rarity_fire_button, 4)
+	_full_art_rarity_fire_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_card_box != null:
+		_settings_card_box.add_child(_full_art_rarity_fire_button)
 
 	_infection_effect_button = Button.new()
 	_infection_effect_button.visible = false
-	footer_row.add_child(_infection_effect_button)
-	footer_row.move_child(_infection_effect_button, 5)
+	_infection_effect_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_card_box != null:
+		_settings_card_box.add_child(_infection_effect_button)
 
 	_ancient_text_outside_button = Button.new()
 	_ancient_text_outside_button.visible = false
-	footer_row.add_child(_ancient_text_outside_button)
-	footer_row.move_child(_ancient_text_outside_button, 6)
+	_ancient_text_outside_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_card_box != null:
+		_settings_card_box.add_child(_ancient_text_outside_button)
+
+	_reset_settings_button = Button.new()
+	_reset_settings_button.text = _tr("reset_settings")
+	_reset_settings_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_maintenance_box != null:
+		_settings_maintenance_box.add_child(_reset_settings_button)
 
 	_adjust_panel = PanelContainer.new()
 	_adjust_panel.name = "AdjustPanel"
@@ -1077,9 +1260,56 @@ func _process(delta: float) -> void:
 	_update_context(false)
 
 
+func _position_settings_panel() -> void:
+	if _settings_panel == null or _editor_popup == null:
+		return
+	var popup_rect = _editor_popup.get_global_rect()
+	var viewport_rect = get_viewport_rect()
+	var panel_size = _settings_panel.size
+	if panel_size.x <= 1.0 or panel_size.y <= 1.0:
+		panel_size = Vector2(280, 360)
+	var margin := 12.0
+	var target_x = popup_rect.position.x + popup_rect.size.x + margin
+	if target_x + panel_size.x > viewport_rect.size.x - margin:
+		target_x = popup_rect.position.x + popup_rect.size.x - panel_size.x - 16.0
+	var target_y = popup_rect.position.y + 16.0
+	target_x = clamp(target_x, margin, max(margin, viewport_rect.size.x - panel_size.x - margin))
+	target_y = clamp(target_y, margin, max(margin, viewport_rect.size.y - panel_size.y - margin))
+	_settings_panel.position = Vector2(target_x, target_y)
+
+
+func _refresh_settings_panel_visibility() -> void:
+	if _settings_card_label == null or _settings_card_box == null:
+		return
+	var has_card_option := false
+	for child in _settings_card_box.get_children():
+		if child is Control and (child as Control).visible:
+			has_card_option = true
+			break
+	_settings_card_label.visible = has_card_option
+	_settings_card_box.visible = has_card_option
+
+
+func _on_settings_pressed() -> void:
+	if _settings_panel == null:
+		return
+	if _settings_panel.visible:
+		_settings_panel.hide()
+		return
+	_refresh_full_art_rarity_fire_button()
+	_refresh_infection_effect_button()
+	_refresh_ancient_text_outside_button()
+	_refresh_settings_panel_visibility()
+	_position_settings_panel()
+	_settings_panel.show()
+	_settings_panel.move_to_front()
+
+
 func _on_edit_art_pressed() -> void:
 	if _editor_popup.visible:
 		_close_adjust_panel()
+		if _settings_panel != null:
+			_settings_panel.hide()
 		_close_file_browser()
 		_editor_popup.hide()
 		return
@@ -1096,6 +1326,8 @@ func _on_close_pressed() -> void:
 	_gif_processing_settings_draft.clear()
 	if _gif_settings_popup != null:
 		_gif_settings_popup.hide()
+	if _settings_panel != null:
+		_settings_panel.hide()
 	_close_file_browser()
 	_editor_popup.hide()
 
@@ -1537,7 +1769,35 @@ func _on_infection_effect_pressed() -> void:
 
 func _on_full_art_rarity_fire_pressed() -> void:
 	var manager = _manager()
-	if manager == null or !manager.has_method("set_full_art_rarity_fire_enabled"):
+	if manager == null or !manager.has_method("set_full_art_rarity_fire_enabled_for_source"):
+		_set_status("The card art manager is not available.", true)
+		return
+	var source_path = _get_effective_source_path()
+	if source_path == "" or !_is_current_full_art_rarity_fire_supported_card():
+		_set_status("풀아트 가능한 카드에서만 사용할 수 있습니다." if _locale == "ko" else "This option is only available for full-art capable cards.", true)
+		return
+	var current_enabled = bool(manager.is_full_art_rarity_fire_enabled_for_source(source_path)) if manager.has_method("is_full_art_rarity_fire_enabled_for_source") else _full_art_rarity_fire_enabled
+	var next_enabled = !current_enabled
+	manager.set_full_art_rarity_fire_enabled_for_source(source_path, next_enabled)
+	_save_ui_settings()
+	var inspect_card = _get_inspect_card()
+	if inspect_card != null and inspect_card.has_method("Reload"):
+		inspect_card.call_deferred("Reload")
+	var screen = get_parent()
+	if screen != null and screen.has_method("UpdateCardDisplay"):
+		screen.call_deferred("UpdateCardDisplay")
+	if manager.has_method("refresh_all_portraits"):
+		manager.refresh_all_portraits()
+	_refresh_full_art_rarity_fire_button()
+	if _locale == "ko":
+		_set_status("이 카드의 풀아트 레어도 불꽃 색상을 켰습니다." if next_enabled else "이 카드의 풀아트 레어도 불꽃 색상을 껐습니다.", false)
+	else:
+		_set_status("Full-art rarity flame colors enabled for this card." if next_enabled else "Full-art rarity flame colors disabled for this card.", false)
+
+
+func _on_full_art_rarity_fire_all_pressed() -> void:
+	var manager = _manager()
+	if manager == null or !manager.has_method("set_all_full_art_rarity_fire_enabled"):
 		_set_status("The card art manager is not available.", true)
 		return
 	var next_enabled = true
@@ -1545,7 +1805,7 @@ func _on_full_art_rarity_fire_pressed() -> void:
 		next_enabled = !bool(manager.is_full_art_rarity_fire_enabled())
 	else:
 		next_enabled = !_full_art_rarity_fire_enabled
-	manager.set_full_art_rarity_fire_enabled(next_enabled)
+	manager.set_all_full_art_rarity_fire_enabled(next_enabled)
 	_full_art_rarity_fire_enabled = next_enabled
 	_save_ui_settings()
 	var inspect_card = _get_inspect_card()
@@ -1558,9 +1818,44 @@ func _on_full_art_rarity_fire_pressed() -> void:
 		manager.refresh_all_portraits()
 	_refresh_full_art_rarity_fire_button()
 	if _locale == "ko":
-		_set_status("풀아트 레어도 불꽃 색상을 켰습니다." if next_enabled else "풀아트 레어도 불꽃 색상을 껐습니다.", false)
+		_set_status("모든 카드의 풀아트 레어도 불꽃 색상을 켰습니다." if next_enabled else "모든 카드의 풀아트 레어도 불꽃 색상을 껐습니다.", false)
 	else:
-		_set_status("Full-art rarity flame colors enabled." if next_enabled else "Full-art rarity flame colors disabled.", false)
+		_set_status("Full-art rarity flame colors enabled for all cards." if next_enabled else "Full-art rarity flame colors disabled for all cards.", false)
+
+
+func _on_reset_settings_pressed() -> void:
+	var manager = _manager()
+	if manager == null:
+		_set_status("The card art manager is not available.", true)
+		return
+	_gif_processing_settings = {
+		"use_cache": true,
+		"skip_duplicate_frames": true,
+		"use_frame_limit": false,
+		"max_frames": 36,
+		"play_on_hover_only": true
+	}
+	_gif_processing_settings_draft.clear()
+	_infection_effect_hidden_enabled = true
+	_full_art_rarity_fire_enabled = true
+	if manager.has_method("reset_card_art_editor_settings"):
+		manager.reset_card_art_editor_settings()
+	else:
+		_apply_gif_processing_settings_to_manager()
+		if manager.has_method("set_infection_effect_hidden_enabled"):
+			manager.set_infection_effect_hidden_enabled(_infection_effect_hidden_enabled)
+		if manager.has_method("set_all_full_art_rarity_fire_enabled"):
+			manager.set_all_full_art_rarity_fire_enabled(_full_art_rarity_fire_enabled)
+	_save_ui_settings()
+	_refresh_gif_settings_ui()
+	_refresh_full_art_rarity_fire_button()
+	_refresh_infection_effect_button()
+	_refresh_ancient_text_outside_button()
+	_refresh_settings_panel_visibility()
+	if _locale == "ko":
+		_set_status("설정을 기본값으로 초기화했습니다.", false)
+	else:
+		_set_status("Settings reset to defaults.", false)
 
 
 func _on_ancient_text_outside_pressed() -> void:
@@ -1799,8 +2094,13 @@ func _update_context(force_refresh: bool) -> void:
 		if _full_art_rarity_fire_button != null:
 			_full_art_rarity_fire_button.disabled = true
 			_full_art_rarity_fire_button.visible = false
+		if _infection_effect_button != null:
+			_infection_effect_button.disabled = true
+			_infection_effect_button.visible = false
 		if _ancient_text_outside_button != null:
 			_ancient_text_outside_button.disabled = true
+			_ancient_text_outside_button.visible = false
+		_refresh_settings_panel_visibility()
 		return
 
 	var next_source_path = ""
@@ -1857,6 +2157,7 @@ func _update_context(force_refresh: bool) -> void:
 	_refresh_full_art_rarity_fire_button()
 	_refresh_infection_effect_button()
 	_refresh_ancient_text_outside_button()
+	_refresh_settings_panel_visibility()
 
 
 func _refresh_card_label() -> void:
@@ -1992,6 +2293,7 @@ func _configure_file_dialog() -> void:
 
 func _bind_signals() -> void:
 	_edit_art_button.pressed.connect(_on_edit_art_pressed)
+	_settings_button.pressed.connect(_on_settings_pressed)
 	_language_button.pressed.connect(_toggle_locale)
 	_gif_settings_button.pressed.connect(_on_gif_settings_pressed)
 	_close_button.pressed.connect(_on_close_pressed)
@@ -1999,9 +2301,11 @@ func _bind_signals() -> void:
 	_restore_all_button.pressed.connect(_on_restore_all_pressed)
 	_adjust_button.pressed.connect(_on_adjust_pressed)
 	_display_mode_button.pressed.connect(_on_display_mode_pressed)
+	_full_art_rarity_fire_all_button.pressed.connect(_on_full_art_rarity_fire_all_pressed)
 	_full_art_rarity_fire_button.pressed.connect(_on_full_art_rarity_fire_pressed)
 	_infection_effect_button.pressed.connect(_on_infection_effect_pressed)
 	_ancient_text_outside_button.pressed.connect(_on_ancient_text_outside_pressed)
+	_reset_settings_button.pressed.connect(_on_reset_settings_pressed)
 	_choose_image_button.pressed.connect(_on_choose_image_pressed)
 	_import_pack_button.pressed.connect(_on_import_shared_pressed)
 	_import_mod_button.pressed.connect(_on_import_mod_pressed)
@@ -2053,6 +2357,8 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 	_restore_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.has_override(effective_source_path)
 	_adjust_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.can_adjust_override(effective_source_path)
 	_display_mode_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.has_override(effective_source_path) or !manager.can_toggle_full_art(effective_source_path)
+	if _full_art_rarity_fire_all_button != null:
+		_full_art_rarity_fire_all_button.disabled = is_busy or manager == null
 	if _full_art_rarity_fire_button != null:
 		_full_art_rarity_fire_button.disabled = is_busy or !_is_current_full_art_rarity_fire_supported_card()
 	if _infection_effect_button != null:
@@ -2062,6 +2368,8 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 	if _art_pack_remove_button != null:
 		_art_pack_remove_button.disabled = is_busy or _art_pack_list_ids.is_empty()
 	_restore_all_button.disabled = is_busy or manager == null or manager.get_override_count() == 0
+	if _reset_settings_button != null:
+		_reset_settings_button.disabled = is_busy or manager == null
 	_close_button.disabled = is_busy
 	_edit_art_button.disabled = is_busy or effective_source_path == ""
 	_set_status(message, is_error)

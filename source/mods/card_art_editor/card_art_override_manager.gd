@@ -78,6 +78,7 @@ var _overlay_scene := preload("res://mods/card_art_editor/inspect_card_art_edito
 var _startup_rescan_frames_remaining := STARTUP_RESCAN_FRAMES
 var _infection_effect_hidden_enabled := true
 var _full_art_rarity_fire_enabled := true
+var _full_art_rarity_fire_by_source := {}
 var _ancient_text_outside_by_source := {}
 var _needs_full_refresh := true
 var _startup_rescan_tick := 0
@@ -319,6 +320,16 @@ func set_gif_processing_settings(settings: Dictionary) -> void:
 		_needs_full_refresh = true
 
 
+func _load_gif_processing_settings_from_dictionary(settings: Dictionary) -> void:
+	if !(settings is Dictionary):
+		return
+	_gif_processing_settings["use_cache"] = bool(settings.get("use_cache", true))
+	_gif_processing_settings["skip_duplicate_frames"] = bool(settings.get("skip_duplicate_frames", true))
+	_gif_processing_settings["use_frame_limit"] = bool(settings.get("use_frame_limit", false))
+	_gif_processing_settings["max_frames"] = clamp(int(settings.get("max_frames", 36)), 1, 300)
+	_gif_processing_settings["play_on_hover_only"] = bool(settings.get("play_on_hover_only", true))
+
+
 func _is_gif_hover_playback_only_enabled() -> bool:
 	return bool(_gif_processing_settings.get("play_on_hover_only", true))
 
@@ -532,6 +543,55 @@ func set_full_art_rarity_fire_enabled(enabled: bool) -> void:
 	refresh_all_portraits()
 
 
+func set_all_full_art_rarity_fire_enabled(enabled: bool) -> void:
+	var changed = _full_art_rarity_fire_enabled != enabled or !_full_art_rarity_fire_by_source.is_empty()
+	_full_art_rarity_fire_enabled = enabled
+	_full_art_rarity_fire_by_source.clear()
+	if !changed:
+		return
+	_save_persistent_preferences()
+	refresh_all_portraits()
+
+
+func is_full_art_rarity_fire_enabled_for_source(source_path: String) -> bool:
+	source_path = _canonicalize_source_key(source_path)
+	if source_path == "":
+		return _full_art_rarity_fire_enabled
+	if _full_art_rarity_fire_by_source.has(source_path):
+		return bool(_full_art_rarity_fire_by_source[source_path])
+	return _full_art_rarity_fire_enabled
+
+
+func set_full_art_rarity_fire_enabled_for_source(source_path: String, enabled: bool) -> void:
+	source_path = _canonicalize_source_key(source_path)
+	if source_path == "":
+		return
+	if enabled == _full_art_rarity_fire_enabled:
+		_full_art_rarity_fire_by_source.erase(source_path)
+	else:
+		_full_art_rarity_fire_by_source[source_path] = enabled
+	_save_persistent_preferences()
+	refresh_all_portraits()
+
+
+func reset_card_art_editor_settings() -> void:
+	_infection_effect_hidden_enabled = true
+	_full_art_rarity_fire_enabled = true
+	_full_art_rarity_fire_by_source.clear()
+	_ancient_text_outside_by_source.clear()
+	_gif_processing_settings = {
+		"use_cache": true,
+		"skip_duplicate_frames": true,
+		"use_frame_limit": false,
+		"max_frames": 36,
+		"play_on_hover_only": true
+	}
+	_save_persistent_preferences()
+	_refresh_gif_playback_state()
+	_hide_ancient_text_hover_tip()
+	refresh_all_portraits()
+
+
 func get_ancient_text_outside_settings() -> Dictionary:
 	return _ancient_text_outside_by_source.duplicate(true)
 
@@ -563,8 +623,18 @@ func _load_persistent_preferences() -> void:
 		return
 	var parsed = JSON.parse_string(file.get_as_text())
 	if parsed is Dictionary:
+		var parsed_gif_settings = parsed.get("gif_processing_settings", {})
+		if parsed_gif_settings is Dictionary:
+			_load_gif_processing_settings_from_dictionary(parsed_gif_settings)
 		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", _infection_effect_hidden_enabled))
 		_full_art_rarity_fire_enabled = bool(parsed.get("full_art_rarity_fire_enabled", _full_art_rarity_fire_enabled))
+		var parsed_rarity_fire_settings = parsed.get("full_art_rarity_fire_by_source", {})
+		if parsed_rarity_fire_settings is Dictionary:
+			_full_art_rarity_fire_by_source.clear()
+			for source_path in parsed_rarity_fire_settings.keys():
+				var normalized_rarity_path = _canonicalize_source_key(String(source_path))
+				if normalized_rarity_path != "":
+					_full_art_rarity_fire_by_source[normalized_rarity_path] = bool(parsed_rarity_fire_settings[source_path])
 		var parsed_ancient_settings = parsed.get("ancient_text_outside_by_source", {})
 		if parsed_ancient_settings is Dictionary:
 			_ancient_text_outside_by_source.clear()
@@ -586,7 +656,9 @@ func _save_persistent_preferences() -> void:
 				settings = parsed.duplicate(true)
 	settings["infection_effect_hidden_enabled"] = _infection_effect_hidden_enabled
 	settings["full_art_rarity_fire_enabled"] = _full_art_rarity_fire_enabled
+	settings["full_art_rarity_fire_by_source"] = _full_art_rarity_fire_by_source.duplicate(true)
 	settings["ancient_text_outside_by_source"] = _ancient_text_outside_by_source.duplicate(true)
+	settings["gif_processing_settings"] = _gif_processing_settings.duplicate(true)
 	var file = FileAccess.open(STORAGE_UI_SETTINGS_PATH, FileAccess.WRITE)
 	if file == null:
 		return
@@ -4384,11 +4456,11 @@ func _restore_full_art_fire_rarity_color(card_root) -> void:
 		fire.remove_meta(META_FULL_ART_FIRE_ORIGINAL_STATE)
 
 
-func _apply_full_art_fire_rarity_color(card_root) -> void:
+func _apply_full_art_fire_rarity_color(card_root, source_path: String = "") -> void:
 	var fire = _find_ancient_fire_node(card_root)
 	if !(fire is CanvasItem):
 		return
-	if !_full_art_rarity_fire_enabled:
+	if !is_full_art_rarity_fire_enabled_for_source(source_path):
 		_restore_full_art_fire_rarity_color(card_root)
 		return
 	_store_full_art_fire_original_state(fire)
@@ -4609,7 +4681,7 @@ func _apply_full_art_state(texture_rect, source_path: String, override_texture) 
 		ancient_text_bg.visible = true
 	if ancient_banner is CanvasItem:
 		ancient_banner.visible = true
-	_apply_full_art_fire_rarity_color(card_root)
+	_apply_full_art_fire_rarity_color(card_root, source_path)
 	texture_rect.set_meta(META_FULL_ART_ACTIVE, true)
 	_apply_ancient_text_outside_layout(card_root)
 	return true
@@ -4830,6 +4902,7 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 			full_art_owner = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
 	var tracked_source_path = current_path if current_path != "" else stored_source_path
 	var has_override_for_path = tracked_source_path != "" and _manifest.has(tracked_source_path)
+	var rarity_fire_source_path = full_art_owner if full_art_owner != "" else tracked_source_path
 	var display_mode = DISPLAY_MODE_DEFAULT
 	var entry_type = "static"
 	var entry_updated_at = ""
@@ -4857,6 +4930,8 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 		"full_art_active": full_art_active,
 		"full_art_owner": full_art_owner,
 		"full_art_rarity_fire_enabled": _full_art_rarity_fire_enabled,
+		"full_art_rarity_fire_source": rarity_fire_source_path,
+		"full_art_rarity_fire_source_enabled": is_full_art_rarity_fire_enabled_for_source(rarity_fire_source_path),
 		"texture_path": texture_path,
 		"texture_size": [texture_size.x, texture_size.y],
 		"override_active": bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))
