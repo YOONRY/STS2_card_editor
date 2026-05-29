@@ -24,6 +24,8 @@ public static class Bootstrap
     private const string OverlayScenePath = "res://mods/card_art_editor/inspect_card_art_editor.tscn";
     internal const string InspectSourcePathMeta = "_card_art_inspect_source_path";
     internal const string InspectCardIdMeta = "_card_art_inspect_card_id";
+    private const string InfectionEffectSuppressedMeta = "_card_art_infection_effect_suppressed";
+    private const string InfectionEffectOriginalVisibleMeta = "_card_art_infection_effect_original_visible";
 
     public static void Init()
     {
@@ -293,16 +295,6 @@ public static class Bootstrap
     {
         try
         {
-            var manager = TryEnsureManager();
-            if (manager is not null)
-            {
-                var suppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
-                if (!suppressionEnabled)
-                {
-                    return;
-                }
-            }
-
             if (!TryGetCardModel(card, out var model) || model is null)
             {
                 return;
@@ -316,6 +308,13 @@ public static class Bootstrap
                 return;
             }
 
+            var suppressionEnabled = true;
+            var manager = TryEnsureManager();
+            if (manager is not null)
+            {
+                suppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
+            }
+
             var logKey = $"{cardId}:{card.Name}";
             if (LoggedCardEffectTrees.Add(logKey))
             {
@@ -323,7 +322,7 @@ public static class Bootstrap
                 DumpNodeTree(card, 0);
             }
 
-            HideInfectionEffectNodes(card);
+            ApplyInfectionEffectNodeVisibility(card, suppressionEnabled);
         }
         catch (Exception ex)
         {
@@ -376,7 +375,7 @@ public static class Bootstrap
         }
     }
 
-    private static void HideInfectionEffectNodes(Node root)
+    private static void ApplyInfectionEffectNodeVisibility(Node root, bool hide)
     {
         foreach (var child in root.GetChildren())
         {
@@ -405,12 +404,31 @@ public static class Bootstrap
             {
                 if (childNode is CanvasItem canvasItem)
                 {
-                    canvasItem.Visible = false;
+                    if (hide)
+                    {
+                        if (!childNode.HasMeta(InfectionEffectSuppressedMeta))
+                        {
+                            childNode.SetMeta(InfectionEffectOriginalVisibleMeta, canvasItem.Visible);
+                            childNode.SetMeta(InfectionEffectSuppressedMeta, true);
+                        }
+                        canvasItem.Visible = false;
+                    }
+                    else if (childNode.HasMeta(InfectionEffectSuppressedMeta))
+                    {
+                        var originalVisible = childNode.GetMeta(InfectionEffectOriginalVisibleMeta).AsBool();
+                        canvasItem.Visible = originalVisible;
+                        childNode.RemoveMeta(InfectionEffectSuppressedMeta);
+                        childNode.RemoveMeta(InfectionEffectOriginalVisibleMeta);
+                    }
+                    else if (!canvasItem.Visible)
+                    {
+                        canvasItem.Visible = true;
+                    }
                 }
-                Log($"Suppressed Infection effect node: {DescribeNodePath(childNode)} [{childNode.GetType().Name}]");
+                Log($"{(hide ? "Suppressed" : "Restored")} Infection effect node: {DescribeNodePath(childNode)} [{childNode.GetType().Name}]");
             }
 
-            HideInfectionEffectNodes(childNode);
+            ApplyInfectionEffectNodeVisibility(childNode, hide);
         }
     }
 

@@ -574,8 +574,11 @@ func is_infection_effect_hidden_enabled() -> bool:
 
 
 func set_infection_effect_hidden_enabled(enabled: bool) -> void:
+	if _infection_effect_hidden_enabled == enabled:
+		return
 	_infection_effect_hidden_enabled = enabled
 	_save_persistent_preferences()
+	refresh_all_portraits()
 
 
 func is_full_art_rarity_fire_enabled() -> bool:
@@ -759,9 +762,12 @@ func get_art_pack_variants_for_source(source_path: String) -> Array:
 		if !(pack is Dictionary):
 			continue
 		var cards = pack.get("cards", {})
-		if !(cards is Dictionary) or !cards.has(source_path):
+		if !(cards is Dictionary):
 			continue
-		var card_entry = cards[source_path]
+		var matched_card = _find_art_pack_card_entry(cards, source_path)
+		if matched_card.is_empty():
+			continue
+		var card_entry = matched_card.get("entry", null)
 		if !(card_entry is Dictionary):
 			continue
 		result.append({
@@ -795,18 +801,48 @@ func apply_art_pack_variant(source_path: String, pack_id: String) -> Dictionary:
 			"message": "The selected art pack could not be read."
 		}
 	var cards = pack.get("cards", {})
-	if !(cards is Dictionary) or !cards.has(source_path):
+	if !(cards is Dictionary):
 		return {
 			"ok": false,
 			"message": "That art pack does not contain the current card."
 		}
-	var card_entry = cards[source_path]
+	var matched_card = _find_art_pack_card_entry(cards, source_path)
+	if matched_card.is_empty():
+		return {
+			"ok": false,
+			"message": "That art pack does not contain the current card."
+		}
+	var card_entry = matched_card.get("entry", null)
 	if !(card_entry is Dictionary):
 		return {
 			"ok": false,
 			"message": "The selected card entry in the art pack is invalid."
 	}
 	return _activate_registered_art_pack_entry(source_path, card_entry, pack_id, String(pack.get("name", pack_id)))
+
+
+func _find_art_pack_card_entry(cards: Dictionary, source_path: String) -> Dictionary:
+	var canonical_source = _canonicalize_source_key(source_path)
+	if canonical_source == "":
+		return {}
+	if cards.has(canonical_source):
+		var exact_entry = cards.get(canonical_source, null)
+		if exact_entry is Dictionary:
+			return {
+				"source_path": canonical_source,
+				"entry": exact_entry
+			}
+	for card_source_path in cards.keys():
+		var card_entry = cards.get(card_source_path, null)
+		if !(card_entry is Dictionary):
+			continue
+		var canonical_card_source = _canonicalize_source_key(String(card_source_path))
+		if canonical_card_source == canonical_source:
+			return {
+				"source_path": String(card_source_path),
+				"entry": card_entry
+			}
+	return {}
 
 
 func apply_art_pack_to_all(pack_id: String, progress_callback: Callable = Callable()) -> Dictionary:
@@ -1116,15 +1152,59 @@ func _canonicalize_managed_card_source_path(path: String) -> String:
 	relative_key = relative_key.trim_suffix(".png").trim_suffix(".jpg").trim_suffix(".jpeg").trim_suffix(".webp").trim_suffix(".gif")
 	if relative_key == "":
 		return ""
-	var source_index = _get_managed_source_index_cached()
-	var exact_map = source_index.get("exact", {})
-	if exact_map is Dictionary and (exact_map as Dictionary).has(relative_key):
-		return String((exact_map as Dictionary)[relative_key])
+	var managed_source_path = _resolve_source_path_from_relative_card_key(relative_key)
+	if managed_source_path != "":
+		return managed_source_path
 	if normalized_path.contains("/modchar/") and normalized_path.contains("/card/"):
 		var basename = normalized_path.get_file().get_basename()
 		var direct_source_path = _resolve_source_path_from_basename(basename)
 		if direct_source_path != "":
 			return direct_source_path
+	return ""
+
+
+func _resolve_source_path_from_relative_card_key(relative_key: String) -> String:
+	if relative_key == "":
+		return ""
+	var normalized_key = relative_key.replace("\\", "/").to_lower()
+	normalized_key = normalized_key.trim_prefix("/")
+	normalized_key = normalized_key.trim_suffix(".png").trim_suffix(".jpg").trim_suffix(".jpeg").trim_suffix(".webp").trim_suffix(".gif")
+	if normalized_key == "":
+		return ""
+	var source_index = _get_managed_source_index_cached()
+	var exact_map = source_index.get("exact", {})
+	if exact_map is Dictionary and (exact_map as Dictionary).has(normalized_key):
+		return String((exact_map as Dictionary)[normalized_key])
+	var candidates: Array = []
+	candidates.append("%s%s.png" % [MANAGED_TEXTURE_PREFIX, normalized_key])
+	var slash_index = normalized_key.find("/")
+	if slash_index > 0:
+		var first_folder = normalized_key.substr(0, slash_index)
+		var rest = normalized_key.substr(slash_index + 1)
+		if rest.begins_with("beta/"):
+			candidates.append("%s%s/%s.png" % [MANAGED_TEXTURE_PREFIX, first_folder, rest.trim_prefix("beta/")])
+		else:
+			candidates.append("%s%s/beta/%s.png" % [MANAGED_TEXTURE_PREFIX, first_folder, rest])
+	for candidate in candidates:
+		if ResourceLoader.exists(String(candidate)):
+			return String(candidate)
+	var basename = normalized_key.get_file().get_basename()
+	return _resolve_source_path_from_basename(basename)
+
+
+func _resolve_source_path_from_imported_texture_path(path: String) -> String:
+	var normalized_path = path.replace("\\", "/").to_lower()
+	if !normalized_path.begins_with("res://.godot/imported/"):
+		return ""
+	var file_name = normalized_path.get_file()
+	for marker in [".png-", ".jpg-", ".jpeg-", ".webp-", ".gif-"]:
+		var marker_index = file_name.find(marker)
+		if marker_index < 0:
+			continue
+		var basename = file_name.substr(0, marker_index).get_basename()
+		var source_path = _resolve_source_path_from_basename(basename)
+		if source_path != "":
+			return source_path
 	return ""
 
 
@@ -2004,67 +2084,6 @@ func export_bundle_to_file(export_path: String) -> Dictionary:
 			"message": "There are no custom card images to export yet."
 		}
 
-	var overrides: Array = []
-	for source_path in _manifest.keys():
-		var entry = _manifest[source_path]
-		if !(entry is Dictionary):
-			continue
-		var bundle_entry = {
-			"source_path": source_path,
-			"width": int(entry.get("width", 0)),
-			"height": int(entry.get("height", 0)),
-			"updated_at": String(entry.get("updated_at", "")),
-			"type": String(entry.get("type", "static")),
-			"display_mode": String(entry.get("display_mode", DISPLAY_MODE_DEFAULT))
-		}
-		if _is_animated_entry(entry):
-			var frame_paths = entry.get("source_animation_frame_paths", entry.get("source_frame_paths", entry.get("frame_paths", [])))
-			var frame_delays = entry.get("source_animation_frame_delays", entry.get("frame_delays", []))
-			var frames: Array = []
-			for index in range(frame_paths.size()):
-				var frame_path = String(frame_paths[index])
-				var absolute_frame_path = ProjectSettings.globalize_path(frame_path)
-				var image_bytes = FileAccess.get_file_as_bytes(absolute_frame_path)
-				if image_bytes.is_empty():
-					continue
-				frames.append({
-					"png_base64": Marshalls.raw_to_base64(image_bytes),
-					"delay": float(frame_delays[index]) if index < frame_delays.size() else 0.1
-				})
-			if frames.is_empty():
-				continue
-			bundle_entry["frames"] = frames
-			bundle_entry["adjust_zoom"] = float(entry.get("adjust_zoom", 1.0))
-			bundle_entry["adjust_offset_x"] = float(entry.get("adjust_offset_x", 0.0))
-			bundle_entry["adjust_offset_y"] = float(entry.get("adjust_offset_y", 0.0))
-		else:
-			var edit_source_path = String(entry.get("edit_source_path", ""))
-			var absolute_edit_source_path = ProjectSettings.globalize_path(edit_source_path)
-			var edit_source_bytes = FileAccess.get_file_as_bytes(absolute_edit_source_path)
-			if edit_source_bytes.is_empty() and entry.has("override_path"):
-				edit_source_path = String(entry["override_path"])
-				absolute_edit_source_path = ProjectSettings.globalize_path(edit_source_path)
-				edit_source_bytes = FileAccess.get_file_as_bytes(absolute_edit_source_path)
-			if edit_source_bytes.is_empty():
-				continue
-			bundle_entry["edit_source_png_base64"] = Marshalls.raw_to_base64(edit_source_bytes)
-			if entry.has("override_path"):
-				var override_path = String(entry["override_path"])
-				var absolute_override_path = ProjectSettings.globalize_path(override_path)
-				var image_bytes = FileAccess.get_file_as_bytes(absolute_override_path)
-				if !image_bytes.is_empty():
-					bundle_entry["png_base64"] = Marshalls.raw_to_base64(image_bytes)
-			bundle_entry["adjust_zoom"] = float(entry.get("adjust_zoom", 1.0))
-			bundle_entry["adjust_offset_x"] = float(entry.get("adjust_offset_x", 0.0))
-			bundle_entry["adjust_offset_y"] = float(entry.get("adjust_offset_y", 0.0))
-		overrides.append(bundle_entry)
-
-	if overrides.is_empty():
-		return {
-			"ok": false,
-			"message": "The custom images could not be collected for export."
-		}
-
 	var normalized_export_path = export_path
 	if !normalized_export_path.to_lower().ends_with(".cardartpack.json"):
 		normalized_export_path += ".cardartpack.json"
@@ -2076,18 +2095,87 @@ func export_bundle_to_file(export_path: String) -> Dictionary:
 			"message": "The art pack file could not be created."
 		}
 
-	file.store_string(JSON.stringify({
-		"format": "card_art_bundle",
-		"version": BUNDLE_VERSION,
-		"exported_at": Time.get_datetime_string_from_system(),
-		"count": overrides.size(),
-		"overrides": overrides
-	}, "\t"))
+	var exported_count := 0
+	file.store_string("{\"format\":\"card_art_bundle\",\"version\":%d,\"exported_at\":%s,\"overrides\":[" % [
+		BUNDLE_VERSION,
+		JSON.stringify(Time.get_datetime_string_from_system())
+	])
+	for source_path in _manifest.keys():
+		var entry = _manifest[source_path]
+		if !(entry is Dictionary):
+			continue
+		var bundle_entry = _build_bundle_export_entry(String(source_path), entry)
+		if bundle_entry.is_empty():
+			continue
+		if exported_count > 0:
+			file.store_string(",")
+		file.store_string(JSON.stringify(bundle_entry))
+		exported_count += 1
+	file.store_string("],\"count\":%d}" % exported_count)
+	file.flush()
+
+	if exported_count <= 0:
+		file = null
+		DirAccess.remove_absolute(normalized_export_path)
+		return {
+			"ok": false,
+			"message": "The custom images could not be collected for export."
+		}
 
 	return {
 		"ok": true,
-		"message": "Exported %d custom card images into one shareable art pack." % overrides.size()
+		"message": "Exported %d custom card images into one shareable art pack." % exported_count
 	}
+
+
+func _build_bundle_export_entry(source_path: String, entry: Dictionary) -> Dictionary:
+	var bundle_entry = {
+		"source_path": source_path,
+		"width": int(entry.get("width", 0)),
+		"height": int(entry.get("height", 0)),
+		"updated_at": String(entry.get("updated_at", "")),
+		"type": String(entry.get("type", "static")),
+		"display_mode": String(entry.get("display_mode", DISPLAY_MODE_DEFAULT)),
+		"adjust_zoom": float(entry.get("adjust_zoom", 1.0)),
+		"adjust_offset_x": float(entry.get("adjust_offset_x", 0.0)),
+		"adjust_offset_y": float(entry.get("adjust_offset_y", 0.0))
+	}
+	if _is_animated_entry(entry):
+		var frame_paths = entry.get("source_animation_frame_paths", entry.get("source_frame_paths", entry.get("frame_paths", [])))
+		var frame_delays = entry.get("source_animation_frame_delays", entry.get("frame_delays", []))
+		var frames: Array = []
+		for index in range(frame_paths.size()):
+			var frame_path = String(frame_paths[index])
+			var absolute_frame_path = ProjectSettings.globalize_path(frame_path)
+			var image_bytes = FileAccess.get_file_as_bytes(absolute_frame_path)
+			if image_bytes.is_empty():
+				continue
+			frames.append({
+				"png_base64": Marshalls.raw_to_base64(image_bytes),
+				"delay": float(frame_delays[index]) if index < frame_delays.size() else 0.1
+			})
+		if frames.is_empty():
+			return {}
+		bundle_entry["frames"] = frames
+		return bundle_entry
+
+	var edit_source_path = String(entry.get("edit_source_path", ""))
+	var absolute_edit_source_path = ProjectSettings.globalize_path(edit_source_path)
+	var edit_source_bytes = FileAccess.get_file_as_bytes(absolute_edit_source_path)
+	if edit_source_bytes.is_empty() and entry.has("override_path"):
+		edit_source_path = String(entry["override_path"])
+		absolute_edit_source_path = ProjectSettings.globalize_path(edit_source_path)
+		edit_source_bytes = FileAccess.get_file_as_bytes(absolute_edit_source_path)
+	if edit_source_bytes.is_empty():
+		return {}
+	bundle_entry["edit_source_png_base64"] = Marshalls.raw_to_base64(edit_source_bytes)
+	if entry.has("override_path"):
+		var override_path = String(entry["override_path"])
+		var absolute_override_path = ProjectSettings.globalize_path(override_path)
+		var image_bytes = FileAccess.get_file_as_bytes(absolute_override_path)
+		if !image_bytes.is_empty():
+			bundle_entry["png_base64"] = Marshalls.raw_to_base64(image_bytes)
+	return bundle_entry
 
 
 func import_bundle_from_file(import_path: String, progress_callback: Callable = Callable()) -> Dictionary:
@@ -5300,18 +5388,33 @@ func _normalize_source_path(path: String) -> String:
 			path = res_candidate
 
 	if path.begins_with(MANAGED_TEXTURE_PREFIX):
+		var canonical_managed_path = _canonicalize_managed_card_source_path(path)
+		if canonical_managed_path != "":
+			return canonical_managed_path
+		if ResourceLoader.exists(path):
+			return path
+		var managed_basename_path = _resolve_source_path_from_basename(path.get_file().get_basename())
+		if managed_basename_path != "":
+			return managed_basename_path
 		return path
 
 	if path.begins_with(CARD_ATLAS_PREFIX) and path.ends_with(".tres"):
 		var sprite_path = path.trim_prefix(CARD_ATLAS_PREFIX)
 		sprite_path = sprite_path.trim_suffix(".tres")
 		var fallback_path = "%s%s.png" % [MANAGED_TEXTURE_PREFIX, sprite_path]
+		var canonical_atlas_path = _resolve_source_path_from_relative_card_key(sprite_path)
+		if canonical_atlas_path != "":
+			return canonical_atlas_path
 		if ResourceLoader.exists(fallback_path):
 			return fallback_path
 
-	var canonical_managed_path = _canonicalize_managed_card_source_path(path)
-	if canonical_managed_path != "":
-		return canonical_managed_path
+	var imported_texture_path = _resolve_source_path_from_imported_texture_path(path)
+	if imported_texture_path != "":
+		return imported_texture_path
+
+	var canonical_card_path = _canonicalize_managed_card_source_path(path)
+	if canonical_card_path != "":
+		return canonical_card_path
 
 	return path
 
@@ -5349,11 +5452,15 @@ func _sanitize_manifest_for_missing_sources() -> void:
 	if _manifest.is_empty():
 		return
 	var removed_any := false
+	var rekeyed_any := false
 	var invalid_sources: Array = []
+	var rekey_sources := {}
 	for source_path in _manifest.keys():
 		var normalized_source = _normalize_source_path(String(source_path))
 		if !_is_manifest_source_still_valid(normalized_source):
 			invalid_sources.append(String(source_path))
+		elif normalized_source != String(source_path):
+			rekey_sources[String(source_path)] = normalized_source
 	for source_path in invalid_sources:
 		var entry = _manifest.get(source_path, null)
 		if entry is Dictionary:
@@ -5361,7 +5468,18 @@ func _sanitize_manifest_for_missing_sources() -> void:
 		_manifest.erase(source_path)
 		_erase_override_texture_cache(source_path)
 		removed_any = true
-	if removed_any:
+	for source_path in rekey_sources.keys():
+		if !_manifest.has(source_path):
+			continue
+		var normalized_source = String(rekey_sources[source_path])
+		var entry = _manifest.get(source_path, null)
+		_manifest.erase(source_path)
+		_erase_override_texture_cache(source_path)
+		if !_manifest.has(normalized_source):
+			_manifest[normalized_source] = entry
+		_erase_override_texture_cache(normalized_source)
+		rekeyed_any = true
+	if removed_any or rekeyed_any:
 		_save_manifest_now()
 
 
@@ -5412,12 +5530,24 @@ func _sanitize_art_pack_registry_for_missing_sources() -> void:
 			removed_any = true
 			continue
 		var invalid_sources: Array = []
+		var rekey_sources := {}
 		for source_path in cards.keys():
 			var normalized_source = _normalize_source_path(String(source_path))
 			if !_is_manifest_source_still_valid(normalized_source):
 				invalid_sources.append(String(source_path))
+			elif normalized_source != String(source_path):
+				rekey_sources[String(source_path)] = normalized_source
 		for source_path in invalid_sources:
 			cards.erase(source_path)
+			removed_any = true
+		for source_path in rekey_sources.keys():
+			if !cards.has(source_path):
+				continue
+			var normalized_source = String(rekey_sources[source_path])
+			var card_entry = cards.get(source_path, null)
+			cards.erase(source_path)
+			if !cards.has(normalized_source):
+				cards[normalized_source] = card_entry
 			removed_any = true
 		pack_data["cards"] = cards
 		packs[pack_id] = pack_data

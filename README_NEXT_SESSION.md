@@ -96,6 +96,11 @@ Built PCK output:
 Game mod PCK path:
 - `C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\mods\card_art_editor\card_art_editor.pck`
 
+Before overwriting the game mod files, put the previous installed files under:
+- `C:\Users\Administrator\Documents\s_2_mod\build\deployment_backups\card_art_editor_before_<change_name>_<YYYYMMDD_HHMMSS>\`
+
+Do not leave `.bak_*` files in the game mod folder.
+
 ## Latest Release Zip
 
 Latest packaged release at time of handoff:
@@ -111,4 +116,3 @@ Recommended next step:
 If full-art work becomes too risky, discuss with the user whether to:
 - keep full-art as experimental, or
 - temporarily reduce scope and preserve the otherwise stable release
-

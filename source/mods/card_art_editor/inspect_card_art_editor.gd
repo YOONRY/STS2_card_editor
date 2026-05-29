@@ -11,7 +11,7 @@ const FILE_DIALOG_MODE_IMPORT_MOD := "import_mod"
 const EXPORT_DIALOG_MODE_PACK := "pack"
 const EXPORT_DIALOG_MODE_CURRENT_PNG := "current_png"
 const IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
-const THUMBNAIL_SIZE := Vector2i(120, 90)
+const BROWSER_LIST_BATCH_SIZE := 40
 const TRANSLATIONS := {
 	"ko": {
 		"edit_button": "카드 이미지 수정",
@@ -177,7 +177,10 @@ var _browser_selection_is_dir := false
 var _browser_last_dirs := {}
 var _export_last_dirs := {}
 var _favorite_dirs: Array = []
-var _thumbnail_cache := {}
+var _browser_pending_entries: Array = []
+var _browser_pending_entry_index := 0
+var _browser_pending_total := 0
+var _browser_listing_in_progress := false
 var _locale := "ko"
 var _language_button: Button
 var _settings_button: Button
@@ -501,7 +504,9 @@ func _refresh_infection_effect_button() -> void:
 	var visible = _is_current_infection_card()
 	_infection_effect_button.visible = visible
 	if !visible or manager == null:
+		_infection_effect_button.disabled = true
 		return
+	_infection_effect_button.disabled = false
 	var hidden_enabled = bool(manager.is_infection_effect_hidden_enabled())
 	if _locale == "en":
 		_infection_effect_button.text = "Show Infection Effect" if hidden_enabled else "Hide Infection Effect"
@@ -1306,6 +1311,7 @@ func _on_import_progress(current: int, total: int, label: String = "") -> void:
 
 
 func _process(delta: float) -> void:
+	_populate_browser_items_step()
 	_refresh_accumulator += delta
 	if _refresh_accumulator < 0.15:
 		return
@@ -2576,7 +2582,7 @@ func _open_file_browser(mode: String) -> void:
 	_browser_selection_is_dir = false
 	_browser_open_button.disabled = true
 	_browser_preview.texture = null
-	_browser_preview_label.text = "미리보기를 표시할 파일을 선택하세요."
+	_browser_preview_label.text = _tr("browser_preview_default")
 	_file_browser_title.text = "이미지 파일 선택" if mode == FILE_DIALOG_MODE_UPLOAD else "아트팩 파일 선택"
 	_browser_preview_label.text = _tr("browser_preview_default")
 	if mode == FILE_DIALOG_MODE_UPLOAD:
@@ -2593,11 +2599,12 @@ func _open_file_browser(mode: String) -> void:
 
 func _close_file_browser() -> void:
 	_file_browser_panel.hide()
+	_clear_browser_population_queue()
 	_browser_selected_path = ""
 	_browser_selection_is_dir = false
 	_browser_open_button.disabled = true
 	_browser_preview.texture = null
-	_browser_preview_label.text = "미리보기를 표시할 파일을 선택하세요."
+	_browser_preview_label.text = _tr("browser_preview_default")
 
 
 func _resolve_browser_start_dir() -> String:
@@ -2619,7 +2626,53 @@ func _resolve_browser_start_dir() -> String:
 	return ProjectSettings.globalize_path("user://")
 
 
+func _clear_browser_population_queue() -> void:
+	_browser_pending_entries.clear()
+	_browser_pending_entry_index = 0
+	_browser_pending_total = 0
+	_browser_listing_in_progress = false
+
+
+func _get_browser_loading_label() -> String:
+	return ("폴더 항목 불러오는 중... %d / %d" if _locale == "ko" else "Loading folder items... %d / %d") % [
+		_browser_pending_entry_index,
+		_browser_pending_total
+	]
+
+
+func _update_browser_loading_label() -> void:
+	if _browser_selected_path != "":
+		return
+	if _browser_listing_in_progress:
+		_browser_preview_label.text = _get_browser_loading_label()
+		return
+	_browser_preview_label.text = _tr("browser_preview_default")
+
+
+func _append_browser_item(entry: Dictionary) -> void:
+	var item_text = _tr("browser_directory_label") % String(entry["name"]) if bool(entry["is_dir"]) else String(entry["name"])
+	_browser_item_list.add_item(item_text)
+	var item_index = _browser_item_list.item_count - 1
+	_browser_item_list.set_item_metadata(item_index, entry)
+
+
+func _populate_browser_items_step(max_items: int = BROWSER_LIST_BATCH_SIZE) -> void:
+	if !_browser_listing_in_progress:
+		return
+	var appended := 0
+	while appended < max_items and _browser_pending_entry_index < _browser_pending_total:
+		var entry = _browser_pending_entries[_browser_pending_entry_index]
+		_browser_pending_entry_index += 1
+		if entry is Dictionary:
+			_append_browser_item(entry)
+		appended += 1
+	if _browser_pending_entry_index >= _browser_pending_total:
+		_clear_browser_population_queue()
+	_update_browser_loading_label()
+
+
 func _refresh_file_browser(target_dir: String) -> void:
+	_clear_browser_population_queue()
 	var dir = DirAccess.open(target_dir)
 	if dir == null:
 		_set_status("해당 경로를 열 수 없습니다.", true)
@@ -2633,7 +2686,7 @@ func _refresh_file_browser(target_dir: String) -> void:
 	_browser_selection_is_dir = false
 	_browser_open_button.disabled = true
 	_browser_preview.texture = null
-	_browser_preview_label.text = "미리보기를 표시할 파일을 선택하세요."
+	_browser_preview_label.text = _tr("browser_preview_default")
 
 	var directories: Array = []
 	var files: Array = []
@@ -2661,19 +2714,13 @@ func _refresh_file_browser(target_dir: String) -> void:
 
 	directories.sort_custom(func(a, b): return String(a["name"]).nocasecmp_to(String(b["name"])) < 0)
 	files.sort_custom(func(a, b): return String(a["name"]).nocasecmp_to(String(b["name"])) < 0)
-
-	for entry in directories + files:
-		var item_text = "[?대뜑] %s" % String(entry["name"]) if bool(entry["is_dir"]) else String(entry["name"])
-		_browser_item_list.add_item(item_text)
-		var item_index = _browser_item_list.item_count - 1
-		_browser_item_list.set_item_metadata(item_index, entry)
-		if bool(entry["is_dir"]):
-			_browser_item_list.set_item_text(item_index, _tr("browser_directory_label") % String(entry["name"]))
-		if !bool(entry["is_dir"]):
-			var thumbnail = _get_thumbnail_for_browser(String(entry["path"]))
-			if thumbnail != null:
-				_browser_item_list.set_item_icon(item_index, thumbnail)
-	_browser_preview_label.text = _tr("browser_preview_default")
+	_browser_pending_entries = directories + files
+	_browser_pending_total = _browser_pending_entries.size()
+	_browser_pending_entry_index = 0
+	_browser_listing_in_progress = _browser_pending_total > 0
+	_update_browser_loading_label()
+	if _browser_listing_in_progress:
+		_populate_browser_items_step()
 
 
 func _is_browser_supported_file(file_name: String) -> bool:
@@ -2683,38 +2730,6 @@ func _is_browser_supported_file(file_name: String) -> bool:
 	if _file_dialog_mode == FILE_DIALOG_MODE_IMPORT_MOD:
 		return lower_name.ends_with(".json") or lower_name.ends_with(".pck")
 	return IMAGE_EXTENSIONS.has(file_name.get_extension().to_lower())
-
-
-func _get_thumbnail_for_browser(path: String):
-	if _thumbnail_cache.has(path):
-		return _thumbnail_cache[path]
-	if _file_dialog_mode != FILE_DIALOG_MODE_UPLOAD:
-		return null
-	var manager = _manager()
-	if manager == null:
-		return null
-	var image = manager.load_first_gif_frame(path) if path.get_extension().to_lower() == "gif" else manager.load_image_from_file(path)
-	if image == null:
-		return null
-	var thumbnail_image = image.duplicate()
-	if thumbnail_image.is_compressed():
-		var decompress_error = thumbnail_image.decompress()
-		if decompress_error != OK:
-			return null
-	thumbnail_image.convert(Image.FORMAT_RGBA8)
-	var scale = min(
-		float(THUMBNAIL_SIZE.x) / float(max(thumbnail_image.get_width(), 1)),
-		float(THUMBNAIL_SIZE.y) / float(max(thumbnail_image.get_height(), 1)),
-		1.0
-	)
-	var resized_size = Vector2i(
-		max(1, int(round(thumbnail_image.get_width() * scale))),
-		max(1, int(round(thumbnail_image.get_height() * scale)))
-	)
-	thumbnail_image.resize(resized_size.x, resized_size.y, Image.INTERPOLATE_LANCZOS)
-	var texture = ImageTexture.create_from_image(thumbnail_image)
-	_thumbnail_cache[path] = texture
-	return texture
 
 
 func _on_browser_pick_folder_pressed() -> void:
