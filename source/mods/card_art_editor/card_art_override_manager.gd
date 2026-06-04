@@ -20,7 +20,7 @@ const DEFAULT_LANDSCAPE_SIZE := Vector2i(1000, 760)
 const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
 const FULL_ART_TARGET_SIZE := Vector2i(600, 847)
 const MOD_IMPORT_IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
-const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "colorless", "status", "token", "curse", "event", "necrobinder"]
+const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "defect", "colorless", "status", "token", "curse", "event", "necrobinder"]
 const REFRESH_INTERVAL := 0.15
 const DISPLAY_MODE_DEFAULT := "default"
 const DISPLAY_MODE_FULL_ART := "full_art"
@@ -55,8 +55,8 @@ const FULL_ART_HIGHLIGHT_RARE_COLOR := Color(1.0, 0.72, 0.16, 1.0)
 const FULL_ART_FIRE_SHADER_CODE := "shader_type canvas_item;\nuniform vec4 tint_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);\nvoid fragment() {\n\tvec4 tex_color = texture(TEXTURE, UV) * COLOR;\n\tfloat brightness = max(max(tex_color.r, tex_color.g), tex_color.b);\n\tCOLOR = vec4(tint_color.rgb * brightness, tex_color.a * tint_color.a);\n}\n"
 const FULL_ART_INSET_STATIC := 0
 const FULL_ART_INSET_ANIMATED := 0
-const STARTUP_RESCAN_FRAMES := 180
-const STARTUP_RESCAN_STEP_INTERVAL := 6
+const STARTUP_RESCAN_FRAMES := 90
+const STARTUP_RESCAN_STEP_INTERVAL := 15
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
 const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
@@ -97,6 +97,7 @@ var _batch_refresh_requested := false
 var _batch_art_packs_changed := false
 var _batched_override_sources := {}
 var _managed_source_index_cache: Dictionary = {}
+var _art_pack_variants_cache: Dictionary = {}
 var _ancient_text_hover_tip: Control
 var _ancient_text_hover_tip_title
 var _ancient_text_hover_tip_description
@@ -135,8 +136,8 @@ func _process(delta: float) -> void:
 		if _startup_rescan_tick >= STARTUP_RESCAN_STEP_INTERVAL:
 			_startup_rescan_tick = 0
 			_register_existing(get_tree().root)
+			_needs_full_refresh = true
 		_startup_rescan_frames_remaining -= 1
-		_needs_full_refresh = true
 	if _ancient_text_dragging:
 		_clear_pending_ancient_text_click()
 		_hide_ancient_text_hover_tip()
@@ -435,6 +436,74 @@ func toggle_display_mode(source_path: String) -> Dictionary:
 	}
 
 
+func _get_full_art_capable_override_sources() -> Array:
+	var sources: Array = []
+	for source_path in _manifest.keys():
+		var normalized_source = _canonicalize_source_key(String(source_path))
+		if normalized_source != "" and can_toggle_full_art(normalized_source):
+			sources.append(normalized_source)
+	return sources
+
+
+func get_full_art_capable_override_count() -> int:
+	return _get_full_art_capable_override_sources().size()
+
+
+func is_all_full_art_mode_enabled() -> bool:
+	var sources = _get_full_art_capable_override_sources()
+	if sources.is_empty():
+		return false
+	for source_path in sources:
+		if !is_full_art_mode(String(source_path)):
+			return false
+	return true
+
+
+func set_all_full_art_mode_enabled(enabled: bool, progress_callback: Callable = Callable()) -> Dictionary:
+	var sources = _get_full_art_capable_override_sources()
+	if sources.is_empty():
+		return {
+			"ok": false,
+			"message": "There are no applied card images that can use full-art mode."
+		}
+	var target_mode = DISPLAY_MODE_FULL_ART if enabled else DISPLAY_MODE_DEFAULT
+	var changed_count := 0
+	var failed_count := 0
+	var processed_count := 0
+	_begin_batch_updates()
+	await _report_import_progress(progress_callback, 0, sources.size(), "Preparing full-art update...")
+	for source_path in sources:
+		var normalized_source = String(source_path)
+		processed_count += 1
+		if get_display_mode(normalized_source) == target_mode:
+			await _report_import_progress(progress_callback, processed_count, sources.size(), normalized_source.get_file())
+			continue
+		var entry = _manifest.get(normalized_source, null)
+		if !(entry is Dictionary):
+			failed_count += 1
+			await _report_import_progress(progress_callback, processed_count, sources.size(), normalized_source.get_file())
+			continue
+		var result = _rebuild_override_for_display_mode(normalized_source, target_mode, entry)
+		if bool(result.get("ok", false)):
+			changed_count += 1
+		else:
+			failed_count += 1
+		await _report_import_progress(progress_callback, processed_count, sources.size(), normalized_source.get_file())
+	_end_batch_updates()
+	if changed_count > 0:
+		refresh_all_portraits()
+	return {
+		"ok": failed_count == 0,
+		"message": "%s full-art mode for %d cards.%s" % [
+			"Enabled" if enabled else "Disabled",
+			changed_count,
+			" Failed: %d." % failed_count if failed_count > 0 else ""
+		],
+		"changed_count": changed_count,
+		"failed_count": failed_count
+	}
+
+
 func _rebuild_override_for_display_mode(source_path: String, display_mode: String, existing_entry: Dictionary = {}) -> Dictionary:
 	var entry = existing_entry if !existing_entry.is_empty() else _manifest.get(source_path, {})
 	if !(entry is Dictionary):
@@ -666,6 +735,61 @@ func set_ancient_text_outside_enabled(source_path: String, enabled: bool) -> voi
 	_needs_full_refresh = true
 
 
+func _get_ancient_text_outside_capable_sources() -> Array:
+	var sources: Array = []
+	for source_path in _manifest.keys():
+		var normalized_source = _canonicalize_source_key(String(source_path))
+		if normalized_source != "" and is_full_art_mode(normalized_source):
+			sources.append(normalized_source)
+	return sources
+
+
+func get_ancient_text_outside_capable_count() -> int:
+	return _get_ancient_text_outside_capable_sources().size()
+
+
+func is_all_ancient_text_outside_enabled() -> bool:
+	var sources = _get_ancient_text_outside_capable_sources()
+	if sources.is_empty():
+		return false
+	for source_path in sources:
+		if !is_ancient_text_outside_enabled(String(source_path)):
+			return false
+	return true
+
+
+func set_all_ancient_text_outside_enabled(enabled: bool) -> Dictionary:
+	var sources = _get_ancient_text_outside_capable_sources()
+	if sources.is_empty():
+		return {
+			"ok": false,
+			"message": "There are no full-art cards that can move text outside."
+		}
+	var changed_count := 0
+	for source_path in sources:
+		var normalized_source = String(source_path)
+		var current_enabled = is_ancient_text_outside_enabled(normalized_source)
+		if current_enabled == enabled:
+			continue
+		if enabled:
+			_ancient_text_outside_by_source[normalized_source] = true
+		else:
+			_ancient_text_outside_by_source.erase(normalized_source)
+		changed_count += 1
+	if changed_count > 0:
+		_save_persistent_preferences()
+		_hide_ancient_text_hover_tip()
+		refresh_all_portraits()
+	return {
+		"ok": true,
+		"message": "%s outside text for %d cards." % [
+			"Enabled" if enabled else "Disabled",
+			changed_count
+		],
+		"changed_count": changed_count
+	}
+
+
 func _load_persistent_preferences() -> void:
 	if !FileAccess.file_exists(STORAGE_UI_SETTINGS_PATH):
 		return
@@ -753,31 +877,41 @@ func get_art_pack_variants_for_source(source_path: String) -> Array:
 	var active_entry = _manifest.get(source_path, null)
 	if active_entry is Dictionary:
 		active_pack_id = String(active_entry.get("provider_pack_id", ""))
-	var packs = _art_pack_registry.get("packs", {})
-	if !(packs is Dictionary):
-		return []
 	var result: Array = []
-	for pack_id in packs.keys():
-		var pack = packs[pack_id]
-		if !(pack is Dictionary):
+	var cached_variants = _art_pack_variants_cache.get(source_path, null)
+	if cached_variants is Array:
+		result = (cached_variants as Array).duplicate(true)
+	else:
+		var packs = _art_pack_registry.get("packs", {})
+		if !(packs is Dictionary):
+			return []
+		for pack_id in packs.keys():
+			var pack = packs[pack_id]
+			if !(pack is Dictionary):
+				continue
+			var cards = pack.get("cards", {})
+			if !(cards is Dictionary):
+				continue
+			var matched_card = _find_art_pack_card_entry(cards, source_path)
+			if matched_card.is_empty():
+				continue
+			var card_entry = matched_card.get("entry", null)
+			if !(card_entry is Dictionary):
+				continue
+			result.append({
+				"pack_id": String(pack.get("id", pack_id)),
+				"pack_name": String(pack.get("name", pack_id)),
+				"display_mode": String(card_entry.get("display_mode", DISPLAY_MODE_DEFAULT)),
+				"type": String(card_entry.get("type", "static"))
+			})
+		result.sort_custom(func(a, b): return String(a.get("pack_name", "")).naturalnocasecmp_to(String(b.get("pack_name", ""))) < 0)
+		_art_pack_variants_cache[source_path] = result.duplicate(true)
+	for index in range(result.size()):
+		var variant = result[index]
+		if !(variant is Dictionary):
 			continue
-		var cards = pack.get("cards", {})
-		if !(cards is Dictionary):
-			continue
-		var matched_card = _find_art_pack_card_entry(cards, source_path)
-		if matched_card.is_empty():
-			continue
-		var card_entry = matched_card.get("entry", null)
-		if !(card_entry is Dictionary):
-			continue
-		result.append({
-			"pack_id": String(pack.get("id", pack_id)),
-			"pack_name": String(pack.get("name", pack_id)),
-			"display_mode": String(card_entry.get("display_mode", DISPLAY_MODE_DEFAULT)),
-			"type": String(card_entry.get("type", "static")),
-			"active": String(pack.get("id", pack_id)) == active_pack_id
-		})
-	result.sort_custom(func(a, b): return String(a.get("pack_name", "")).naturalnocasecmp_to(String(b.get("pack_name", ""))) < 0)
+		variant["active"] = String(variant.get("pack_id", "")) == active_pack_id
+		result[index] = variant
 	return result
 
 
@@ -931,14 +1065,14 @@ func get_source_path_for_texture_rect(texture_rect) -> String:
 	if texture_rect == null:
 		return ""
 	_refresh_portrait_node(texture_rect)
-	return _canonicalize_source_key(String(texture_rect.get_meta(META_SOURCE_PATH, "")))
+	return _as_valid_card_art_source(String(texture_rect.get_meta(META_SOURCE_PATH, "")))
 
 
 func get_source_path_for_card_node(card_node) -> String:
 	if card_node == null:
 		return ""
 	if card_node.has_meta(META_INSPECT_SOURCE_PATH):
-		var inspect_source_path = _canonicalize_source_key(String(card_node.get_meta(META_INSPECT_SOURCE_PATH, "")))
+		var inspect_source_path = _as_valid_card_art_source(String(card_node.get_meta(META_INSPECT_SOURCE_PATH, "")))
 		if inspect_source_path != "":
 			return inspect_source_path
 	var portrait_canvas_group = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup")
@@ -967,9 +1101,9 @@ func get_source_path_for_card_node(card_node) -> String:
 	var current = card_node
 	while current != null:
 		if current.has_meta(META_INSPECT_SOURCE_PATH):
-			var current_meta_source = String(current.get_meta(META_INSPECT_SOURCE_PATH, ""))
+			var current_meta_source = _as_valid_card_art_source(String(current.get_meta(META_INSPECT_SOURCE_PATH, "")))
 			if current_meta_source != "":
-				return _normalize_source_path(current_meta_source)
+				return current_meta_source
 		current = current.get_parent()
 	if ancient_portrait is TextureRect:
 		return get_source_path_for_texture_rect(ancient_portrait)
@@ -979,10 +1113,15 @@ func get_source_path_for_card_node(card_node) -> String:
 
 
 func get_source_path_for_model(model) -> String:
-	return _canonicalize_source_key(_extract_model_portrait_path(model))
+	return _as_valid_card_art_source(_extract_model_portrait_path(model))
+
+
+func is_valid_card_source_path(source_path: String) -> bool:
+	return _as_valid_card_art_source(source_path) != ""
 
 
 func get_target_size_for_source_path(source_path: String) -> Vector2i:
+	source_path = _as_valid_card_art_source(source_path)
 	if source_path == "":
 		return DEFAULT_LANDSCAPE_SIZE
 
@@ -991,9 +1130,10 @@ func get_target_size_for_source_path(source_path: String) -> Vector2i:
 		return Vector2i(int(manifest_entry["width"]), int(manifest_entry["height"]))
 
 	var size_probe_path = _get_preferred_size_probe_path(source_path)
-	var texture = load(size_probe_path)
-	if texture is Texture2D:
-		return Vector2i(texture.get_width(), texture.get_height())
+	if size_probe_path != "" and ResourceLoader.exists(size_probe_path):
+		var texture = load(size_probe_path)
+		if texture is Texture2D:
+			return Vector2i(texture.get_width(), texture.get_height())
 
 	if source_path.contains("ancient"):
 		return DEFAULT_PORTRAIT_SIZE
@@ -1003,8 +1143,8 @@ func get_target_size_for_source_path(source_path: String) -> Vector2i:
 
 func _get_preferred_size_probe_path(source_path: String) -> String:
 	var normalized = _normalize_source_path(source_path)
-	if normalized == "":
-		return source_path
+	if normalized == "" or !_looks_like_card_art_source(normalized):
+		return ""
 	if normalized.contains("/card_portraits/big/"):
 		return normalized
 	if normalized.contains("/card_portraits/") and !normalized.contains("/card_portraits/beta/"):
@@ -1209,8 +1349,17 @@ func _resolve_source_path_from_imported_texture_path(path: String) -> String:
 
 
 func _canonicalize_source_key(source_path: String) -> String:
+	if _is_invalid_source_path_text(source_path):
+		return ""
 	var normalized = _normalize_source_path(source_path)
 	return normalized if normalized != "" else source_path
+
+
+func _as_valid_card_art_source(source_path: String) -> String:
+	var normalized = _normalize_source_path(source_path)
+	if normalized == "" or !_looks_like_card_art_source(normalized):
+		return ""
+	return normalized
 
 
 func _collect_card_source_paths(dir_path: String, output: Array) -> void:
@@ -2070,7 +2219,12 @@ func _notify_override_changed(source_path: String) -> void:
 	overrides_changed.emit(source_path)
 
 
+func _clear_art_pack_variants_cache() -> void:
+	_art_pack_variants_cache.clear()
+
+
 func _notify_art_packs_changed() -> void:
+	_clear_art_pack_variants_cache()
 	if _batch_update_depth > 0:
 		_batch_art_packs_changed = true
 		return
@@ -5353,7 +5507,7 @@ func _resolve_texture_source_path(texture_rect, current_texture: Texture2D) -> S
 		if stored_source != "" and _looks_like_card_art_source(stored_source):
 			return stored_source
 
-	return current_path
+	return current_path if current_path != "" and _looks_like_card_art_source(current_path) else ""
 
 
 func _extract_model_portrait_path(model) -> String:
@@ -5377,7 +5531,7 @@ func _extract_model_portrait_path(model) -> String:
 
 
 func _normalize_source_path(path: String) -> String:
-	if path == "":
+	if _is_invalid_source_path_text(path):
 		return ""
 
 	path = path.replace("\\", "/")
@@ -5416,7 +5570,23 @@ func _normalize_source_path(path: String) -> String:
 	if canonical_card_path != "":
 		return canonical_card_path
 
+	if path.begins_with("res://") and MOD_IMPORT_IMAGE_EXTENSIONS.has(path.get_extension().to_lower()):
+		var image_basename_path = _resolve_source_path_from_basename(path.get_file().get_basename())
+		if image_basename_path != "":
+			return image_basename_path
+
 	return path
+
+
+func _is_invalid_source_path_text(path: String) -> bool:
+	var normalized_text = path.strip_edges().to_lower()
+	if normalized_text == "":
+		return true
+	if normalized_text.contains("instance base is null"):
+		return true
+	if normalized_text.contains("null instance"):
+		return true
+	return false
 
 
 func _ensure_storage() -> void:
@@ -5494,6 +5664,7 @@ func _is_manifest_source_still_valid(source_path: String) -> bool:
 
 
 func _load_art_pack_registry() -> void:
+	_clear_art_pack_variants_cache()
 	var absolute_registry_path = ProjectSettings.globalize_path(STORAGE_ART_PACK_REGISTRY_PATH)
 	if !FileAccess.file_exists(absolute_registry_path):
 		_art_pack_registry = {"packs": {}}
@@ -5577,6 +5748,7 @@ func _save_manifest_now() -> void:
 
 
 func _save_art_pack_registry() -> void:
+	_clear_art_pack_variants_cache()
 	if _batch_update_depth > 0:
 		_batch_registry_dirty = true
 		return
@@ -5584,6 +5756,7 @@ func _save_art_pack_registry() -> void:
 
 
 func _save_art_pack_registry_now() -> void:
+	_clear_art_pack_variants_cache()
 	var absolute_registry_path = ProjectSettings.globalize_path(STORAGE_ART_PACK_REGISTRY_PATH)
 	var file = FileAccess.open(absolute_registry_path, FileAccess.WRITE)
 	if file == null:

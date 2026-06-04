@@ -64,6 +64,10 @@ const TRANSLATIONS := {
 		"full_art_rarity_fire_all_disable": "모든 카드 레어도 불꽃 끄기",
 		"full_art_rarity_fire_card_enable": "이 카드 레어도 불꽃 켜기",
 		"full_art_rarity_fire_card_disable": "이 카드 레어도 불꽃 끄기",
+		"full_art_all_enable": "모든 카드 풀아트 켜기",
+		"full_art_all_disable": "모든 카드 풀아트 끄기",
+		"ancient_text_outside_all_enable": "모든 카드 텍스트 밖으로 빼기",
+		"ancient_text_outside_all_disable": "모든 카드 텍스트 원위치",
 		"reset_settings": "전체 설정 초기화",
 		"ancient_text_outside_enable": "텍스트 밖으로 빼기",
 		"ancient_text_outside_disable": "텍스트 원위치",
@@ -120,6 +124,10 @@ const TRANSLATIONS := {
 		"full_art_rarity_fire_all_disable": "Disable Rarity Flame for All Cards",
 		"full_art_rarity_fire_card_enable": "Enable Rarity Flame for This Card",
 		"full_art_rarity_fire_card_disable": "Disable Rarity Flame for This Card",
+		"full_art_all_enable": "Enable Full Art for All Cards",
+		"full_art_all_disable": "Disable Full Art for All Cards",
+		"ancient_text_outside_all_enable": "Move Text Outside for All Cards",
+		"ancient_text_outside_all_disable": "Restore Text for All Cards",
 		"reset_settings": "Reset All Settings",
 		"ancient_text_outside_enable": "Move Text Outside",
 		"ancient_text_outside_disable": "Restore Text",
@@ -196,6 +204,8 @@ var _settings_maintenance_box: VBoxContainer
 var _gif_settings_button: Button
 var _adjust_button: Button
 var _display_mode_button: Button
+var _full_art_all_button: Button
+var _ancient_text_outside_all_button: Button
 var _full_art_rarity_fire_all_button: Button
 var _full_art_rarity_fire_button: Button
 var _infection_effect_button: Button
@@ -282,10 +292,14 @@ func _pick_best_source_path(manager, candidates: Array) -> String:
 		return ""
 	for candidate in candidates:
 		var path = String(candidate)
+		if path != "" and manager.has_method("is_valid_card_source_path") and !manager.is_valid_card_source_path(path):
+			continue
 		if path != "" and manager.has_override(path):
 			return path
 	for candidate in candidates:
 		var path = String(candidate)
+		if path != "" and manager.has_method("is_valid_card_source_path") and !manager.is_valid_card_source_path(path):
+			continue
 		if path != "":
 			return path
 	return ""
@@ -454,6 +468,34 @@ func _get_display_mode_button_text() -> String:
 	return "풀아트 끄기" if is_full_art else "풀아트 켜기"
 
 
+func _refresh_full_art_all_button() -> void:
+	if _full_art_all_button == null:
+		return
+	var manager = _manager()
+	var enabled := false
+	var capable_count := 0
+	if manager != null and manager.has_method("get_full_art_capable_override_count"):
+		capable_count = int(manager.get_full_art_capable_override_count())
+	if manager != null and manager.has_method("is_all_full_art_mode_enabled"):
+		enabled = bool(manager.is_all_full_art_mode_enabled())
+	_full_art_all_button.disabled = manager == null or capable_count <= 0
+	_full_art_all_button.text = _tr("full_art_all_disable") if enabled else _tr("full_art_all_enable")
+
+
+func _refresh_ancient_text_outside_all_button() -> void:
+	if _ancient_text_outside_all_button == null:
+		return
+	var manager = _manager()
+	var enabled := false
+	var capable_count := 0
+	if manager != null and manager.has_method("get_ancient_text_outside_capable_count"):
+		capable_count = int(manager.get_ancient_text_outside_capable_count())
+	if manager != null and manager.has_method("is_all_ancient_text_outside_enabled"):
+		enabled = bool(manager.is_all_ancient_text_outside_enabled())
+	_ancient_text_outside_all_button.disabled = manager == null or capable_count <= 0
+	_ancient_text_outside_all_button.text = _tr("ancient_text_outside_all_disable") if enabled else _tr("ancient_text_outside_all_enable")
+
+
 func _refresh_settings_panel_texts() -> void:
 	if _settings_button != null:
 		_settings_button.text = "⚙"
@@ -470,6 +512,8 @@ func _refresh_settings_panel_texts() -> void:
 		_settings_maintenance_label.text = _tr("settings_maintenance")
 	if _reset_settings_button != null:
 		_reset_settings_button.text = _tr("reset_settings")
+	_refresh_full_art_all_button()
+	_refresh_ancient_text_outside_all_button()
 
 
 func _is_current_infection_card() -> bool:
@@ -589,12 +633,14 @@ func _refresh_ancient_text_outside_button() -> void:
 		return
 	var manager = _manager()
 	var source_path = _get_effective_source_path()
-	var visible = manager != null and source_path != "" and _is_current_ancient_text_outside_supported_card()
-	_ancient_text_outside_button.visible = visible
-	if !visible:
+	var has_source = manager != null and source_path != ""
+	var supported = has_source and _is_current_ancient_text_outside_supported_card()
+	_ancient_text_outside_button.visible = has_source
+	if !has_source:
 		_ancient_text_outside_button.disabled = true
+		_ancient_text_outside_button.text = _tr("ancient_text_outside_enable")
 		return
-	_ancient_text_outside_button.disabled = false
+	_ancient_text_outside_button.disabled = !supported
 	var enabled = bool(manager.is_ancient_text_outside_enabled(source_path))
 	_ancient_text_outside_button.text = _tr("ancient_text_outside_disable") if enabled else _tr("ancient_text_outside_enable")
 
@@ -837,6 +883,14 @@ func _build_adjust_ui() -> void:
 		_settings_general_box.add_child(_gif_settings_button)
 	_gif_settings_button.visible = true
 	_gif_settings_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	_full_art_all_button = Button.new()
+	_full_art_all_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_general_box != null:
+		_settings_general_box.add_child(_full_art_all_button)
+	_ancient_text_outside_all_button = Button.new()
+	_ancient_text_outside_all_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _settings_general_box != null:
+		_settings_general_box.add_child(_ancient_text_outside_all_button)
 	_full_art_rarity_fire_all_button = Button.new()
 	_full_art_rarity_fire_all_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	if _settings_general_box != null:
@@ -867,8 +921,8 @@ func _build_adjust_ui() -> void:
 	_ancient_text_outside_button = Button.new()
 	_ancient_text_outside_button.visible = false
 	_ancient_text_outside_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	if _settings_card_box != null:
-		_settings_card_box.add_child(_ancient_text_outside_button)
+	footer_row.add_child(_ancient_text_outside_button)
+	footer_row.move_child(_ancient_text_outside_button, 3)
 
 	_reset_settings_button = Button.new()
 	_reset_settings_button.text = _tr("reset_settings")
@@ -1220,11 +1274,14 @@ func _refresh_art_pack_manager_ui() -> void:
 	_art_pack_remove_button.text = "목록에서 제거" if is_ko else "Remove"
 	_art_pack_apply_all_button.text = "선택 팩 전체 적용" if is_ko else "Apply Pack to All"
 	_art_pack_apply_button.text = "적용" if is_ko else "Apply"
+	var effective_source_path = _get_effective_source_path()
+	var packs = manager.get_art_pack_list() if manager != null else []
+	var variants = manager.get_art_pack_variants_for_source(effective_source_path) if manager != null and effective_source_path != "" else []
 	var state_parts: Array = []
 	state_parts.append(_locale)
-	state_parts.append(_get_effective_source_path())
-	state_parts.append(JSON.stringify(manager.get_art_pack_list() if manager != null else []))
-	state_parts.append(JSON.stringify(manager.get_art_pack_variants_for_source(_get_effective_source_path()) if manager != null and _get_effective_source_path() != "" else []))
+	state_parts.append(effective_source_path)
+	state_parts.append(JSON.stringify(packs))
+	state_parts.append(JSON.stringify(variants))
 	var next_state = "|".join(state_parts)
 	if next_state == _art_pack_ui_state:
 		return
@@ -1242,7 +1299,6 @@ func _refresh_art_pack_manager_ui() -> void:
 		_art_pack_variant_select.disabled = true
 		return
 
-	var packs = manager.get_art_pack_list()
 	if packs.is_empty():
 		_art_pack_list.add_item("(none)")
 		_art_pack_list.set_item_disabled(0, true)
@@ -1259,8 +1315,6 @@ func _refresh_art_pack_manager_ui() -> void:
 		_art_pack_remove_button.disabled = false
 		_art_pack_apply_all_button.disabled = false
 
-	var source_path = _get_effective_source_path()
-	var variants = manager.get_art_pack_variants_for_source(source_path) if source_path != "" else []
 	if variants.is_empty():
 		_art_pack_variant_select.add_item("\uC120\uD0DD \uAC00\uB2A5\uD55C \uC544\uD2B8\uD329 \uC5C6\uC74C" if is_ko else "No art pack variants")
 		_art_pack_variant_select.disabled = true
@@ -1312,8 +1366,9 @@ func _on_import_progress(current: int, total: int, label: String = "") -> void:
 
 func _process(delta: float) -> void:
 	_populate_browser_items_step()
+	var refresh_interval := 0.15 if _editor_popup != null and _editor_popup.visible else 0.75
 	_refresh_accumulator += delta
-	if _refresh_accumulator < 0.15:
+	if _refresh_accumulator < refresh_interval:
 		return
 	_refresh_accumulator = 0.0
 	_update_context(false)
@@ -1355,6 +1410,8 @@ func _on_settings_pressed() -> void:
 	if _settings_panel.visible:
 		_settings_panel.hide()
 		return
+	_refresh_full_art_all_button()
+	_refresh_ancient_text_outside_all_button()
 	_refresh_full_art_rarity_fire_button()
 	_refresh_infection_effect_button()
 	_refresh_ancient_text_outside_button()
@@ -1735,6 +1792,53 @@ func _on_display_mode_pressed() -> void:
 	_update_context(true)
 
 
+func _on_full_art_all_pressed() -> void:
+	var manager = _manager()
+	if manager == null or !manager.has_method("set_all_full_art_mode_enabled"):
+		_set_status("The card art manager is not available.", true)
+		return
+	var next_enabled = true
+	if manager.has_method("is_all_full_art_mode_enabled"):
+		next_enabled = !bool(manager.is_all_full_art_mode_enabled())
+	_set_busy(true, "모든 카드 풀아트 적용 중..." if _locale == "ko" else "Applying full art to all cards...")
+	_show_progress(0, 1, "모든 카드 풀아트 적용 준비 중..." if _locale == "ko" else "Preparing full-art update...")
+	var progress_callback := Callable(self, "_on_import_progress")
+	var result = await manager.set_all_full_art_mode_enabled(next_enabled, progress_callback)
+	_hide_progress()
+	var inspect_card = _get_inspect_card()
+	if inspect_card != null and inspect_card.has_method("Reload"):
+		inspect_card.call_deferred("Reload")
+	var screen = get_parent()
+	if screen != null and screen.has_method("UpdateCardDisplay"):
+		screen.call_deferred("UpdateCardDisplay")
+	_set_busy(false, String(result.get("message", "Unknown full-art result.")), !bool(result.get("ok", false)))
+	_refresh_full_art_all_button()
+	_refresh_ancient_text_outside_all_button()
+	_refresh_ancient_text_outside_button()
+	_update_context(true)
+
+
+func _on_ancient_text_outside_all_pressed() -> void:
+	var manager = _manager()
+	if manager == null or !manager.has_method("set_all_ancient_text_outside_enabled"):
+		_set_status("The card art manager is not available.", true)
+		return
+	var next_enabled = true
+	if manager.has_method("is_all_ancient_text_outside_enabled"):
+		next_enabled = !bool(manager.is_all_ancient_text_outside_enabled())
+	var result = manager.set_all_ancient_text_outside_enabled(next_enabled)
+	var inspect_card = _get_inspect_card()
+	if inspect_card != null and inspect_card.has_method("Reload"):
+		inspect_card.call_deferred("Reload")
+	var screen = get_parent()
+	if screen != null and screen.has_method("UpdateCardDisplay"):
+		screen.call_deferred("UpdateCardDisplay")
+	_set_status(String(result.get("message", "Unknown text layout result.")), !bool(result.get("ok", false)))
+	_refresh_ancient_text_outside_all_button()
+	_refresh_ancient_text_outside_button()
+	_update_context(true)
+
+
 func _on_adjust_controls_changed(_value: float) -> void:
 	if _adjust_panel == null or !_adjust_panel.visible:
 		return
@@ -1945,6 +2049,8 @@ func _on_reset_settings_pressed() -> void:
 			manager.set_all_full_art_rarity_fire_enabled(_full_art_rarity_fire_enabled)
 	_save_ui_settings()
 	_refresh_gif_settings_ui()
+	_refresh_full_art_all_button()
+	_refresh_ancient_text_outside_all_button()
 	_refresh_full_art_rarity_fire_button()
 	_refresh_infection_effect_button()
 	_refresh_ancient_text_outside_button()
@@ -2241,6 +2347,8 @@ func _update_context(force_refresh: bool) -> void:
 
 	var effective_source_path = _get_effective_source_path()
 	_edit_art_button.disabled = effective_source_path == ""
+	if _editor_popup == null or !_editor_popup.visible:
+		return
 	_restore_button.disabled = effective_source_path == "" or !manager.has_override(effective_source_path)
 	_adjust_button.disabled = effective_source_path == "" or !manager.can_adjust_override(effective_source_path)
 	_display_mode_button.disabled = effective_source_path == "" or !manager.has_override(effective_source_path) or !manager.can_toggle_full_art(effective_source_path)
@@ -2398,6 +2506,8 @@ func _bind_signals() -> void:
 	_restore_all_button.pressed.connect(_on_restore_all_pressed)
 	_adjust_button.pressed.connect(_on_adjust_pressed)
 	_display_mode_button.pressed.connect(_on_display_mode_pressed)
+	_full_art_all_button.pressed.connect(_on_full_art_all_pressed)
+	_ancient_text_outside_all_button.pressed.connect(_on_ancient_text_outside_all_pressed)
 	_full_art_rarity_fire_all_button.pressed.connect(_on_full_art_rarity_fire_all_pressed)
 	_full_art_rarity_fire_button.pressed.connect(_on_full_art_rarity_fire_pressed)
 	_infection_effect_button.pressed.connect(_on_infection_effect_pressed)
@@ -2455,6 +2565,10 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 	_restore_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.has_override(effective_source_path)
 	_adjust_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.can_adjust_override(effective_source_path)
 	_display_mode_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.has_override(effective_source_path) or !manager.can_toggle_full_art(effective_source_path)
+	if _full_art_all_button != null:
+		_full_art_all_button.disabled = is_busy or manager == null or (manager.has_method("get_full_art_capable_override_count") and int(manager.get_full_art_capable_override_count()) <= 0)
+	if _ancient_text_outside_all_button != null:
+		_ancient_text_outside_all_button.disabled = is_busy or manager == null or (manager.has_method("get_ancient_text_outside_capable_count") and int(manager.get_ancient_text_outside_capable_count()) <= 0)
 	if _full_art_rarity_fire_all_button != null:
 		_full_art_rarity_fire_all_button.disabled = is_busy or manager == null
 	if _full_art_rarity_fire_button != null:
@@ -2574,6 +2688,7 @@ func _open_editor_popup() -> void:
 	_editor_popup.show()
 	_editor_popup.move_to_front()
 	_editor_popup.grab_focus()
+	_update_context(true)
 
 
 func _open_file_browser(mode: String) -> void:
