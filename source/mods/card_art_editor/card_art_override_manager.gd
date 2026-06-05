@@ -41,12 +41,14 @@ const META_FULL_ART_OWNER_PATH := "_card_art_full_art_owner_path"
 const META_INSPECT_SOURCE_PATH := "_card_art_inspect_source_path"
 const META_PORTRAIT_GROUP_ORIGINAL_MATERIAL := "_card_art_portrait_group_original_material"
 const META_ANCIENT_TEXT_LAYOUT_DEFAULTS := "_card_art_ancient_text_layout_defaults"
+const META_ANCIENT_TEXT_OUTSIDE_APPLIED := "_card_art_ancient_text_outside_applied"
 const META_REFRESH_SIGNATURE := "_card_art_refresh_signature"
 const META_NAMED_NODE_CACHE := "_card_art_named_node_cache"
 const META_ANCIENT_TEXT_HITBOX_CONNECTED := "_card_art_ancient_text_hitbox_connected"
 const META_GIF_PLAYBACK_ACTIVE := "_card_art_gif_playback_active"
 const META_GIF_PLAYBACK_SOURCE := "_card_art_gif_playback_source"
 const META_FULL_ART_FIRE_ORIGINAL_STATE := "_card_art_full_art_fire_original_state"
+const META_FULL_ART_LAYER_INSET := "_card_art_full_art_layer_inset"
 const FULL_ART_LAYER_NAME := "CardArtFullArtLayer"
 const STATIC_OVERRIDE_CACHE_SUFFIX := "::static"
 const FULL_ART_HIGHLIGHT_COMMON_COLOR := Color(0.72, 0.74, 0.78, 1.0)
@@ -61,6 +63,7 @@ const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
 const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
 const ANCIENT_TEXT_DRAG_SUPPRESS_DISTANCE := 12.0
+const ANCIENT_TEXT_HOVER_MOUSE_MOVE_DISTANCE := 2.0
 const GIF_PLAYBACK_REFRESH_INTERVAL := 0.08
 
 signal overrides_changed(source_path)
@@ -104,6 +107,7 @@ var _ancient_text_hover_tip_description
 var _ancient_text_hover_tip_owner: Node = null
 var _ancient_text_hover_tip_last_text := ""
 var _ancient_text_hover_tip_last_position := Vector2.INF
+var _ancient_text_last_hover_mouse_position := Vector2.INF
 var _ancient_text_hover_tip_locked := false
 var _pending_ancient_text_click_frames := 0
 var _pending_ancient_text_click_position := Vector2.INF
@@ -130,6 +134,32 @@ func _ready() -> void:
 	_register_existing(get_tree().root)
 
 
+func _is_ancient_text_hover_tip_visible() -> bool:
+	return _ancient_text_hover_tip != null and is_instance_valid(_ancient_text_hover_tip) and _ancient_text_hover_tip.visible
+
+
+func _should_poll_ancient_text_hover_tip() -> bool:
+	if _ancient_text_outside_by_source.is_empty() and !_is_ancient_text_hover_tip_visible():
+		_ancient_text_last_hover_mouse_position = Vector2.INF
+		return false
+	if _ancient_text_hover_tip_locked:
+		return true
+	if _is_ancient_text_hover_tip_visible() and !_is_hover_valid_ancient_text_card_root(_ancient_text_hover_tip_owner):
+		return true
+	var viewport = get_viewport()
+	if viewport == null:
+		return false
+	var mouse_position = viewport.get_mouse_position()
+	if _ancient_text_last_hover_mouse_position == Vector2.INF:
+		_ancient_text_last_hover_mouse_position = mouse_position
+		return true
+	var move_distance_sq = ANCIENT_TEXT_HOVER_MOUSE_MOVE_DISTANCE * ANCIENT_TEXT_HOVER_MOUSE_MOVE_DISTANCE
+	if _ancient_text_last_hover_mouse_position.distance_squared_to(mouse_position) < move_distance_sq:
+		return false
+	_ancient_text_last_hover_mouse_position = mouse_position
+	return true
+
+
 func _process(delta: float) -> void:
 	if _startup_rescan_frames_remaining > 0:
 		_startup_rescan_tick += 1
@@ -146,11 +176,13 @@ func _process(delta: float) -> void:
 			_pending_ancient_text_click_frames -= 1
 			if _try_show_pending_ancient_text_click_tip():
 				_pending_ancient_text_click_frames = 0
-		if _pending_ancient_text_click_frames <= 0 and (!_ancient_text_outside_by_source.is_empty() or _ancient_text_hover_tip != null):
+		if _pending_ancient_text_click_frames <= 0 and _should_poll_ancient_text_hover_tip():
 			_ancient_text_hover_refresh_accumulator += delta
 			if _ancient_text_hover_refresh_accumulator >= ANCIENT_TEXT_HOVER_REFRESH_INTERVAL:
 				_ancient_text_hover_refresh_accumulator = 0.0
 				_refresh_ancient_text_hover_tip()
+		elif _pending_ancient_text_click_frames <= 0:
+			_ancient_text_hover_refresh_accumulator = 0.0
 	if _has_gif_hover_playback_rules() and _has_animated_overrides():
 		_gif_playback_refresh_accumulator += delta
 		if _gif_playback_refresh_accumulator >= GIF_PLAYBACK_REFRESH_INTERVAL:
@@ -3770,6 +3802,7 @@ func _configure_full_art_layer(card_root, layer: TextureRect, inset: int = FULL_
 		layer.clip_contents = false
 	layer.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	layer.texture_repeat = CanvasItem.TEXTURE_REPEAT_DISABLED
+	layer.set_meta(META_FULL_ART_LAYER_INSET, inset)
 
 
 func _get_or_create_full_art_layer(card_root, inset: int = FULL_ART_INSET_STATIC):
@@ -3780,7 +3813,8 @@ func _get_or_create_full_art_layer(card_root, inset: int = FULL_ART_INSET_STATIC
 		host = card_root
 	var existing = host.get_node_or_null(FULL_ART_LAYER_NAME)
 	if existing is TextureRect:
-		_configure_full_art_layer(card_root, existing, inset)
+		if int((existing as TextureRect).get_meta(META_FULL_ART_LAYER_INSET, -9999)) != inset:
+			_configure_full_art_layer(card_root, existing, inset)
 		return existing
 	var layer := TextureRect.new()
 	layer.name = FULL_ART_LAYER_NAME
@@ -3817,11 +3851,21 @@ func _restore_full_art_portrait_mask(portrait_canvas_group) -> void:
 		return
 	var canvas_group := portrait_canvas_group as CanvasGroup
 	if !canvas_group.has_meta(META_PORTRAIT_GROUP_ORIGINAL_MATERIAL):
-		canvas_group.material = null
 		return
 	var original_material = canvas_group.get_meta(META_PORTRAIT_GROUP_ORIGINAL_MATERIAL, null)
 	canvas_group.material = original_material if original_material is Material else null
 	canvas_group.remove_meta(META_PORTRAIT_GROUP_ORIGINAL_MATERIAL)
+
+
+func _ensure_ancient_portrait_mask(card_root) -> void:
+	if !_is_card_root_ancient_layout(card_root):
+		return
+	var portrait_canvas_group = _find_named_descendant(card_root, "PortraitCanvasGroup")
+	if !(portrait_canvas_group is CanvasGroup):
+		return
+	var canvas_group := portrait_canvas_group as CanvasGroup
+	if canvas_group.material == null:
+		canvas_group.material = FULL_ART_MASK_MATERIAL
 
 
 func _is_card_root_ancient_layout(card_root) -> bool:
@@ -3896,7 +3940,7 @@ func _store_ancient_text_layout_defaults(card_root, description_label, ancient_t
 	}
 	var type_plaque = _find_named_descendant(card_root, "TypePlaque")
 	if type_plaque is CanvasItem:
-		defaults["type_plaque_visible"] = true if is_ancient_layout else type_plaque.visible
+		defaults["type_plaque_visible"] = true if is_ancient_layout else (false if custom_full_art_active else type_plaque.visible)
 	card_root.set_meta(META_ANCIENT_TEXT_LAYOUT_DEFAULTS, defaults)
 	return defaults
 
@@ -3917,6 +3961,26 @@ func _restore_ancient_text_layout(card_root, description_label, ancient_text_bg,
 		type_plaque.visible = bool(defaults.get("type_plaque_visible", type_plaque.visible))
 
 
+func _is_custom_full_art_card_root_active(card_root) -> bool:
+	if card_root == null or _is_card_root_ancient_layout(card_root):
+		return false
+	var full_art_layer = _get_full_art_layer(card_root)
+	return full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false))
+
+
+func _enforce_custom_full_art_layer_visibility(card_root) -> void:
+	if !_is_custom_full_art_card_root_active(card_root):
+		return
+	for node_name in ["PortraitBorder", "Frame", "TitleBanner", "TypePlaque"]:
+		var hidden_layer = _find_named_descendant(card_root, node_name)
+		if hidden_layer is CanvasItem:
+			hidden_layer.visible = false
+	for node_name in ["AncientHighlight", "AncientBorder", "AncientBanner"]:
+		var visible_layer = _find_named_descendant(card_root, node_name)
+		if visible_layer is CanvasItem:
+			visible_layer.visible = true
+
+
 func _is_card_root_ancient_text_outside_eligible(card_root, source_path: String = "", is_ancient_layout := false) -> bool:
 	if card_root == null:
 		return false
@@ -3931,6 +3995,9 @@ func _is_card_root_ancient_text_outside_eligible(card_root, source_path: String 
 func _apply_ancient_text_outside_layout(card_root) -> void:
 	if card_root == null:
 		return
+	var was_moved_outside = bool(card_root.get_meta(META_ANCIENT_TEXT_OUTSIDE_APPLIED, false))
+	if _ancient_text_outside_by_source.is_empty() and !was_moved_outside:
+		return
 	var description_label = _find_named_descendant(card_root, "DescriptionLabel")
 	if !(description_label is RichTextLabel):
 		return
@@ -3942,14 +4009,19 @@ func _apply_ancient_text_outside_layout(card_root) -> void:
 	var is_ancient_layout = _is_card_root_ancient_layout(card_root)
 	var should_move_outside = _is_card_root_ancient_text_outside_eligible(card_root, source_path, is_ancient_layout) and is_ancient_text_outside_enabled(source_path)
 	if should_move_outside:
+		card_root.set_meta(META_ANCIENT_TEXT_OUTSIDE_APPLIED, true)
 		description_label.visible = false
 		if ancient_text_bg is CanvasItem:
 			ancient_text_bg.visible = false
 		var type_plaque = _find_named_descendant(card_root, "TypePlaque")
 		if type_plaque is CanvasItem:
 			type_plaque.visible = false
+		_enforce_custom_full_art_layer_visibility(card_root)
 		return
 	_restore_ancient_text_layout(card_root, description_label, ancient_text_bg, defaults)
+	if was_moved_outside:
+		card_root.set_meta(META_ANCIENT_TEXT_OUTSIDE_APPLIED, false)
+	_enforce_custom_full_art_layer_visibility(card_root)
 	if _is_card_root_ancient_text_outside_eligible(card_root, source_path, is_ancient_layout) and ancient_text_bg is CanvasItem:
 		_apply_full_art_card_type_style(card_root, ancient_text_bg)
 		ancient_text_bg.visible = true
@@ -4945,6 +5017,7 @@ func _apply_full_art_state(texture_rect, source_path: String, override_texture) 
 	var ancient_border = _find_named_descendant(card_root, "AncientBorder")
 	var ancient_text_bg = _find_named_descendant(card_root, "AncientTextBg")
 	var ancient_banner = _find_named_descendant(card_root, "AncientBanner")
+	var type_plaque = _find_named_descendant(card_root, "TypePlaque")
 	var description_label = _find_named_descendant(card_root, "DescriptionLabel")
 	_store_ancient_text_layout_defaults(card_root, description_label, ancient_text_bg)
 	if override_texture == null:
@@ -4970,6 +5043,8 @@ func _apply_full_art_state(texture_rect, source_path: String, override_texture) 
 		frame.visible = false
 	if title_banner is CanvasItem:
 		title_banner.visible = false
+	if type_plaque is CanvasItem:
+		type_plaque.visible = false
 	if ancient_highlight is CanvasItem:
 		ancient_highlight.visible = true
 	if ancient_border is CanvasItem:
@@ -5009,6 +5084,8 @@ func _clear_custom_full_art_layer(card_root) -> void:
 	if portrait_canvas_group is CanvasItem:
 		portrait_canvas_group.visible = true
 	_restore_full_art_portrait_mask(portrait_canvas_group)
+	if is_ancient_layout:
+		_ensure_ancient_portrait_mask(card_root)
 	if portrait is TextureRect:
 		(portrait as TextureRect).self_modulate = Color(1, 1, 1, 1)
 	if ancient_portrait is TextureRect:
@@ -5252,6 +5329,8 @@ func _refresh_portrait_node(texture_rect) -> void:
 		var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
 		portrait_visible = portrait is CanvasItem and (portrait as CanvasItem).visible
 		ancient_visible = ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible
+		if ancient_visible and !portrait_visible:
+			_ensure_ancient_portrait_mask(card_root)
 		if node_name == "Portrait" and !portrait_visible and ancient_visible:
 			var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null) if texture_rect.has_meta(META_ORIGINAL_TEXTURE) else null
 			if original_texture is Texture2D:
@@ -5336,6 +5415,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 		if display_mode == DISPLAY_MODE_FULL_ART and node_name == "Portrait":
 			if _apply_full_art_state(texture_rect, stored_source_path, override_texture):
 				texture_rect.set_meta(META_OVERRIDE_ACTIVE, true)
+				texture_rect.set_meta(META_REFRESH_SIGNATURE, _build_refresh_signature(texture_rect, texture_rect.texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible))
 				return
 			_restore_full_art_state(texture_rect)
 		if node_name == "Portrait":
