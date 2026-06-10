@@ -511,11 +511,6 @@ func is_gif_hover_playback_only_enabled_for_source(source_path: String) -> bool:
 	return _is_gif_hover_playback_only_enabled()
 
 
-func has_gif_hover_playback_override_for_source(source_path: String) -> bool:
-	source_path = _canonicalize_source_key(source_path)
-	return source_path != "" and _gif_hover_playback_by_source.has(source_path)
-
-
 func set_gif_hover_playback_only_enabled_for_source(source_path: String, enabled: bool) -> void:
 	source_path = _canonicalize_source_key(source_path)
 	if source_path == "":
@@ -857,10 +852,6 @@ func reset_card_art_editor_settings() -> void:
 	_refresh_gif_playback_state()
 	_hide_ancient_text_hover_tip()
 	refresh_all_portraits()
-
-
-func get_ancient_text_outside_settings() -> Dictionary:
-	return _ancient_text_outside_by_source.duplicate(true)
 
 
 func is_ancient_text_outside_enabled(source_path: String) -> bool:
@@ -1302,15 +1293,6 @@ func _get_preferred_size_probe_path(source_path: String) -> String:
 		if ResourceLoader.exists(big_candidate):
 			return big_candidate
 	return normalized
-
-
-func get_generation_size_for_source_path(source_path: String) -> String:
-	var target_size = get_target_size_for_source_path(source_path)
-	if target_size.x == target_size.y:
-		return "1024x1024"
-	if target_size.x > target_size.y:
-		return "1536x1024"
-	return "1024x1536"
 
 
 func get_source_image_bytes(source_path: String) -> PackedByteArray:
@@ -3561,8 +3543,16 @@ func _read_gif_metadata(output_dir: String) -> Dictionary:
 	return parsed if parsed is Dictionary else {}
 
 
+func _get_file_size_bytes(path: String) -> int:
+	var file = FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return 0
+	return int(file.get_length())
+
+
 func _get_gif_cache_dir(import_path: String) -> String:
 	var modified_time = FileAccess.get_modified_time(import_path)
+	var file_size = _get_file_size_bytes(import_path)
 	var settings = get_gif_processing_settings()
 	var cache_signature = "%s_%s_%s_%s" % [
 		str(bool(settings.get("skip_duplicate_frames", true))),
@@ -3570,7 +3560,7 @@ func _get_gif_cache_dir(import_path: String) -> String:
 		str(int(settings.get("max_frames", 36))),
 		str(bool(settings.get("use_cache", true)))
 	]
-	var cache_key = _safe_file_stem("%s_%s_%s_%s" % [import_path.get_file(), str(modified_time), str(FileAccess.get_file_as_bytes(import_path).size()), cache_signature])
+	var cache_key = _safe_file_stem("%s_%s_%s_%s" % [import_path.get_file(), str(modified_time), str(file_size), cache_signature])
 	var cache_dir = ProjectSettings.globalize_path("%s/%s" % [STORAGE_GIF_CACHE_DIR, cache_key])
 	DirAccess.make_dir_recursive_absolute(cache_dir)
 	return cache_dir
@@ -4085,7 +4075,7 @@ func _store_ancient_text_layout_defaults(card_root, description_label, ancient_t
 	}
 	var type_plaque = _find_named_descendant(card_root, "TypePlaque")
 	if type_plaque is CanvasItem:
-		defaults["type_plaque_visible"] = true if is_ancient_layout else (false if custom_full_art_active else type_plaque.visible)
+		defaults["type_plaque_visible"] = true if is_ancient_layout or custom_full_art_active else type_plaque.visible
 	card_root.set_meta(META_ANCIENT_TEXT_LAYOUT_DEFAULTS, defaults)
 	return defaults
 
@@ -4117,7 +4107,7 @@ func _enforce_custom_full_art_layer_visibility(card_root) -> void:
 	if !_is_custom_full_art_card_root_active(card_root):
 		return
 	_sync_active_custom_full_art_layer(card_root)
-	for node_name in ["PortraitBorder", "Frame", "TitleBanner", "TypePlaque"]:
+	for node_name in ["PortraitBorder", "Frame", "TitleBanner"]:
 		var hidden_layer = _find_named_descendant(card_root, node_name)
 		if hidden_layer is CanvasItem:
 			hidden_layer.visible = false
@@ -5153,7 +5143,7 @@ func _apply_full_art_state(texture_rect, source_path: String, override_texture) 
 	if title_banner is CanvasItem:
 		title_banner.visible = false
 	if type_plaque is CanvasItem:
-		type_plaque.visible = false
+		type_plaque.visible = true
 	if ancient_highlight is CanvasItem:
 		ancient_highlight.visible = true
 	if ancient_border is CanvasItem:

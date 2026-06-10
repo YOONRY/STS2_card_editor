@@ -174,12 +174,6 @@ If it still does not appear:
 
 - IL / reverse engineering helper:
   - `tools/inspect_il.ps1`
-  - `tools/AsmInspect/Program.cs`
-
-- Sandbox verification:
-  - `card_art_editor_sandbox/project.godot`
-  - `card_art_editor_sandbox/main.tscn`
-  - `card_art_editor_sandbox/verify.gd`
 
 ## Environment assumptions
 
@@ -199,7 +193,6 @@ The following tooling now supports that env var:
 - Do not assume the unpacked game's C# files are complete or authoritative.
 - Do not assume mod-list visibility means runtime success.
 - Do not rebuild the PCK without keeping the final header compatible with Godot 4.5.1.
-- The `card_art_editor_sandbox` project only validates scripts and resources in isolation; it does not prove in-game integration works.
 
 ## Short summary
 

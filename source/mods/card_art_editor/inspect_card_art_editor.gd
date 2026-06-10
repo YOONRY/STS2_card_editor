@@ -2,9 +2,7 @@
 
 const GEMINI_API_URL_TEMPLATE := "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 const DEFAULT_MODEL := "gemini-2.0-flash-preview-image-generation"
-const POPUP_SIZE := Vector2i(640, 720)
 const UI_SETTINGS_PATH := "user://card_art_editor/ui_settings.json"
-const STATUS_READY := "카드 이미지를 수정할 준비가 되었습니다."
 const FILE_DIALOG_MODE_UPLOAD := "upload"
 const FILE_DIALOG_MODE_IMPORT_PACK := "import_pack"
 const FILE_DIALOG_MODE_IMPORT_MOD := "import_mod"

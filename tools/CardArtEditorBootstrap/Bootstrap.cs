@@ -15,7 +15,6 @@ namespace CardArtEditorBootstrap;
 public static class Bootstrap
 {
     private static readonly Harmony Harmony = new("ysg05.card_art_editor");
-    private static readonly HashSet<string> LoggedCardEffectTrees = new();
     private static bool _loggedManagerLoadFailure;
     private static bool _loggedManagerInstantiateFailure;
     private static bool _loggedOverlayLoadFailure;
@@ -315,13 +314,6 @@ public static class Bootstrap
                 suppressionEnabled = manager.Call("is_infection_effect_hidden_enabled").AsBool();
             }
 
-            var logKey = $"{cardId}:{card.Name}";
-            if (LoggedCardEffectTrees.Add(logKey))
-            {
-                Log($"Infection card detected. Dumping node tree for {logKey}.");
-                DumpNodeTree(card, 0);
-            }
-
             ApplyInfectionEffectNodeVisibility(card, suppressionEnabled);
         }
         catch (Exception ex)
@@ -425,30 +417,9 @@ public static class Bootstrap
                         canvasItem.Visible = true;
                     }
                 }
-                Log($"{(hide ? "Suppressed" : "Restored")} Infection effect node: {DescribeNodePath(childNode)} [{childNode.GetType().Name}]");
             }
 
             ApplyInfectionEffectNodeVisibility(childNode, hide);
-        }
-    }
-
-    private static void DumpNodeTree(Node node, int depth)
-    {
-        if (depth > 6)
-        {
-            return;
-        }
-
-        var indent = new string(' ', depth * 2);
-        var visibleInfo = node is CanvasItem canvasItem ? $" visible={canvasItem.Visible}" : string.Empty;
-        Log($"{indent}- {DescribeNodePath(node)} [{node.GetType().FullName}]{visibleInfo}");
-
-        foreach (var child in node.GetChildren())
-        {
-            if (child is Node childNode)
-            {
-                DumpNodeTree(childNode, depth + 1);
-            }
         }
     }
 

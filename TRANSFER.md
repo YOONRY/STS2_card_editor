@@ -6,7 +6,6 @@ Copy these folders:
 - `Slay the Spire 2/`
 - `tools/`
 - `build/`
-- `card_art_editor_sandbox/`
 
 Optional to skip:
 - `tmp_appdata/`
