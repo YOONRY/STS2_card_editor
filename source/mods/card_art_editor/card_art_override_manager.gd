@@ -65,12 +65,15 @@ const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
 const ANCIENT_TEXT_DRAG_SUPPRESS_DISTANCE := 12.0
 const ANCIENT_TEXT_HOVER_MOUSE_MOVE_DISTANCE := 2.0
 const GIF_PLAYBACK_REFRESH_INTERVAL := 0.08
+const GIF_PLAYBACK_MOUSE_MOVE_DISTANCE := 2.0
 
 signal overrides_changed(source_path)
 signal art_packs_changed()
 
 var _portrait_refs := []
 var _manifest := {}
+var _has_animated_overrides_cached := false
+var _animated_overrides_cache_dirty := true
 var _art_pack_registry := {"packs": {}}
 var _override_texture_cache := {}
 var _refresh_accumulator := 0.0
@@ -105,9 +108,9 @@ var _ancient_text_hover_tip: Control
 var _ancient_text_hover_tip_title
 var _ancient_text_hover_tip_description
 var _ancient_text_hover_tip_owner: Node = null
-var _ancient_text_hover_tip_last_text := ""
 var _ancient_text_hover_tip_last_position := Vector2.INF
 var _ancient_text_last_hover_mouse_position := Vector2.INF
+var _ancient_text_hover_refresh_requested := true
 var _ancient_text_hover_tip_locked := false
 var _pending_ancient_text_click_frames := 0
 var _pending_ancient_text_click_position := Vector2.INF
@@ -119,6 +122,10 @@ var _ancient_text_press_position := Vector2.INF
 var _ancient_text_dragging := false
 var _pressed_gif_card_root: Node = null
 var _pressed_gif_card_source_path := ""
+var _gif_playback_refresh_requested := true
+var _gif_last_hover_mouse_position := Vector2.INF
+var _gif_last_active_card_root: Node = null
+var _gif_last_active_source_path := ""
 var _hover_tips_container_cache: Node = null
 var _full_art_fire_shader = null
 
@@ -140,24 +147,113 @@ func _is_ancient_text_hover_tip_visible() -> bool:
 
 func _should_poll_ancient_text_hover_tip() -> bool:
 	if _ancient_text_outside_by_source.is_empty() and !_is_ancient_text_hover_tip_visible():
-		_ancient_text_last_hover_mouse_position = Vector2.INF
+		_clear_ancient_text_hover_poll_state()
 		return false
+	if _ancient_text_hover_refresh_requested:
+		return true
+	if _is_ancient_text_hover_owner_stale():
+		return true
+	return false
+
+
+func _request_ancient_text_hover_refresh(reset_mouse_position: bool = false) -> void:
+	_ancient_text_hover_refresh_requested = true
+	if reset_mouse_position:
+		_ancient_text_last_hover_mouse_position = Vector2.INF
+
+
+func _clear_ancient_text_hover_poll_state() -> void:
+	_ancient_text_hover_refresh_accumulator = 0.0
+	_ancient_text_hover_refresh_requested = false
+	_ancient_text_last_hover_mouse_position = Vector2.INF
+
+
+func _track_ancient_text_hover_mouse_position(mouse_position: Vector2) -> void:
+	if _ancient_text_outside_by_source.is_empty() and !_is_ancient_text_hover_tip_visible():
+		_ancient_text_last_hover_mouse_position = Vector2.INF
+		return
+	if mouse_position == Vector2.INF:
+		_request_ancient_text_hover_refresh(true)
+		return
+	if _ancient_text_last_hover_mouse_position == Vector2.INF:
+		_ancient_text_last_hover_mouse_position = mouse_position
+		_request_ancient_text_hover_refresh()
+		return
+	var move_distance_sq = ANCIENT_TEXT_HOVER_MOUSE_MOVE_DISTANCE * ANCIENT_TEXT_HOVER_MOUSE_MOVE_DISTANCE
+	if _ancient_text_last_hover_mouse_position.distance_squared_to(mouse_position) < move_distance_sq:
+		return
+	_ancient_text_last_hover_mouse_position = mouse_position
+	_request_ancient_text_hover_refresh()
+
+
+func _is_ancient_text_hover_owner_stale() -> bool:
+	if !_is_ancient_text_hover_tip_visible():
+		return false
+	if _ancient_text_hover_tip_owner == null or !is_instance_valid(_ancient_text_hover_tip_owner):
+		return true
+	if !_is_hover_valid_ancient_text_card_root(_ancient_text_hover_tip_owner):
+		return true
 	if _ancient_text_hover_tip_locked:
-		return true
-	if _is_ancient_text_hover_tip_visible() and !_is_hover_valid_ancient_text_card_root(_ancient_text_hover_tip_owner):
-		return true
+		return false
 	var viewport = get_viewport()
 	if viewport == null:
 		return false
-	var mouse_position = viewport.get_mouse_position()
-	if _ancient_text_last_hover_mouse_position == Vector2.INF:
-		_ancient_text_last_hover_mouse_position = mouse_position
-		return true
-	var move_distance_sq = ANCIENT_TEXT_HOVER_MOUSE_MOVE_DISTANCE * ANCIENT_TEXT_HOVER_MOUSE_MOVE_DISTANCE
-	if _ancient_text_last_hover_mouse_position.distance_squared_to(mouse_position) < move_distance_sq:
+	return !_is_mouse_over_card_root(_ancient_text_hover_tip_owner, viewport.get_mouse_position())
+
+
+func _request_gif_playback_refresh(reset_mouse_position: bool = false) -> void:
+	_gif_playback_refresh_requested = true
+	if reset_mouse_position:
+		_gif_last_hover_mouse_position = Vector2.INF
+
+
+func _clear_gif_playback_poll_state() -> void:
+	_gif_playback_refresh_accumulator = 0.0
+	_gif_playback_refresh_requested = false
+	_gif_last_hover_mouse_position = Vector2.INF
+	_gif_last_active_card_root = null
+	_gif_last_active_source_path = ""
+
+
+func _mark_animated_overrides_cache_dirty() -> void:
+	_animated_overrides_cache_dirty = true
+
+
+func _track_gif_hover_mouse_position(mouse_position: Vector2) -> void:
+	if !_has_gif_hover_playback_rules():
+		_gif_last_hover_mouse_position = Vector2.INF
+		return
+	if mouse_position == Vector2.INF:
+		_request_gif_playback_refresh(true)
+		return
+	if _gif_last_hover_mouse_position == Vector2.INF:
+		_gif_last_hover_mouse_position = mouse_position
+		_request_gif_playback_refresh()
+		return
+	var move_distance_sq = GIF_PLAYBACK_MOUSE_MOVE_DISTANCE * GIF_PLAYBACK_MOUSE_MOVE_DISTANCE
+	if _gif_last_hover_mouse_position.distance_squared_to(mouse_position) < move_distance_sq:
+		return
+	_gif_last_hover_mouse_position = mouse_position
+	_request_gif_playback_refresh()
+
+
+func _is_last_gif_active_root_stale() -> bool:
+	if _gif_last_active_card_root == null:
 		return false
-	_ancient_text_last_hover_mouse_position = mouse_position
-	return true
+	if !is_instance_valid(_gif_last_active_card_root):
+		return true
+	if _gif_last_active_source_path == "":
+		return false
+	if _get_gif_override_source_for_card_root(_gif_last_active_card_root) != _gif_last_active_source_path:
+		return true
+	if _ancient_text_left_mouse_down and _pressed_gif_card_root == _gif_last_active_card_root:
+		return false
+	if _is_card_root_inside_visible_inspect_screen(_gif_last_active_card_root):
+		return false
+	var viewport = get_viewport()
+	if viewport == null:
+		return false
+	return !_is_mouse_over_card_root(_gif_last_active_card_root, viewport.get_mouse_position())
 
 
 func _process(delta: float) -> void:
@@ -167,6 +263,7 @@ func _process(delta: float) -> void:
 			_startup_rescan_tick = 0
 			_register_existing(get_tree().root)
 			_needs_full_refresh = true
+			_request_ancient_text_hover_refresh(true)
 		_startup_rescan_frames_remaining -= 1
 	if _ancient_text_dragging:
 		_clear_pending_ancient_text_click()
@@ -180,14 +277,21 @@ func _process(delta: float) -> void:
 			_ancient_text_hover_refresh_accumulator += delta
 			if _ancient_text_hover_refresh_accumulator >= ANCIENT_TEXT_HOVER_REFRESH_INTERVAL:
 				_ancient_text_hover_refresh_accumulator = 0.0
+				_ancient_text_hover_refresh_requested = false
 				_refresh_ancient_text_hover_tip()
 		elif _pending_ancient_text_click_frames <= 0:
 			_ancient_text_hover_refresh_accumulator = 0.0
 	if _has_gif_hover_playback_rules() and _has_animated_overrides():
-		_gif_playback_refresh_accumulator += delta
-		if _gif_playback_refresh_accumulator >= GIF_PLAYBACK_REFRESH_INTERVAL:
+		if _gif_playback_refresh_requested or _is_last_gif_active_root_stale():
+			_gif_playback_refresh_accumulator += delta
+			if _gif_playback_refresh_accumulator >= GIF_PLAYBACK_REFRESH_INTERVAL:
+				_gif_playback_refresh_accumulator = 0.0
+				_gif_playback_refresh_requested = false
+				_refresh_gif_playback_state()
+		else:
 			_gif_playback_refresh_accumulator = 0.0
-			_refresh_gif_playback_state()
+	else:
+		_clear_gif_playback_poll_state()
 	if !_needs_full_refresh:
 		return
 	if REFRESH_INTERVAL <= 0.0:
@@ -204,9 +308,11 @@ func _process(delta: float) -> void:
 
 func _input(event) -> void:
 	if event is InputEventMouseMotion:
+		var motion_event = event as InputEventMouseMotion
+		var motion_position = _get_current_mouse_position(motion_event.position)
+		_track_ancient_text_hover_mouse_position(motion_position)
+		_track_gif_hover_mouse_position(motion_position)
 		if _ancient_text_left_mouse_down:
-			var motion_event = event as InputEventMouseMotion
-			var motion_position = _get_current_mouse_position(motion_event.position)
 			if !_ancient_text_dragging and _ancient_text_press_position != Vector2.INF and _ancient_text_press_position.distance_to(motion_position) >= ANCIENT_TEXT_DRAG_SUPPRESS_DISTANCE:
 				_ancient_text_dragging = true
 				_clear_pending_ancient_text_click()
@@ -214,12 +320,16 @@ func _input(event) -> void:
 		return
 	if event is InputEventMouseButton:
 		var mouse_event = event as InputEventMouseButton
-		if mouse_event.button_index != MOUSE_BUTTON_LEFT:
-			return
 		var click_position = mouse_event.position
 		var viewport = get_viewport()
 		if viewport != null:
 			click_position = viewport.get_mouse_position()
+		_track_ancient_text_hover_mouse_position(click_position)
+		_track_gif_hover_mouse_position(click_position)
+		if mouse_event.button_index != MOUSE_BUTTON_LEFT:
+			_request_ancient_text_hover_refresh()
+			_request_gif_playback_refresh()
+			return
 		if mouse_event.pressed:
 			_ancient_text_left_mouse_down = true
 			_ancient_text_press_position = click_position
@@ -230,6 +340,7 @@ func _input(event) -> void:
 				_hide_ancient_text_hover_tip()
 				_pending_ancient_text_click_card_root = null
 				_pending_ancient_text_click_source_path = ""
+			_request_ancient_text_hover_refresh()
 			_pending_ancient_text_click_frames = 0
 		else:
 			if _ancient_text_dragging:
@@ -245,6 +356,7 @@ func _input(event) -> void:
 				if released_card_root != null:
 					_set_pending_ancient_text_click_card(released_card_root)
 			_pending_ancient_text_click_frames = ANCIENT_TEXT_CLICK_PENDING_FRAMES
+			_request_ancient_text_hover_refresh()
 			call_deferred("_try_show_pending_ancient_text_click_tip")
 			_clear_pressed_gif_card()
 
@@ -311,10 +423,12 @@ func _on_ancient_text_card_hitbox_gui_input(event, card_root) -> void:
 	if mouse_event.button_index != MOUSE_BUTTON_LEFT:
 		return
 	var click_position = _get_current_mouse_position(mouse_event.position)
+	_track_ancient_text_hover_mouse_position(click_position)
 	if mouse_event.pressed:
 		_hide_ancient_text_hover_tip()
 		_pending_ancient_text_click_position = click_position
 		_pending_ancient_text_click_from_hitbox = _set_pending_ancient_text_click_card(card_root)
+		_request_ancient_text_hover_refresh()
 		_pending_ancient_text_click_frames = 0
 		return
 	if _ancient_text_dragging:
@@ -325,6 +439,7 @@ func _on_ancient_text_card_hitbox_gui_input(event, card_root) -> void:
 	if _set_pending_ancient_text_click_card(card_root):
 		_pending_ancient_text_click_from_hitbox = true
 	_pending_ancient_text_click_frames = ANCIENT_TEXT_CLICK_PENDING_FRAMES
+	_request_ancient_text_hover_refresh()
 	call_deferred("_try_show_pending_ancient_text_click_tip")
 
 
@@ -765,6 +880,7 @@ func set_ancient_text_outside_enabled(source_path: String, enabled: bool) -> voi
 		_ancient_text_outside_by_source.erase(source_path)
 	_save_persistent_preferences()
 	_needs_full_refresh = true
+	_request_ancient_text_hover_refresh(true)
 
 
 func _get_ancient_text_outside_capable_sources() -> Array:
@@ -811,6 +927,7 @@ func set_all_ancient_text_outside_enabled(enabled: bool) -> Dictionary:
 	if changed_count > 0:
 		_save_persistent_preferences()
 		_hide_ancient_text_hover_tip()
+		_request_ancient_text_hover_refresh(true)
 		refresh_all_portraits()
 	return {
 		"ok": true,
@@ -857,6 +974,7 @@ func _load_persistent_preferences() -> void:
 					var normalized_path = _canonicalize_source_key(String(source_path))
 					if normalized_path != "":
 						_ancient_text_outside_by_source[normalized_path] = true
+			_request_ancient_text_hover_refresh(true)
 
 
 func _save_persistent_preferences() -> void:
@@ -2236,6 +2354,8 @@ func _end_batch_updates() -> void:
 		_batch_refresh_requested = false
 		_needs_full_refresh = true
 		_refresh_accumulator = REFRESH_INTERVAL
+		_request_ancient_text_hover_refresh(true)
+		_request_gif_playback_refresh(true)
 	if _batch_art_packs_changed:
 		_batch_art_packs_changed = false
 		art_packs_changed.emit()
@@ -3645,6 +3765,8 @@ func refresh_all_portraits() -> void:
 		return
 	_needs_full_refresh = true
 	_refresh_accumulator = REFRESH_INTERVAL
+	_request_ancient_text_hover_refresh(true)
+	_request_gif_playback_refresh(true)
 
 
 func apply_override_to_texture_rect(texture_rect) -> void:
@@ -3755,12 +3877,13 @@ func _find_card_root(texture_rect):
 	return null
 
 
-func _get_card_rect_size(card_root, fallback_size: Vector2i) -> Vector2i:
-	if card_root is Control:
-		var control_size = (card_root as Control).size
-		if control_size.x > 0.0 and control_size.y > 0.0:
-			return Vector2i(int(control_size.x), int(control_size.y))
-	return fallback_size
+func _is_card_root_inside_visible_inspect_screen(card_root) -> bool:
+	var current = card_root
+	while current != null:
+		if String(current.name) == "InspectCardScreen":
+			return _is_node_visible_in_tree(current)
+		current = current.get_parent()
+	return false
 
 
 func _configure_full_art_layer(card_root, layer: TextureRect, inset: int = FULL_ART_INSET_STATIC) -> void:
@@ -3834,6 +3957,28 @@ func _get_full_art_layer(card_root):
 		host = card_root
 	var layer = host.get_node_or_null(FULL_ART_LAYER_NAME)
 	return layer if layer is TextureRect else null
+
+
+func _sync_active_custom_full_art_layer(card_root) -> void:
+	if card_root == null:
+		return
+	var full_art_layer = _get_full_art_layer(card_root)
+	if !(full_art_layer is TextureRect):
+		return
+	var layer := full_art_layer as TextureRect
+	if !bool(layer.get_meta(META_FULL_ART_ACTIVE, false)):
+		return
+	var source_path = _canonicalize_source_key(String(layer.get_meta(META_FULL_ART_OWNER_PATH, "")))
+	if source_path == "":
+		return
+	var entry = _manifest.get(source_path, null)
+	var full_art_inset = FULL_ART_INSET_ANIMATED if _is_animated_entry(entry) else FULL_ART_INSET_STATIC
+	_configure_full_art_layer(card_root, layer, full_art_inset)
+	var portrait_canvas_group = _find_named_descendant(card_root, "PortraitCanvasGroup")
+	_apply_full_art_portrait_mask(portrait_canvas_group)
+	layer.visible = true
+	layer.self_modulate = Color(1, 1, 1, 1)
+	layer.texture_repeat = CanvasItem.TEXTURE_REPEAT_DISABLED
 
 
 func _apply_full_art_portrait_mask(portrait_canvas_group) -> void:
@@ -3971,6 +4116,7 @@ func _is_custom_full_art_card_root_active(card_root) -> bool:
 func _enforce_custom_full_art_layer_visibility(card_root) -> void:
 	if !_is_custom_full_art_card_root_active(card_root):
 		return
+	_sync_active_custom_full_art_layer(card_root)
 	for node_name in ["PortraitBorder", "Frame", "TitleBanner", "TypePlaque"]:
 		var hidden_layer = _find_named_descendant(card_root, node_name)
 		if hidden_layer is CanvasItem:
@@ -4166,10 +4312,15 @@ func _is_hover_valid_ancient_text_card_root(card_root) -> bool:
 
 
 func _has_animated_overrides() -> bool:
+	if !_animated_overrides_cache_dirty:
+		return _has_animated_overrides_cached
+	_has_animated_overrides_cached = false
 	for source_path in _manifest.keys():
-		if _is_animated_override_source(String(source_path)):
-			return true
-	return false
+		if _is_animated_entry(_manifest.get(source_path, null)):
+			_has_animated_overrides_cached = true
+			break
+	_animated_overrides_cache_dirty = false
+	return _has_animated_overrides_cached
 
 
 func _is_animated_override_source(source_path: String) -> bool:
@@ -4279,6 +4430,8 @@ func _apply_gif_texture_to_target(target, source_path: String, texture, animate:
 	if !(target is TextureRect) or !(texture is Texture2D):
 		return
 	var texture_rect = target as TextureRect
+	if texture_rect.texture == texture and String(texture_rect.get_meta(META_GIF_PLAYBACK_SOURCE, "")) == source_path and bool(texture_rect.get_meta(META_GIF_PLAYBACK_ACTIVE, false)) == animate:
+		return
 	if texture_rect.texture != texture:
 		texture_rect.texture = texture
 	texture_rect.set_meta(META_GIF_PLAYBACK_ACTIVE, animate)
@@ -4319,14 +4472,24 @@ func _sync_gif_texture_for_portrait(texture_rect, active_root) -> void:
 
 func _refresh_gif_playback_state() -> void:
 	if !_has_animated_overrides():
+		_gif_last_active_card_root = null
+		_gif_last_active_source_path = ""
+		_gif_playback_refresh_requested = false
 		return
 	var active_root = _get_active_gif_card_root()
+	if active_root != null and is_instance_valid(active_root):
+		_gif_last_active_card_root = active_root
+		_gif_last_active_source_path = _get_gif_override_source_for_card_root(active_root)
+	else:
+		_gif_last_active_card_root = null
+		_gif_last_active_source_path = ""
 	for index in range(_portrait_refs.size() - 1, -1, -1):
 		var texture_rect = _portrait_refs[index].get_ref()
 		if texture_rect == null:
 			_portrait_refs.remove_at(index)
 			continue
 		_sync_gif_texture_for_portrait(texture_rect, active_root)
+	_gif_playback_refresh_requested = false
 
 
 func _find_ancient_text_card_root_at_position(mouse_position: Vector2):
@@ -4455,14 +4618,6 @@ func _get_hover_tip_candidate_control(node):
 	if text_container is Control and (text_container as CanvasItem).is_visible_in_tree():
 		return text_container
 	return root_control if root_control.is_visible_in_tree() else null
-
-
-func _get_rect_axis_gap(start_a: float, end_a: float, start_b: float, end_b: float) -> float:
-	if end_a < start_b:
-		return start_b - end_a
-	if end_b < start_a:
-		return start_a - end_b
-	return 0.0
 
 
 func _get_card_hover_anchor_control(card_root):
@@ -4598,7 +4753,6 @@ func _hide_ancient_text_hover_tip() -> void:
 		return
 	_ancient_text_hover_tip.visible = false
 	_ancient_text_hover_tip_owner = null
-	_ancient_text_hover_tip_last_text = ""
 	_ancient_text_hover_tip_last_position = Vector2.INF
 	_ancient_text_hover_tip_locked = false
 
@@ -4658,7 +4812,6 @@ func _show_ancient_text_tip_for_card(card_root, locked: bool) -> bool:
 		_ancient_text_hover_tip_title.visible = false
 	if _ancient_text_hover_tip_description != null:
 		_ancient_text_hover_tip_description.text = description_text
-		_ancient_text_hover_tip_last_text = description_text
 	_position_ancient_text_hover_tip(card_root)
 	_ancient_text_hover_tip.visible = true
 	_ancient_text_hover_tip_owner = card_root
@@ -4954,51 +5107,6 @@ func _apply_full_art_card_type_style(card_root, ancient_text_bg) -> void:
 		(ancient_text_bg as TextureRect).texture = ancient_text_bg_texture
 
 
-func _build_full_art_layer_texture(card_root, source_path: String):
-	var entry = _manifest.get(source_path, null)
-	if !(entry is Dictionary):
-		return null
-	if _is_animated_entry(entry):
-		var source_frames = entry.get("source_frame_paths", entry.get("frame_paths", []))
-		var frame_delays = entry.get("frame_delays", [])
-		if !(source_frames is Array) or source_frames.is_empty():
-			return null
-		var loaded_frames: Array = []
-		for index in range(source_frames.size()):
-			var source_frame_path = String(source_frames[index])
-			var source_frame_image = load_image_from_file(ProjectSettings.globalize_path(source_frame_path))
-			if source_frame_image == null:
-				continue
-			source_frame_image = trim_transparent_margins(source_frame_image)
-			var preview_frame = build_full_art_preview(source_path, source_frame_image, Vector2i.ZERO, FULL_ART_ANIMATED_ZOOM_BOOST)
-			if preview_frame == null:
-				continue
-			loaded_frames.append({
-				"texture": ImageTexture.create_from_image(preview_frame),
-				"delay": max(0.02, float(frame_delays[index]) if index < frame_delays.size() else 0.1)
-			})
-		if loaded_frames.is_empty():
-			return null
-		var animated_texture := AnimatedTexture.new()
-		animated_texture.frames = loaded_frames.size()
-		animated_texture.speed_scale = 1.0
-		for index in range(loaded_frames.size()):
-			var frame_entry = loaded_frames[index]
-			animated_texture.set_frame_texture(index, frame_entry["texture"])
-			animated_texture.set_frame_duration(index, frame_entry["delay"])
-		return animated_texture
-	var source_image_path = String(entry.get("edit_source_path", entry.get("override_path", "")))
-	if source_image_path == "":
-		return null
-	var source_image = load_image_from_file(ProjectSettings.globalize_path(source_image_path))
-	if source_image == null:
-		return null
-	var preview = build_full_art_preview(source_path, source_image)
-	if preview == null:
-		return null
-	return ImageTexture.create_from_image(preview)
-
-
 func _apply_full_art_state(texture_rect, source_path: String, override_texture) -> bool:
 	var card_root = _find_card_root(texture_rect)
 	if card_root == null:
@@ -5031,6 +5139,7 @@ func _apply_full_art_state(texture_rect, source_path: String, override_texture) 
 	layer.visible = true
 	layer.set_meta(META_FULL_ART_ACTIVE, true)
 	layer.set_meta(META_FULL_ART_OWNER_PATH, source_path)
+	_sync_active_custom_full_art_layer(card_root)
 	texture_rect.visible = false
 	texture_rect.self_modulate = Color(1, 1, 1, 0)
 	_apply_full_art_portrait_mask(portrait_canvas_group)
@@ -5208,6 +5317,8 @@ func _track_portrait(texture_rect) -> void:
 		_track_ancient_text_card_hitbox(card_root)
 	_refresh_portrait_node(texture_rect)
 	_needs_full_refresh = true
+	_request_ancient_text_hover_refresh(true)
+	_request_gif_playback_refresh(true)
 
 
 func _refresh_tracked_portraits() -> void:
@@ -5370,6 +5481,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 	var stored_source_path = String(texture_rect.get_meta(META_SOURCE_PATH, ""))
 	var refresh_signature = _build_refresh_signature(texture_rect, current_texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible)
 	if String(texture_rect.get_meta(META_REFRESH_SIGNATURE, "")) == refresh_signature:
+		_sync_active_custom_full_art_layer(card_root)
 		_apply_ancient_text_outside_layout(card_root)
 		return
 
@@ -5683,11 +5795,13 @@ func _load_manifest() -> void:
 	var absolute_manifest_path = ProjectSettings.globalize_path(STORAGE_MANIFEST_PATH)
 	if !FileAccess.file_exists(absolute_manifest_path):
 		_manifest = {}
+		_mark_animated_overrides_cache_dirty()
 		return
 
 	var file = FileAccess.open(absolute_manifest_path, FileAccess.READ)
 	if file == null:
 		_manifest = {}
+		_mark_animated_overrides_cache_dirty()
 		return
 
 	var parsed = JSON.parse_string(file.get_as_text())
@@ -5696,6 +5810,7 @@ func _load_manifest() -> void:
 		_sanitize_manifest_for_missing_sources()
 	else:
 		_manifest = {}
+	_mark_animated_overrides_cache_dirty()
 
 
 func _sanitize_manifest_for_missing_sources() -> void:
@@ -5813,6 +5928,7 @@ func _sanitize_art_pack_registry_for_missing_sources() -> void:
 
 
 func _save_manifest() -> void:
+	_mark_animated_overrides_cache_dirty()
 	if _batch_update_depth > 0:
 		_batch_manifest_dirty = true
 		return
@@ -5820,6 +5936,7 @@ func _save_manifest() -> void:
 
 
 func _save_manifest_now() -> void:
+	_mark_animated_overrides_cache_dirty()
 	var absolute_manifest_path = ProjectSettings.globalize_path(STORAGE_MANIFEST_PATH)
 	var file = FileAccess.open(absolute_manifest_path, FileAccess.WRITE)
 	if file == null:
