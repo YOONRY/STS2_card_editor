@@ -3969,6 +3969,20 @@ func _sync_active_custom_full_art_layer(card_root) -> void:
 	layer.visible = true
 	layer.self_modulate = Color(1, 1, 1, 1)
 	layer.texture_repeat = CanvasItem.TEXTURE_REPEAT_DISABLED
+	_hide_base_portraits_for_custom_full_art(card_root)
+
+
+func _hide_base_portraits_for_custom_full_art(card_root) -> void:
+	if card_root == null:
+		return
+	var portrait = _find_named_descendant(card_root, "Portrait")
+	if portrait is CanvasItem:
+		(portrait as CanvasItem).visible = false
+		(portrait as CanvasItem).self_modulate = Color(1, 1, 1, 0)
+	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
+	if ancient_portrait is CanvasItem:
+		(ancient_portrait as CanvasItem).visible = false
+		(ancient_portrait as CanvasItem).self_modulate = Color(1, 1, 1, 0)
 
 
 func _apply_full_art_portrait_mask(portrait_canvas_group) -> void:
