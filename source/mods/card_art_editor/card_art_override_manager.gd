@@ -58,8 +58,9 @@ const FULL_ART_HIGHLIGHT_RARE_COLOR := Color(1.0, 0.72, 0.16, 1.0)
 const FULL_ART_FIRE_SHADER_CODE := "shader_type canvas_item;\nuniform vec4 tint_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);\nvoid fragment() {\n\tvec4 tex_color = texture(TEXTURE, UV) * COLOR;\n\tfloat brightness = max(max(tex_color.r, tex_color.g), tex_color.b);\n\tCOLOR = vec4(tint_color.rgb * brightness, tex_color.a * tint_color.a);\n}\n"
 const FULL_ART_INSET_STATIC := 0
 const FULL_ART_INSET_ANIMATED := 0
-const STARTUP_RESCAN_FRAMES := 90
-const STARTUP_RESCAN_STEP_INTERVAL := 15
+const STARTUP_RESCAN_FRAMES := 45
+const STARTUP_RESCAN_STEP_INTERVAL := 45
+const PORTRAIT_REFRESH_FRAME_BUDGET := 24
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
 const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
@@ -89,6 +90,7 @@ var _full_art_rarity_fire_by_source := {}
 var _ancient_text_outside_by_source := {}
 var _needs_full_refresh := true
 var _startup_rescan_tick := 0
+var _portrait_refresh_cursor := 0
 var _gif_processing_settings := {
 	"use_cache": true,
 	"skip_duplicate_frames": true,
@@ -139,7 +141,7 @@ func _ready() -> void:
 	_load_manifest()
 	_load_art_pack_registry()
 	get_tree().node_added.connect(_on_node_added)
-	_register_existing(get_tree().root)
+	_register_existing(get_tree().root, true)
 
 
 func _is_ancient_text_hover_tip_visible() -> bool:
@@ -262,7 +264,7 @@ func _process(delta: float) -> void:
 		_startup_rescan_tick += 1
 		if _startup_rescan_tick >= STARTUP_RESCAN_STEP_INTERVAL:
 			_startup_rescan_tick = 0
-			_register_existing(get_tree().root)
+			_register_existing(get_tree().root, true)
 			_needs_full_refresh = true
 			_request_ancient_text_hover_refresh(true)
 		_startup_rescan_frames_remaining -= 1
@@ -296,15 +298,15 @@ func _process(delta: float) -> void:
 	if !_needs_full_refresh:
 		return
 	if REFRESH_INTERVAL <= 0.0:
-		_refresh_tracked_portraits()
-		_needs_full_refresh = false
+		_needs_full_refresh = !_refresh_tracked_portraits(0)
 		return
 	_refresh_accumulator += delta
 	if _refresh_accumulator < REFRESH_INTERVAL:
 		return
 	_refresh_accumulator = 0.0
-	_refresh_tracked_portraits()
-	_needs_full_refresh = false
+	_needs_full_refresh = !_refresh_tracked_portraits()
+	if _needs_full_refresh:
+		_refresh_accumulator = REFRESH_INTERVAL
 
 
 func _input(event) -> void:
@@ -3921,6 +3923,7 @@ func refresh_all_portraits() -> void:
 	if _batch_update_depth > 0:
 		_batch_refresh_requested = true
 		return
+	_portrait_refresh_cursor = 0
 	_needs_full_refresh = true
 	_refresh_accumulator = REFRESH_INTERVAL
 	_request_ancient_text_hover_refresh(true)
@@ -5467,19 +5470,19 @@ func _on_node_added(node) -> void:
 		call_deferred("_attach_overlay", node)
 
 
-func _register_existing(node) -> void:
+func _register_existing(node, defer_refresh: bool = false) -> void:
 	if _is_portrait_node(node):
-		_track_portrait(node)
+		_track_portrait(node, defer_refresh)
 	elif String(node.name) == "CardContainer":
 		_track_ancient_text_card_hitbox(node)
 	elif node is Control and String(node.name) == "InspectCardScreen":
 		call_deferred("_attach_overlay", node)
 
 	for child in node.get_children():
-		_register_existing(child)
+		_register_existing(child, defer_refresh)
 
 
-func _track_portrait(texture_rect) -> void:
+func _track_portrait(texture_rect, defer_refresh: bool = false) -> void:
 	for ref in _portrait_refs:
 		if ref.get_ref() == texture_rect:
 			return
@@ -5487,19 +5490,44 @@ func _track_portrait(texture_rect) -> void:
 	var card_root = _find_card_root(texture_rect)
 	if card_root != null:
 		_track_ancient_text_card_hitbox(card_root)
-	_refresh_portrait_node(texture_rect)
 	_needs_full_refresh = true
+	if defer_refresh:
+		_refresh_accumulator = REFRESH_INTERVAL
+		_request_ancient_text_hover_refresh(true)
+		_request_gif_playback_refresh(true)
+		return
+	_refresh_portrait_node(texture_rect)
 	_request_ancient_text_hover_refresh(true)
 	_request_gif_playback_refresh(true)
 
 
-func _refresh_tracked_portraits() -> void:
-	for index in range(_portrait_refs.size() - 1, -1, -1):
-		var texture_rect = _portrait_refs[index].get_ref()
+func _refresh_tracked_portraits(max_items: int = PORTRAIT_REFRESH_FRAME_BUDGET) -> bool:
+	if _portrait_refs.is_empty():
+		_portrait_refresh_cursor = 0
+		return true
+	var limit = _portrait_refs.size() if max_items <= 0 else max_items
+	var processed := 0
+	var completed_cycle := false
+	while processed < limit and !_portrait_refs.is_empty():
+		if _portrait_refresh_cursor >= _portrait_refs.size():
+			_portrait_refresh_cursor = 0
+			completed_cycle = true
+			break
+		var texture_rect = _portrait_refs[_portrait_refresh_cursor].get_ref()
 		if texture_rect == null:
-			_portrait_refs.remove_at(index)
+			_portrait_refs.remove_at(_portrait_refresh_cursor)
+			if _portrait_refresh_cursor >= _portrait_refs.size():
+				_portrait_refresh_cursor = 0
+				completed_cycle = true
 			continue
 		_refresh_portrait_node(texture_rect)
+		processed += 1
+		_portrait_refresh_cursor += 1
+		if _portrait_refresh_cursor >= _portrait_refs.size():
+			_portrait_refresh_cursor = 0
+			completed_cycle = true
+			break
+	return completed_cycle or _portrait_refs.is_empty()
 
 
 func _get_card_root_source_path(card_root) -> String:
@@ -6023,6 +6051,10 @@ func _sanitize_manifest_for_missing_sources() -> void:
 func _is_manifest_source_still_valid(source_path: String) -> bool:
 	if source_path == "":
 		return false
+	if _is_invalid_source_path_text(source_path):
+		return false
+	if source_path.begins_with(MANAGED_TEXTURE_PREFIX) or source_path.begins_with(CARD_ATLAS_PREFIX):
+		return true
 	if source_path.begins_with("res://"):
 		return ResourceLoader.exists(source_path)
 	if source_path.begins_with("user://"):
