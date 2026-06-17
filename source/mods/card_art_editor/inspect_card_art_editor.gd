@@ -231,10 +231,14 @@ var _art_pack_list_label: Label
 var _art_pack_list: ItemList
 var _art_pack_apply_all_button: Button
 var _art_pack_remove_button: Button
+var _art_pack_category_label: Label
+var _art_pack_category_select: OptionButton
+var _art_pack_apply_category_button: Button
 var _art_pack_variant_label: Label
 var _art_pack_variant_select: OptionButton
 var _art_pack_apply_button: Button
 var _art_pack_list_ids: Array = []
+var _art_pack_category_ids: Array = []
 var _art_pack_variant_ids: Array = []
 var _art_pack_ui_state := ""
 var _adjust_source_image = null
@@ -1245,6 +1249,20 @@ func _build_art_pack_manager_ui() -> void:
 	_art_pack_apply_all_button = Button.new()
 	pack_button_row.add_child(_art_pack_apply_all_button)
 
+	_art_pack_category_label = Label.new()
+	root.add_child(_art_pack_category_label)
+
+	var category_row = HBoxContainer.new()
+	category_row.add_theme_constant_override("separation", 8)
+	root.add_child(category_row)
+
+	_art_pack_category_select = OptionButton.new()
+	_art_pack_category_select.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	category_row.add_child(_art_pack_category_select)
+
+	_art_pack_apply_category_button = Button.new()
+	category_row.add_child(_art_pack_apply_category_button)
+
 	_art_pack_variant_label = Label.new()
 	root.add_child(_art_pack_variant_label)
 
@@ -1263,18 +1281,25 @@ func _build_art_pack_manager_ui() -> void:
 
 
 func _refresh_art_pack_manager_ui() -> void:
-	if _art_pack_list == null or _art_pack_variant_select == null or _art_pack_apply_button == null:
+	if _art_pack_list == null or _art_pack_variant_select == null or _art_pack_apply_button == null or _art_pack_category_select == null or _art_pack_apply_category_button == null:
 		return
 	var manager = _manager()
 	var is_ko = _locale == "ko"
 	_art_pack_list_label.text = "적용된 아트팩 목록" if is_ko else "Imported Art Packs"
+	_art_pack_category_label.text = "선택 팩 카테고리 적용" if is_ko else "Apply Selected Pack by Category"
 	_art_pack_variant_label.text = "현재 카드 아트팩 선택" if is_ko else "Current Card Art Pack"
 	_art_pack_remove_button.text = "목록에서 제거" if is_ko else "Remove"
 	_art_pack_apply_all_button.text = "선택 팩 전체 적용" if is_ko else "Apply Pack to All"
+	_art_pack_apply_category_button.text = "선택 카테고리 적용" if is_ko else "Apply Category"
 	_art_pack_apply_button.text = "적용" if is_ko else "Apply"
 	var effective_source_path = _get_effective_source_path()
 	var packs = manager.get_art_pack_list() if manager != null else []
 	var variants = manager.get_art_pack_variants_for_source(effective_source_path) if manager != null and effective_source_path != "" else []
+	var previous_pack_id = _get_selected_art_pack_id()
+	var previous_category_id := ""
+	var previous_category_index = _art_pack_category_select.selected
+	if previous_category_index >= 0 and previous_category_index < _art_pack_category_ids.size():
+		previous_category_id = String(_art_pack_category_ids[previous_category_index])
 	var state_parts: Array = []
 	state_parts.append(_locale)
 	state_parts.append(effective_source_path)
@@ -1282,17 +1307,23 @@ func _refresh_art_pack_manager_ui() -> void:
 	state_parts.append(JSON.stringify(variants))
 	var next_state = "|".join(state_parts)
 	if next_state == _art_pack_ui_state:
+		_refresh_art_pack_category_select()
 		return
 	_art_pack_ui_state = next_state
 	_art_pack_list.clear()
+	_art_pack_category_select.clear()
 	_art_pack_variant_select.clear()
 	_art_pack_list_ids.clear()
+	_art_pack_category_ids.clear()
 	_art_pack_variant_ids.clear()
 	if manager == null:
 		_art_pack_list.add_item("(none)")
 		_art_pack_list.set_item_disabled(0, true)
 		_art_pack_remove_button.disabled = true
 		_art_pack_apply_all_button.disabled = true
+		_art_pack_category_select.add_item("선택 가능한 카테고리 없음" if is_ko else "No categories")
+		_art_pack_category_select.disabled = true
+		_art_pack_apply_category_button.disabled = true
 		_art_pack_apply_button.disabled = true
 		_art_pack_variant_select.disabled = true
 		return
@@ -1302,16 +1333,24 @@ func _refresh_art_pack_manager_ui() -> void:
 		_art_pack_list.set_item_disabled(0, true)
 		_art_pack_remove_button.disabled = true
 		_art_pack_apply_all_button.disabled = true
+		_art_pack_category_select.add_item("선택 가능한 카테고리 없음" if is_ko else "No categories")
+		_art_pack_category_select.disabled = true
+		_art_pack_apply_category_button.disabled = true
 	else:
+		var selected_pack_index := 0
 		for pack in packs:
 			var pack_name = String(pack.get("name", "Art Pack"))
 			var count = int(pack.get("count", 0))
 			_art_pack_list.add_item("%s (%d)" % [pack_name, count])
-			_art_pack_list_ids.append(String(pack.get("id", "")))
+			var pack_id = String(pack.get("id", ""))
+			_art_pack_list_ids.append(pack_id)
+			if pack_id != "" and pack_id == previous_pack_id:
+				selected_pack_index = _art_pack_list_ids.size() - 1
 		if _art_pack_list.item_count > 0:
-			_art_pack_list.select(0)
+			_art_pack_list.select(selected_pack_index)
 		_art_pack_remove_button.disabled = false
 		_art_pack_apply_all_button.disabled = false
+		_refresh_art_pack_category_select(previous_category_id)
 
 	if variants.is_empty():
 		_art_pack_variant_select.add_item("\uC120\uD0DD \uAC00\uB2A5\uD55C \uC544\uD2B8\uD329 \uC5C6\uC74C" if is_ko else "No art pack variants")
@@ -1331,6 +1370,49 @@ func _refresh_art_pack_manager_ui() -> void:
 		_art_pack_variant_ids.append(String(variant.get("pack_id", "")))
 	_art_pack_variant_select.select(selected_index)
 	_art_pack_apply_button.disabled = false
+
+
+func _get_selected_art_pack_id() -> String:
+	if _art_pack_list == null:
+		return ""
+	var selected_items = _art_pack_list.get_selected_items()
+	if selected_items.is_empty():
+		return String(_art_pack_list_ids[0]) if !_art_pack_list_ids.is_empty() else ""
+	var selected_index = int(selected_items[0])
+	if selected_index < 0 or selected_index >= _art_pack_list_ids.size():
+		return ""
+	return String(_art_pack_list_ids[selected_index])
+
+
+func _refresh_art_pack_category_select(preferred_category_id: String = "") -> void:
+	if _art_pack_category_select == null or _art_pack_apply_category_button == null:
+		return
+	var manager = _manager()
+	var is_ko = _locale == "ko"
+	var previous_category_id := preferred_category_id
+	var previous_selected_index = _art_pack_category_select.selected
+	if previous_category_id == "" and previous_selected_index >= 0 and previous_selected_index < _art_pack_category_ids.size():
+		previous_category_id = String(_art_pack_category_ids[previous_selected_index])
+	_art_pack_category_select.clear()
+	_art_pack_category_ids.clear()
+	var pack_id = _get_selected_art_pack_id()
+	var categories = manager.get_art_pack_categories(pack_id) if manager != null and pack_id != "" and manager.has_method("get_art_pack_categories") else []
+	if categories.is_empty():
+		_art_pack_category_select.add_item("선택 가능한 카테고리 없음" if is_ko else "No categories")
+		_art_pack_category_select.disabled = true
+		_art_pack_apply_category_button.disabled = true
+		return
+	var selected_index := 0
+	for category in categories:
+		var label = "%s (%d)" % [String(category.get("name", "Other")), int(category.get("count", 0))]
+		_art_pack_category_select.add_item(label)
+		var category_id = String(category.get("id", ""))
+		_art_pack_category_ids.append(category_id)
+		if category_id != "" and category_id == previous_category_id:
+			selected_index = _art_pack_category_ids.size() - 1
+	_art_pack_category_select.select(selected_index)
+	_art_pack_category_select.disabled = false
+	_art_pack_apply_category_button.disabled = false
 
 
 func _show_progress(current: int, total: int, label: String = "") -> void:
@@ -1914,6 +1996,36 @@ func _on_art_pack_apply_all_pressed() -> void:
 	_show_progress(0, 1, "아트팩 전체 적용 준비 중..." if _locale == "ko" else "Preparing art pack application...")
 	var progress_callback := Callable(self, "_on_import_progress")
 	var result = await manager.apply_art_pack_to_all(pack_id, progress_callback)
+	_hide_progress()
+	_set_busy(false, String(result.get("message", "Unknown art pack result.")), !bool(result.get("ok", false)))
+	_update_context(true)
+
+
+func _on_art_pack_list_item_selected(_index: int) -> void:
+	_refresh_art_pack_category_select()
+
+
+func _on_art_pack_apply_category_pressed() -> void:
+	var manager = _manager()
+	if manager == null:
+		_set_status("The card art manager is not available.", true)
+		return
+	var pack_id = _get_selected_art_pack_id()
+	if pack_id == "":
+		_set_status("적용할 아트팩을 먼저 선택하세요." if _locale == "ko" else "Select an art pack first.", true)
+		return
+	var selected_index = _art_pack_category_select.selected
+	if selected_index < 0 or selected_index >= _art_pack_category_ids.size():
+		_set_status("적용할 카테고리를 먼저 선택하세요." if _locale == "ko" else "Select a category first.", true)
+		return
+	var category_id = String(_art_pack_category_ids[selected_index])
+	if category_id == "":
+		_set_status("적용할 카테고리를 먼저 선택하세요." if _locale == "ko" else "Select a category first.", true)
+		return
+	_set_busy(true, "아트팩 카테고리 적용 중..." if _locale == "ko" else "Applying art pack category...")
+	_show_progress(0, 1, "아트팩 카테고리 적용 준비 중..." if _locale == "ko" else "Preparing category application...")
+	var progress_callback := Callable(self, "_on_import_progress")
+	var result = await manager.apply_art_pack_to_category(pack_id, category_id, progress_callback)
 	_hide_progress()
 	_set_busy(false, String(result.get("message", "Unknown art pack result.")), !bool(result.get("ok", false)))
 	_update_context(true)
@@ -2548,6 +2660,8 @@ func _bind_signals() -> void:
 	_gif_settings_close_button.pressed.connect(_on_gif_settings_close_pressed)
 	_art_pack_remove_button.pressed.connect(_on_art_pack_remove_pressed)
 	_art_pack_apply_all_button.pressed.connect(_on_art_pack_apply_all_pressed)
+	_art_pack_list.item_selected.connect(_on_art_pack_list_item_selected)
+	_art_pack_apply_category_button.pressed.connect(_on_art_pack_apply_category_pressed)
 	_art_pack_apply_button.pressed.connect(_on_art_pack_apply_pressed)
 
 
@@ -2577,6 +2691,14 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 		_ancient_text_outside_button.disabled = is_busy or !_is_current_ancient_text_outside_supported_card() or effective_source_path == ""
 	if _art_pack_remove_button != null:
 		_art_pack_remove_button.disabled = is_busy or _art_pack_list_ids.is_empty()
+	if _art_pack_apply_all_button != null:
+		_art_pack_apply_all_button.disabled = is_busy or _art_pack_list_ids.is_empty()
+	if _art_pack_category_select != null:
+		_art_pack_category_select.disabled = is_busy or _art_pack_category_ids.is_empty()
+	if _art_pack_apply_category_button != null:
+		_art_pack_apply_category_button.disabled = is_busy or _art_pack_category_ids.is_empty()
+	if _art_pack_apply_button != null:
+		_art_pack_apply_button.disabled = is_busy or _art_pack_variant_ids.is_empty()
 	_restore_all_button.disabled = is_busy or manager == null or manager.get_override_count() == 0
 	if _reset_settings_button != null:
 		_reset_settings_button.disabled = is_busy or manager == null

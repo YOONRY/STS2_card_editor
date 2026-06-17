@@ -21,6 +21,7 @@ const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
 const FULL_ART_TARGET_SIZE := Vector2i(600, 847)
 const MOD_IMPORT_IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
 const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "defect", "colorless", "status", "token", "curse", "event", "necrobinder"]
+const ART_PACK_CATEGORY_SORT_ORDER := ["ironclad", "silent", "regent", "necrobinder", "defect", "colorless", "curse", "status", "token", "event", "seeker", "other"]
 const REFRESH_INTERVAL := 0.15
 const DISPLAY_MODE_DEFAULT := "default"
 const DISPLAY_MODE_FULL_ART := "full_art"
@@ -1010,6 +1011,36 @@ func get_art_pack_list() -> Array:
 	return result
 
 
+func get_art_pack_categories(pack_id: String) -> Array:
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary) or !packs.has(pack_id):
+		return []
+	var pack = packs[pack_id]
+	if !(pack is Dictionary):
+		return []
+	var cards = pack.get("cards", {})
+	if !(cards is Dictionary):
+		return []
+	var counts := {}
+	for source_path in cards.keys():
+		var card_entry = cards[source_path]
+		if !(card_entry is Dictionary):
+			continue
+		var category_id = _get_art_pack_category_id_for_source(String(source_path))
+		if category_id == "":
+			category_id = "other"
+		counts[category_id] = int(counts.get(category_id, 0)) + 1
+	var result: Array = []
+	for category_id in counts.keys():
+		result.append({
+			"id": String(category_id),
+			"name": _get_art_pack_category_display_name(String(category_id)),
+			"count": int(counts[category_id])
+		})
+	result.sort_custom(func(a, b): return _compare_art_pack_category_entries(a, b))
+	return result
+
+
 func get_art_pack_variants_for_source(source_path: String) -> Array:
 	source_path = _canonicalize_source_key(source_path)
 	if source_path == "":
@@ -1120,6 +1151,80 @@ func _find_art_pack_card_entry(cards: Dictionary, source_path: String) -> Dictio
 	return {}
 
 
+func _normalize_art_pack_category_id(category_id: String) -> String:
+	return _safe_file_stem(category_id).to_lower()
+
+
+func _get_art_pack_category_id_for_source(source_path: String) -> String:
+	var normalized = _canonicalize_source_key(source_path).replace("\\", "/").to_lower()
+	if normalized == "":
+		normalized = _normalize_source_path(source_path).replace("\\", "/").to_lower()
+	var parts = normalized.split("/")
+	for index in range(parts.size() - 1):
+		if String(parts[index]) == "card_portraits":
+			var folder = _normalize_art_pack_category_id(String(parts[index + 1]))
+			if folder != "":
+				return folder
+	for part in parts:
+		var category_id = _normalize_art_pack_category_id(String(part))
+		if CARD_PORTRAIT_FOLDERS.has(category_id):
+			return category_id
+	return "other"
+
+
+func _get_art_pack_category_display_name(category_id: String) -> String:
+	match _normalize_art_pack_category_id(category_id):
+		"regent":
+			return "Regent"
+		"silent":
+			return "Silent"
+		"ironclad":
+			return "Ironclad"
+		"seeker":
+			return "Seeker"
+		"defect":
+			return "Defect"
+		"colorless":
+			return "Colorless"
+		"status":
+			return "Status"
+		"token":
+			return "Token"
+		"curse":
+			return "Curse"
+		"event":
+			return "Event"
+		"necrobinder":
+			return "Necrobinder"
+		_:
+			return "Other"
+
+
+func _get_art_pack_category_sort_index(category_id: String) -> int:
+	var index = ART_PACK_CATEGORY_SORT_ORDER.find(_normalize_art_pack_category_id(category_id))
+	return index if index >= 0 else ART_PACK_CATEGORY_SORT_ORDER.size()
+
+
+func _compare_art_pack_category_entries(a, b) -> bool:
+	var a_id := ""
+	var b_id := ""
+	var a_name := ""
+	var b_name := ""
+	if a is Dictionary:
+		var a_entry := a as Dictionary
+		a_id = String(a_entry.get("id", ""))
+		a_name = String(a_entry.get("name", ""))
+	if b is Dictionary:
+		var b_entry := b as Dictionary
+		b_id = String(b_entry.get("id", ""))
+		b_name = String(b_entry.get("name", ""))
+	var a_order = _get_art_pack_category_sort_index(a_id)
+	var b_order = _get_art_pack_category_sort_index(b_id)
+	if a_order == b_order:
+		return a_name.naturalnocasecmp_to(b_name) < 0
+	return a_order < b_order
+
+
 func apply_art_pack_to_all(pack_id: String, progress_callback: Callable = Callable()) -> Dictionary:
 	var packs = _art_pack_registry.get("packs", {})
 	if !(packs is Dictionary) or !packs.has(pack_id):
@@ -1164,6 +1269,69 @@ func apply_art_pack_to_all(pack_id: String, progress_callback: Callable = Callab
 	return {
 		"ok": true,
 		"message": "Applied %d cards from \"%s\"." % [applied_count, String(pack.get("name", pack_id))]
+	}
+
+
+func apply_art_pack_to_category(pack_id: String, category_id: String, progress_callback: Callable = Callable()) -> Dictionary:
+	category_id = _normalize_art_pack_category_id(category_id)
+	if category_id == "":
+		return {
+			"ok": false,
+			"message": "No art pack category is selected."
+		}
+	var packs = _art_pack_registry.get("packs", {})
+	if !(packs is Dictionary) or !packs.has(pack_id):
+		return {
+			"ok": false,
+			"message": "The selected art pack could not be found."
+		}
+	var pack = packs[pack_id]
+	if !(pack is Dictionary):
+		return {
+			"ok": false,
+			"message": "The selected art pack could not be read."
+		}
+	var cards = pack.get("cards", {})
+	if !(cards is Dictionary) or cards.is_empty():
+		return {
+			"ok": false,
+			"message": "That art pack does not contain any card entries."
+		}
+	var category_sources: Array = []
+	for source_path in cards.keys():
+		if _get_art_pack_category_id_for_source(String(source_path)) == category_id:
+			category_sources.append(source_path)
+	if category_sources.is_empty():
+		return {
+			"ok": false,
+			"message": "That art pack does not contain cards in the selected category."
+		}
+	var category_name = _get_art_pack_category_display_name(category_id)
+	var applied_count: int = 0
+	var total: int = category_sources.size()
+	var processed: int = 0
+	_begin_batch_updates()
+	await _report_import_progress(progress_callback, 0, total, "Applying %s..." % category_name)
+	for source_path in category_sources:
+		var card_entry = cards[source_path]
+		processed += 1
+		if !(card_entry is Dictionary):
+			await _report_import_progress(progress_callback, processed, total, String(source_path).get_file())
+			continue
+		var result = _activate_registered_art_pack_entry(String(source_path), card_entry, pack_id, String(pack.get("name", pack_id)))
+		if bool(result.get("ok", false)):
+			applied_count += 1
+		await _report_import_progress(progress_callback, processed, total, String(source_path).get_file())
+	if applied_count == 0:
+		_end_batch_updates()
+		return {
+			"ok": false,
+			"message": "No %s cards from that art pack could be applied." % category_name
+		}
+	_end_batch_updates()
+	return {
+		"ok": true,
+		"message": "Applied %d %s cards from \"%s\"." % [applied_count, category_name, String(pack.get("name", pack_id))]
 	}
 
 
