@@ -10,6 +10,12 @@ const EXPORT_DIALOG_MODE_PACK := "pack"
 const EXPORT_DIALOG_MODE_CURRENT_PNG := "current_png"
 const IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
 const BROWSER_LIST_BATCH_SIZE := 40
+const LOCALE_OPTIONS := [
+	{"id": "en", "name": "English"},
+	{"id": "ko", "name": "한국어"},
+	{"id": "zh", "name": "中文"},
+	{"id": "ja", "name": "日本語"}
+]
 const TRANSLATIONS := {
 	"ko": {
 		"edit_button": "카드 이미지 수정",
@@ -69,7 +75,79 @@ const TRANSLATIONS := {
 		"reset_settings": "전체 설정 초기화",
 		"ancient_text_outside_enable": "텍스트 밖으로 빼기",
 		"ancient_text_outside_disable": "텍스트 원위치",
-		"toggle_language": "English"
+		"language_button": "Language",
+		"language_title": "언어 선택",
+		"language_select": "언어 선택",
+		"import_mod": "모드팩 추출",
+		"favorites": "즐겨찾기",
+		"full_art_card_enable": "풀아트 켜기",
+		"full_art_card_disable": "풀아트 끄기",
+		"infection_show": "감염 이펙트 켜기",
+		"infection_hide": "감염 이펙트 끄기",
+		"gif_settings": "GIF 설정",
+		"gif_settings_hint": "이 옵션은 GIF를 불러오거나 다시 적용할 때만 성능에 영향을 줍니다.",
+		"gif_presets": "GIF 프리셋",
+		"gif_preset_fast": "고속",
+		"gif_preset_balanced": "균형",
+		"gif_preset_quality": "품질",
+		"gif_use_cache": "GIF 캐시 사용",
+		"gif_skip_duplicates": "중복 프레임 건너뛰기",
+		"gif_use_frame_limit": "프레임 제한 사용",
+		"gif_hover_all_enable": "모든 카드 마우스 오버시 GIF 재생 켜기",
+		"gif_hover_all_disable": "모든 카드 마우스 오버시 GIF 재생 끄기",
+		"art_pack_list": "적용된 아트팩 목록",
+		"art_pack_apply_category": "선택 팩 카테고리 적용",
+		"art_pack_current_variant": "현재 카드 아트팩 선택",
+		"art_pack_remove": "목록에서 제거",
+		"art_pack_apply_all": "선택 팩 전체 적용",
+		"art_pack_apply_selected_category": "선택 카테고리 적용",
+		"art_pack_no_categories": "선택 가능한 카테고리 없음",
+		"art_pack_no_variants": "선택 가능한 아트팩 없음",
+		"art_pack_active_suffix": " (현재 적용)",
+		"favorites_empty": "(비어 있음)",
+		"favorite_no_folder": "현재 브라우저에서 열린 폴더가 없습니다.",
+		"favorite_exists": "이미 즐겨찾기에 등록된 폴더입니다.",
+		"favorite_added_format": "즐겨찾기에 추가됨: %s",
+		"browser_loading_format": "폴더 항목 불러오는 중... %d / %d",
+		"browser_title_mod": "모드 PCK 또는 Manifest 선택",
+		"gif_settings_applied": "GIF 설정을 적용했습니다.",
+		"gif_hover_all_on": "모든 GIF 카드가 마우스 오버/선택 시에만 재생됩니다.",
+		"gif_hover_all_off": "모든 GIF 카드가 항상 재생됩니다.",
+		"gif_settings_all_busy": "GIF 설정 전체 적용 중...",
+		"gif_settings_all_prepare": "GIF 설정 적용 준비 중...",
+		"full_art_all_busy": "모든 카드 풀아트 적용 중...",
+		"full_art_all_prepare": "모든 카드 풀아트 적용 준비 중...",
+		"select_art_pack_first": "적용할 아트팩을 먼저 선택하세요.",
+		"art_pack_apply_all_busy": "아트팩 전체 적용 중...",
+		"art_pack_apply_all_prepare": "아트팩 전체 적용 준비 중...",
+		"select_category_first": "적용할 카테고리를 먼저 선택하세요.",
+		"art_pack_apply_category_busy": "아트팩 카테고리 적용 중...",
+		"art_pack_apply_category_prepare": "아트팩 카테고리 적용 준비 중...",
+		"select_art_pack_remove_first": "제거할 아트팩을 먼저 선택하세요.",
+		"infection_hidden": "감염 테두리 이펙트를 숨겼습니다.",
+		"infection_shown": "감염 테두리 이펙트를 다시 표시합니다.",
+		"full_art_required": "풀아트 가능한 카드에서만 사용할 수 있습니다.",
+		"rarity_fire_card_on": "이 카드의 풀아트 레어도 불꽃 색상을 켰습니다.",
+		"rarity_fire_card_off": "이 카드의 풀아트 레어도 불꽃 색상을 껐습니다.",
+		"rarity_fire_all_on": "모든 카드의 풀아트 레어도 불꽃 색상을 켰습니다.",
+		"rarity_fire_all_off": "모든 카드의 풀아트 레어도 불꽃 색상을 껐습니다.",
+		"settings_reset_status": "설정을 기본값으로 초기화했습니다.",
+		"text_outside_required": "풀아트 또는 고대 카드에서만 사용할 수 있습니다.",
+		"text_outside_on": "카드 텍스트를 밖으로 뺐습니다.",
+		"text_outside_off": "카드 텍스트를 원위치로 되돌렸습니다.",
+		"manager_unavailable": "카드 아트 매니저를 사용할 수 없습니다.",
+		"no_card_art_selected_status": "선택된 카드 이미지가 없습니다.",
+		"choose_image_status": "현재 카드 이미지를 교체할 이미지 파일을 선택하세요.",
+		"choose_pack_status": "모든 카드 이미지 변경을 불러올 공유 아트팩 파일을 선택하세요.",
+		"choose_mod_status": "카드 이미지를 가져올 모드 PCK 또는 manifest JSON 파일을 선택하세요.",
+		"export_no_images_status": "먼저 하나 이상의 커스텀 이미지를 적용한 뒤 아트팩을 내보내세요.",
+		"choose_export_pack_status": "현재 적용된 모든 커스텀 카드 이미지를 저장할 위치를 선택하세요.",
+		"choose_export_png_status": "현재 카드 이미지를 PNG로 저장할 위치를 선택하세요.",
+		"adjust_unavailable_status": "현재 커스텀 이미지는 지금 조정할 수 없습니다.",
+		"adjust_prepare_error_status": "현재 커스텀 이미지를 조정용으로 준비하지 못했습니다.",
+		"browser_mod_hint": "선택한 모드 파일:\n%s",
+		"browser_open_path_error": "해당 경로를 열 수 없습니다.",
+		"browser_open_selection_error": "파일 브라우저에서 선택한 경로를 읽지 못했습니다. 항목을 한 번 클릭한 뒤 다시 열기를 눌러 주세요."
 	},
 	"en": {
 		"edit_button": "Edit Card Art",
@@ -129,7 +207,343 @@ const TRANSLATIONS := {
 		"reset_settings": "Reset All Settings",
 		"ancient_text_outside_enable": "Move Text Outside",
 		"ancient_text_outside_disable": "Restore Text",
-		"toggle_language": "한국어"
+		"language_button": "Language",
+		"language_title": "Select Language",
+		"language_select": "Select Language",
+		"import_mod": "Import Mod Images",
+		"favorites": "Favorites",
+		"full_art_card_enable": "Enable Full Art",
+		"full_art_card_disable": "Disable Full Art",
+		"infection_show": "Show Infection Effect",
+		"infection_hide": "Hide Infection Effect",
+		"gif_settings": "GIF Settings",
+		"gif_settings_hint": "These options only affect performance when importing or reapplying GIFs.",
+		"gif_presets": "GIF Presets",
+		"gif_preset_fast": "Fast",
+		"gif_preset_balanced": "Balanced",
+		"gif_preset_quality": "Quality",
+		"gif_use_cache": "Use GIF cache",
+		"gif_skip_duplicates": "Skip duplicate frames",
+		"gif_use_frame_limit": "Use frame limit",
+		"gif_hover_all_enable": "Enable GIF Hover Playback for All Cards",
+		"gif_hover_all_disable": "Disable GIF Hover Playback for All Cards",
+		"art_pack_list": "Imported Art Packs",
+		"art_pack_apply_category": "Apply Selected Pack by Category",
+		"art_pack_current_variant": "Current Card Art Pack",
+		"art_pack_remove": "Remove",
+		"art_pack_apply_all": "Apply Pack to All",
+		"art_pack_apply_selected_category": "Apply Category",
+		"art_pack_no_categories": "No categories",
+		"art_pack_no_variants": "No art pack variants",
+		"art_pack_active_suffix": " (active)",
+		"favorites_empty": "(empty)",
+		"favorite_no_folder": "No folder is open in the browser.",
+		"favorite_exists": "This folder is already in favorites.",
+		"favorite_added_format": "Added to favorites: %s",
+		"browser_loading_format": "Loading folder items... %d / %d",
+		"browser_title_mod": "Choose Mod PCK or Manifest",
+		"gif_settings_applied": "GIF settings applied.",
+		"gif_hover_all_on": "All GIF cards now play only on hover/selection.",
+		"gif_hover_all_off": "All GIF cards now play normally.",
+		"gif_settings_all_busy": "Applying GIF settings to all GIF cards...",
+		"gif_settings_all_prepare": "Preparing GIF settings update...",
+		"full_art_all_busy": "Applying full art to all cards...",
+		"full_art_all_prepare": "Preparing full-art update...",
+		"select_art_pack_first": "Select an art pack first.",
+		"art_pack_apply_all_busy": "Applying art pack to all cards...",
+		"art_pack_apply_all_prepare": "Preparing art pack application...",
+		"select_category_first": "Select a category first.",
+		"art_pack_apply_category_busy": "Applying art pack category...",
+		"art_pack_apply_category_prepare": "Preparing category application...",
+		"select_art_pack_remove_first": "Select an art pack to remove first.",
+		"infection_hidden": "Infection border effect hidden.",
+		"infection_shown": "Infection border effect shown.",
+		"full_art_required": "This option is only available for full-art capable cards.",
+		"rarity_fire_card_on": "Full-art rarity flame colors enabled for this card.",
+		"rarity_fire_card_off": "Full-art rarity flame colors disabled for this card.",
+		"rarity_fire_all_on": "Full-art rarity flame colors enabled for all cards.",
+		"rarity_fire_all_off": "Full-art rarity flame colors disabled for all cards.",
+		"settings_reset_status": "Settings reset to defaults.",
+		"text_outside_required": "This option is only available for full-art or Ancient cards.",
+		"text_outside_on": "Card text moved outside.",
+		"text_outside_off": "Card text restored.",
+		"manager_unavailable": "The card art manager is not available.",
+		"no_card_art_selected_status": "No card art is selected.",
+		"choose_image_status": "Choose an image file to replace the current card art.",
+		"choose_pack_status": "Choose a shared art pack file to import all card image changes.",
+		"choose_mod_status": "Choose a mod PCK or manifest JSON file to import card images.",
+		"export_no_images_status": "Apply at least one custom image first, then export the pack.",
+		"choose_export_pack_status": "Choose where to save a bundle with all current custom card images.",
+		"choose_export_png_status": "Choose where to save the current card image as a PNG.",
+		"adjust_unavailable_status": "The current custom image cannot be adjusted right now.",
+		"adjust_prepare_error_status": "The current custom image could not be prepared for adjustment.",
+		"browser_mod_hint": "Selected mod file:\n%s",
+		"browser_open_path_error": "Could not open that path.",
+		"browser_open_selection_error": "Could not read the selected path from the file browser. Click an item once, then press Open again."
+	},
+	"zh": {
+		"edit_button": "编辑卡牌图片",
+		"title": "卡牌图片编辑器",
+		"current_card_unavailable": "当前卡牌：无法识别",
+		"current_card_format": "当前卡牌：%s\n目标格式：%dx%d PNG",
+		"hint": "导入的图片会自动居中裁剪并调整为当前卡牌格式。",
+		"upload_tab": "上传图片",
+		"upload_hint": "可以选择 PNG、JPG、WebP 或 GIF 图片，并自动转换为当前卡牌格式。",
+		"choose_image": "从文件选择",
+		"import_pack": "导入美术包",
+		"export_pack": "导出美术包",
+		"no_image_selected": "未选择图片。",
+		"restore_current": "还原当前卡牌",
+		"restore_all": "全部还原",
+		"close": "关闭",
+		"status_ready": "已准备好编辑卡牌图片。",
+		"settings": "设置",
+		"settings_hint": "在这里管理不常用选项和全局操作。",
+		"settings_general": "通用",
+		"settings_card": "当前卡牌选项",
+		"settings_maintenance": "维护",
+		"adjust_button": "调整图片",
+		"adjust_title": "调整图片",
+		"adjust_hint": "重新定位当前应用的图片。",
+		"adjust_zoom": "缩放",
+		"adjust_offset_x": "水平偏移",
+		"adjust_offset_y": "垂直偏移",
+		"cancel": "取消",
+		"apply": "应用",
+		"adjust_preview_format": "缩放 %d%% / X %d / Y %d",
+		"adjust_preview_error": "无法生成预览。",
+		"browser_preview_default": "请选择要预览的文件。",
+		"browser_title_upload": "选择图片文件",
+		"browser_title_pack": "选择美术包文件",
+		"browser_path_placeholder": "输入文件夹路径",
+		"browser_move": "前往",
+		"browser_up": "上一级",
+		"browser_refresh": "刷新",
+		"browser_open": "打开",
+		"browser_directory_label": "[文件夹] %s",
+		"browser_directory_hint": "要打开此文件夹，请使用下方按钮或在列表中再次激活。\n%s",
+		"browser_pack_hint": "已选择的美术包文件：\n%s",
+		"browser_image_error": "无法加载图片预览。",
+		"browser_gif_preview": "\nGIF 预览",
+		"gif_hover_all": "所有卡牌仅在悬停/选中时播放 GIF",
+		"gif_hover_card": "此卡牌仅在悬停/选中时播放 GIF",
+		"export_current_png": "保存当前卡牌 PNG",
+		"full_art_rarity_fire_all_enable": "为所有卡牌启用稀有度火焰",
+		"full_art_rarity_fire_all_disable": "为所有卡牌禁用稀有度火焰",
+		"full_art_rarity_fire_card_enable": "为此卡牌启用稀有度火焰",
+		"full_art_rarity_fire_card_disable": "为此卡牌禁用稀有度火焰",
+		"full_art_all_enable": "为所有卡牌启用全图模式",
+		"full_art_all_disable": "为所有卡牌禁用全图模式",
+		"ancient_text_outside_all_enable": "将所有卡牌文本移到外部",
+		"ancient_text_outside_all_disable": "还原所有卡牌文本",
+		"reset_settings": "重置所有设置",
+		"ancient_text_outside_enable": "将文本移到外部",
+		"ancient_text_outside_disable": "还原文本",
+		"language_button": "Language",
+		"language_title": "选择语言",
+		"language_select": "选择语言",
+		"import_mod": "导入模组图片",
+		"favorites": "收藏夹",
+		"full_art_card_enable": "启用全图模式",
+		"full_art_card_disable": "禁用全图模式",
+		"infection_show": "显示感染效果",
+		"infection_hide": "隐藏感染效果",
+		"gif_settings": "GIF 设置",
+		"gif_settings_hint": "这些选项只会在导入或重新应用 GIF 时影响性能。",
+		"gif_presets": "GIF 预设",
+		"gif_preset_fast": "快速",
+		"gif_preset_balanced": "平衡",
+		"gif_preset_quality": "质量",
+		"gif_use_cache": "使用 GIF 缓存",
+		"gif_skip_duplicates": "跳过重复帧",
+		"gif_use_frame_limit": "使用帧数限制",
+		"gif_hover_all_enable": "为所有卡牌启用悬停播放 GIF",
+		"gif_hover_all_disable": "为所有卡牌禁用悬停播放 GIF",
+		"art_pack_list": "已导入的美术包",
+		"art_pack_apply_category": "按分类应用所选美术包",
+		"art_pack_current_variant": "当前卡牌美术包",
+		"art_pack_remove": "移除",
+		"art_pack_apply_all": "应用到全部",
+		"art_pack_apply_selected_category": "应用分类",
+		"art_pack_no_categories": "没有可用分类",
+		"art_pack_no_variants": "没有可用美术包版本",
+		"art_pack_active_suffix": "（当前）",
+		"favorites_empty": "（空）",
+		"favorite_no_folder": "浏览器中没有打开的文件夹。",
+		"favorite_exists": "此文件夹已在收藏夹中。",
+		"favorite_added_format": "已添加到收藏夹：%s",
+		"browser_loading_format": "正在加载文件夹项目... %d / %d",
+		"browser_title_mod": "选择 Mod PCK 或 Manifest",
+		"gif_settings_applied": "GIF 设置已应用。",
+		"gif_hover_all_on": "所有 GIF 卡牌现在仅在悬停/选中时播放。",
+		"gif_hover_all_off": "所有 GIF 卡牌现在会正常播放。",
+		"gif_settings_all_busy": "正在将 GIF 设置应用到所有 GIF 卡牌...",
+		"gif_settings_all_prepare": "正在准备 GIF 设置更新...",
+		"full_art_all_busy": "正在为所有卡牌应用全图模式...",
+		"full_art_all_prepare": "正在准备全图模式更新...",
+		"select_art_pack_first": "请先选择一个美术包。",
+		"art_pack_apply_all_busy": "正在将美术包应用到所有卡牌...",
+		"art_pack_apply_all_prepare": "正在准备应用美术包...",
+		"select_category_first": "请先选择一个分类。",
+		"art_pack_apply_category_busy": "正在按分类应用美术包...",
+		"art_pack_apply_category_prepare": "正在准备分类应用...",
+		"select_art_pack_remove_first": "请先选择要移除的美术包。",
+		"infection_hidden": "感染边框效果已隐藏。",
+		"infection_shown": "感染边框效果已显示。",
+		"full_art_required": "此选项仅可用于支持全图模式的卡牌。",
+		"rarity_fire_card_on": "已为此卡牌启用全图稀有度火焰颜色。",
+		"rarity_fire_card_off": "已为此卡牌禁用全图稀有度火焰颜色。",
+		"rarity_fire_all_on": "已为所有卡牌启用全图稀有度火焰颜色。",
+		"rarity_fire_all_off": "已为所有卡牌禁用全图稀有度火焰颜色。",
+		"settings_reset_status": "设置已重置为默认值。",
+		"text_outside_required": "此选项仅可用于全图模式或 Ancient 卡牌。",
+		"text_outside_on": "卡牌文本已移到外部。",
+		"text_outside_off": "卡牌文本已还原。",
+		"manager_unavailable": "卡牌图片管理器不可用。",
+		"no_card_art_selected_status": "未选择卡牌图片。",
+		"choose_image_status": "请选择一个图片文件来替换当前卡牌图片。",
+		"choose_pack_status": "请选择一个共享美术包文件来导入所有卡牌图片更改。",
+		"choose_mod_status": "请选择一个 Mod PCK 或 manifest JSON 文件来导入卡牌图片。",
+		"export_no_images_status": "请先应用至少一张自定义图片，然后再导出美术包。",
+		"choose_export_pack_status": "请选择保存当前所有自定义卡牌图片包的位置。",
+		"choose_export_png_status": "请选择将当前卡牌图片保存为 PNG 的位置。",
+		"adjust_unavailable_status": "当前自定义图片暂时无法调整。",
+		"adjust_prepare_error_status": "无法准备当前自定义图片以进行调整。",
+		"browser_mod_hint": "已选择的 Mod 文件：\n%s",
+		"browser_open_path_error": "无法打开该路径。",
+		"browser_open_selection_error": "无法读取文件浏览器中选择的路径。请先单击一次项目，然后再次按打开。"
+	},
+	"ja": {
+		"edit_button": "カード画像を編集",
+		"title": "カード画像エディター",
+		"current_card_unavailable": "現在のカード：取得不可",
+		"current_card_format": "現在のカード：%s\n対象形式：%dx%d PNG",
+		"hint": "読み込んだ画像は現在のカード形式に合わせて自動で中央クロップとリサイズされます。",
+		"upload_tab": "画像アップロード",
+		"upload_hint": "PNG、JPG、WebP、GIF 画像を選択できます。現在のカード形式に自動変換されます。",
+		"choose_image": "ファイルから選択",
+		"import_pack": "アートパックを読み込み",
+		"export_pack": "アートパックを書き出し",
+		"no_image_selected": "画像が選択されていません。",
+		"restore_current": "現在のカードを復元",
+		"restore_all": "すべて復元",
+		"close": "閉じる",
+		"status_ready": "カード画像を編集できます。",
+		"settings": "設定",
+		"settings_hint": "使用頻度の低いオプションと全体操作をここで管理します。",
+		"settings_general": "全般",
+		"settings_card": "現在のカード設定",
+		"settings_maintenance": "管理",
+		"adjust_button": "画像を調整",
+		"adjust_title": "画像を調整",
+		"adjust_hint": "現在適用中の画像の位置を調整します。",
+		"adjust_zoom": "ズーム",
+		"adjust_offset_x": "横位置",
+		"adjust_offset_y": "縦位置",
+		"cancel": "キャンセル",
+		"apply": "適用",
+		"adjust_preview_format": "ズーム %d%% / X %d / Y %d",
+		"adjust_preview_error": "プレビューを作成できませんでした。",
+		"browser_preview_default": "プレビューするファイルを選択してください。",
+		"browser_title_upload": "画像ファイルを選択",
+		"browser_title_pack": "アートパックファイルを選択",
+		"browser_path_placeholder": "フォルダーのパスを入力",
+		"browser_move": "移動",
+		"browser_up": "上へ",
+		"browser_refresh": "更新",
+		"browser_open": "開く",
+		"browser_directory_label": "[フォルダー] %s",
+		"browser_directory_hint": "このフォルダーを開くには、下のボタンを使うか一覧で再度選択してください。\n%s",
+		"browser_pack_hint": "選択したアートパック：\n%s",
+		"browser_image_error": "画像プレビューを読み込めませんでした。",
+		"browser_gif_preview": "\nGIF プレビュー",
+		"gif_hover_all": "すべてのカードでホバー/選択時のみ GIF を再生",
+		"gif_hover_card": "このカードでホバー/選択時のみ GIF を再生",
+		"export_current_png": "現在のカード PNG を保存",
+		"full_art_rarity_fire_all_enable": "全カードのレア度炎を有効化",
+		"full_art_rarity_fire_all_disable": "全カードのレア度炎を無効化",
+		"full_art_rarity_fire_card_enable": "このカードのレア度炎を有効化",
+		"full_art_rarity_fire_card_disable": "このカードのレア度炎を無効化",
+		"full_art_all_enable": "全カードのフルアートを有効化",
+		"full_art_all_disable": "全カードのフルアートを無効化",
+		"ancient_text_outside_all_enable": "全カードのテキストを外へ移動",
+		"ancient_text_outside_all_disable": "全カードのテキストを復元",
+		"reset_settings": "すべての設定をリセット",
+		"ancient_text_outside_enable": "テキストを外へ移動",
+		"ancient_text_outside_disable": "テキストを復元",
+		"language_button": "Language",
+		"language_title": "言語を選択",
+		"language_select": "言語を選択",
+		"import_mod": "Mod 画像を読み込み",
+		"favorites": "お気に入り",
+		"full_art_card_enable": "フルアートを有効化",
+		"full_art_card_disable": "フルアートを無効化",
+		"infection_show": "感染エフェクトを表示",
+		"infection_hide": "感染エフェクトを非表示",
+		"gif_settings": "GIF 設定",
+		"gif_settings_hint": "これらのオプションは GIF の読み込みまたは再適用時のみ性能に影響します。",
+		"gif_presets": "GIF プリセット",
+		"gif_preset_fast": "高速",
+		"gif_preset_balanced": "バランス",
+		"gif_preset_quality": "品質",
+		"gif_use_cache": "GIF キャッシュを使用",
+		"gif_skip_duplicates": "重複フレームをスキップ",
+		"gif_use_frame_limit": "フレーム制限を使用",
+		"gif_hover_all_enable": "全カードのホバー GIF 再生を有効化",
+		"gif_hover_all_disable": "全カードのホバー GIF 再生を無効化",
+		"art_pack_list": "読み込み済みアートパック",
+		"art_pack_apply_category": "選択パックをカテゴリ別に適用",
+		"art_pack_current_variant": "現在のカードのアートパック",
+		"art_pack_remove": "削除",
+		"art_pack_apply_all": "すべてに適用",
+		"art_pack_apply_selected_category": "カテゴリを適用",
+		"art_pack_no_categories": "利用可能なカテゴリなし",
+		"art_pack_no_variants": "利用可能なアートパックなし",
+		"art_pack_active_suffix": "（適用中）",
+		"favorites_empty": "（空）",
+		"favorite_no_folder": "ブラウザーで開いているフォルダーがありません。",
+		"favorite_exists": "このフォルダーはすでにお気に入りに登録されています。",
+		"favorite_added_format": "お気に入りに追加しました：%s",
+		"browser_loading_format": "フォルダー項目を読み込み中... %d / %d",
+		"browser_title_mod": "Mod PCK または Manifest を選択",
+		"gif_settings_applied": "GIF 設定を適用しました。",
+		"gif_hover_all_on": "すべての GIF カードはホバー/選択時のみ再生されます。",
+		"gif_hover_all_off": "すべての GIF カードは通常どおり再生されます。",
+		"gif_settings_all_busy": "GIF 設定をすべての GIF カードに適用中...",
+		"gif_settings_all_prepare": "GIF 設定更新を準備中...",
+		"full_art_all_busy": "すべてのカードにフルアートを適用中...",
+		"full_art_all_prepare": "フルアート更新を準備中...",
+		"select_art_pack_first": "先にアートパックを選択してください。",
+		"art_pack_apply_all_busy": "アートパックをすべてのカードに適用中...",
+		"art_pack_apply_all_prepare": "アートパック適用を準備中...",
+		"select_category_first": "先にカテゴリを選択してください。",
+		"art_pack_apply_category_busy": "アートパックをカテゴリに適用中...",
+		"art_pack_apply_category_prepare": "カテゴリ適用を準備中...",
+		"select_art_pack_remove_first": "先に削除するアートパックを選択してください。",
+		"infection_hidden": "感染ボーダーエフェクトを非表示にしました。",
+		"infection_shown": "感染ボーダーエフェクトを表示しました。",
+		"full_art_required": "このオプションはフルアート対応カードでのみ使用できます。",
+		"rarity_fire_card_on": "このカードのフルアート用レア度炎カラーを有効にしました。",
+		"rarity_fire_card_off": "このカードのフルアート用レア度炎カラーを無効にしました。",
+		"rarity_fire_all_on": "すべてのカードのフルアート用レア度炎カラーを有効にしました。",
+		"rarity_fire_all_off": "すべてのカードのフルアート用レア度炎カラーを無効にしました。",
+		"settings_reset_status": "設定をデフォルトにリセットしました。",
+		"text_outside_required": "このオプションはフルアートまたは Ancient カードでのみ使用できます。",
+		"text_outside_on": "カードテキストを外へ移動しました。",
+		"text_outside_off": "カードテキストを復元しました。",
+		"manager_unavailable": "カードアートマネージャーを使用できません。",
+		"no_card_art_selected_status": "カード画像が選択されていません。",
+		"choose_image_status": "現在のカード画像を置き換える画像ファイルを選択してください。",
+		"choose_pack_status": "すべてのカード画像変更を読み込む共有アートパックファイルを選択してください。",
+		"choose_mod_status": "カード画像を読み込む Mod PCK または manifest JSON ファイルを選択してください。",
+		"export_no_images_status": "先に少なくとも 1 つのカスタム画像を適用してから、アートパックを書き出してください。",
+		"choose_export_pack_status": "現在のすべてのカスタムカード画像を保存する場所を選択してください。",
+		"choose_export_png_status": "現在のカード画像を PNG として保存する場所を選択してください。",
+		"adjust_unavailable_status": "現在のカスタム画像は今は調整できません。",
+		"adjust_prepare_error_status": "現在のカスタム画像を調整用に準備できませんでした。",
+		"browser_mod_hint": "選択した Mod ファイル：\n%s",
+		"browser_open_path_error": "そのパスを開けませんでした。",
+		"browser_open_selection_error": "ファイルブラウザーで選択したパスを読み取れませんでした。項目を一度クリックしてから、もう一度開くを押してください。"
 	}
 }
 
@@ -187,8 +601,11 @@ var _browser_pending_entries: Array = []
 var _browser_pending_entry_index := 0
 var _browser_pending_total := 0
 var _browser_listing_in_progress := false
-var _locale := "ko"
+var _locale := "en"
 var _language_button: Button
+var _language_panel: PanelContainer
+var _language_title_label: Label
+var _language_option_buttons := {}
 var _settings_button: Button
 var _settings_panel: PanelContainer
 var _settings_title_label: Label
@@ -331,7 +748,7 @@ func _get_effective_source_path() -> String:
 
 
 func _tr(key: String) -> String:
-	var locale_table = TRANSLATIONS.get(_locale, TRANSLATIONS["ko"])
+	var locale_table = TRANSLATIONS.get(_locale, TRANSLATIONS["en"])
 	return String(locale_table.get(key, key))
 
 
@@ -344,7 +761,7 @@ func _load_ui_settings() -> void:
 		return
 	var parsed = JSON.parse_string(file.get_as_text())
 	if parsed is Dictionary:
-		var locale_value = String(parsed.get("locale", "ko"))
+		var locale_value = String(parsed.get("locale", "en"))
 		if TRANSLATIONS.has(locale_value):
 			_locale = locale_value
 		var parsed_browser_dirs = parsed.get("browser_last_dirs", {})
@@ -394,10 +811,32 @@ func _save_ui_settings() -> void:
 	file.flush()
 
 
-func _toggle_locale() -> void:
-	_locale = "en" if _locale == "ko" else "ko"
+func _set_locale(locale_id: String) -> void:
+	if !TRANSLATIONS.has(locale_id):
+		return
+	_locale = locale_id
 	_save_ui_settings()
 	_apply_locale()
+	_hide_language_panel()
+
+
+func _on_language_pressed() -> void:
+	if _language_panel == null:
+		return
+	if _language_panel.visible:
+		_hide_language_panel()
+		return
+	if _settings_panel != null:
+		_settings_panel.hide()
+	_refresh_language_panel()
+	_position_language_panel()
+	_language_panel.show()
+	_language_panel.move_to_front()
+
+
+func _hide_language_panel() -> void:
+	if _language_panel != null:
+		_language_panel.hide()
 
 
 func _apply_locale() -> void:
@@ -407,7 +846,7 @@ func _apply_locale() -> void:
 	_upload_hint_label.text = _tr("upload_hint")
 	_choose_image_button.text = _tr("choose_image")
 	_import_pack_button.text = _tr("import_pack")
-	_import_mod_label = "\uBAA8\uB4DC\uD329 \uCD94\uCD9C" if _locale == "ko" else "Import Mod Images"
+	_import_mod_label = _tr("import_mod")
 	_import_mod_button.text = _import_mod_label
 	_export_pack_button.text = _tr("export_pack")
 	_export_current_png_button.text = _tr("export_current_png")
@@ -428,7 +867,9 @@ func _apply_locale() -> void:
 	_selected_file_label.text = _tr("no_image_selected") if _selected_upload_path == "" else _selected_upload_path.get_file()
 	_tab_container.set_tab_title(1, _tr("upload_tab"))
 	if _language_button != null:
-		_language_button.text = _tr("toggle_language")
+		_language_button.text = _tr("language_button")
+		_language_button.tooltip_text = _tr("language_select")
+	_refresh_language_panel()
 	if _adjust_button != null:
 		_adjust_button.text = _tr("adjust_button")
 	if _display_mode_button != null:
@@ -451,7 +892,7 @@ func _apply_locale() -> void:
 	if _adjust_apply_button != null:
 		_adjust_apply_button.text = _tr("apply")
 	if _favorites_menu_button != null:
-		_favorites_menu_button.text = "즐겨찾기" if _locale == "ko" else "Favorites"
+		_favorites_menu_button.text = _tr("favorites")
 		_refresh_favorites_menu()
 	_refresh_art_pack_manager_ui()
 	_refresh_full_art_rarity_fire_button()
@@ -465,9 +906,7 @@ func _get_display_mode_button_text() -> String:
 	var manager = _manager()
 	var source_path = _get_effective_source_path()
 	var is_full_art = manager != null and source_path != "" and manager.is_full_art_mode(source_path)
-	if _locale == "en":
-		return "Disable Full Art" if is_full_art else "Enable Full Art"
-	return "풀아트 끄기" if is_full_art else "풀아트 켜기"
+	return _tr("full_art_card_disable") if is_full_art else _tr("full_art_card_enable")
 
 
 func _refresh_full_art_all_button() -> void:
@@ -554,10 +993,7 @@ func _refresh_infection_effect_button() -> void:
 		return
 	_infection_effect_button.disabled = false
 	var hidden_enabled = bool(manager.is_infection_effect_hidden_enabled())
-	if _locale == "en":
-		_infection_effect_button.text = "Show Infection Effect" if hidden_enabled else "Hide Infection Effect"
-	else:
-		_infection_effect_button.text = "감염 이펙트 켜기" if hidden_enabled else "감염 이펙트 끄기"
+	_infection_effect_button.text = _tr("infection_show") if hidden_enabled else _tr("infection_hide")
 
 
 func _is_current_full_art_rarity_fire_supported_card() -> bool:
@@ -730,32 +1166,31 @@ func _gif_settings_require_rebuild(previous_settings: Dictionary, next_settings:
 func _refresh_gif_settings_ui() -> void:
 	if _gif_settings_button == null:
 		return
-	var is_ko = _locale == "ko"
-	_gif_settings_button.text = "GIF 설정" if is_ko else "GIF Settings"
-	_gif_settings_button.tooltip_text = "GIF 설정" if is_ko else "GIF Settings"
+	_gif_settings_button.text = _tr("gif_settings")
+	_gif_settings_button.tooltip_text = _tr("gif_settings")
 	if _gif_cache_check == null:
 		return
 	if _gif_settings_hint_label != null:
-		_gif_settings_hint_label.text = "이 옵션은 GIF를 불러오거나 다시 적용할 때만 성능에 영향을 줍니다." if is_ko else "These options only affect performance when importing or reapplying GIFs."
+		_gif_settings_hint_label.text = _tr("gif_settings_hint")
 	if _gif_preset_label != null:
-		_gif_preset_label.text = "GIF 프리셋" if is_ko else "GIF Presets"
+		_gif_preset_label.text = _tr("gif_presets")
 	if _gif_preset_fast_button != null:
-		_gif_preset_fast_button.text = "고속" if is_ko else "Fast"
+		_gif_preset_fast_button.text = _tr("gif_preset_fast")
 	if _gif_preset_balanced_button != null:
-		_gif_preset_balanced_button.text = "균형" if is_ko else "Balanced"
+		_gif_preset_balanced_button.text = _tr("gif_preset_balanced")
 	if _gif_preset_quality_button != null:
-		_gif_preset_quality_button.text = "품질" if is_ko else "Quality"
-	_gif_cache_check.text = "GIF 캐시 사용" if is_ko else "Use GIF cache"
-	_gif_dedupe_check.text = "중복 프레임 건너뛰기" if is_ko else "Skip duplicate frames"
-	_gif_limit_check.text = "프레임 제한 사용" if is_ko else "Use frame limit"
+		_gif_preset_quality_button.text = _tr("gif_preset_quality")
+	_gif_cache_check.text = _tr("gif_use_cache")
+	_gif_dedupe_check.text = _tr("gif_skip_duplicates")
+	_gif_limit_check.text = _tr("gif_use_frame_limit")
 	if _gif_hover_playback_all_button != null:
 		var all_hover_enabled = _get_global_gif_hover_playback_enabled()
-		_gif_hover_playback_all_button.text = ("모든 카드 마우스 오버시 GIF 재생 끄기" if all_hover_enabled else "모든 카드 마우스 오버시 GIF 재생 켜기") if is_ko else ("Disable GIF Hover Playback for All Cards" if all_hover_enabled else "Enable GIF Hover Playback for All Cards")
+		_gif_hover_playback_all_button.text = _tr("gif_hover_all_disable") if all_hover_enabled else _tr("gif_hover_all_enable")
 	if _gif_hover_playback_card_check != null:
 		_gif_hover_playback_card_check.text = _tr("gif_hover_card")
 	if _gif_settings_apply_button != null:
-		_gif_settings_apply_button.text = "적용" if is_ko else "Apply"
-	_gif_settings_close_button.text = "닫기" if is_ko else "Close"
+		_gif_settings_apply_button.text = _tr("apply")
+	_gif_settings_close_button.text = _tr("close")
 	var ui_settings = _get_gif_settings_ui_values()
 	_gif_settings_ui_syncing = true
 	_gif_cache_check.button_pressed = bool(ui_settings.get("use_cache", true))
@@ -775,6 +1210,95 @@ func _make_settings_section_label(label_text: String) -> Label:
 	return label
 
 
+func _get_locale_option_name(locale_id: String) -> String:
+	for option in LOCALE_OPTIONS:
+		if String(option.get("id", "")) == locale_id:
+			return String(option.get("name", locale_id))
+	return locale_id
+
+
+func _refresh_language_panel() -> void:
+	if _language_title_label != null:
+		_language_title_label.text = _tr("language_title")
+	for locale_id in _language_option_buttons.keys():
+		var button = _language_option_buttons[locale_id]
+		if button is Button:
+			var prefix = "[x] " if String(locale_id) == _locale else "[ ] "
+			(button as Button).text = "%s%s" % [prefix, _get_locale_option_name(String(locale_id))]
+
+
+func _position_language_panel() -> void:
+	if _language_panel == null or _editor_popup == null:
+		return
+	var popup_rect = _editor_popup.get_global_rect()
+	var viewport_rect = get_viewport_rect()
+	var panel_size = _language_panel.size
+	if panel_size.x <= 1.0 or panel_size.y <= 1.0:
+		panel_size = Vector2(170, 220)
+	var margin := 12.0
+	var target_x = popup_rect.position.x - panel_size.x - margin
+	if target_x < viewport_rect.position.x + margin:
+		target_x = popup_rect.position.x + margin
+	var target_y = popup_rect.position.y
+	target_x = clamp(target_x, viewport_rect.position.x + margin, max(viewport_rect.position.x + margin, viewport_rect.position.x + viewport_rect.size.x - panel_size.x - margin))
+	target_y = clamp(target_y, viewport_rect.position.y + margin, max(viewport_rect.position.y + margin, viewport_rect.position.y + viewport_rect.size.y - panel_size.y - margin))
+	_language_panel.position = Vector2(target_x, target_y)
+
+
+func _build_language_panel() -> void:
+	if _language_panel != null:
+		return
+	_language_panel = PanelContainer.new()
+	_language_panel.name = "LanguagePanel"
+	_language_panel.visible = false
+	_language_panel.top_level = true
+	_language_panel.z_as_relative = false
+	_language_panel.z_index = 1210
+	_language_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_language_panel.custom_minimum_size = Vector2(170, 0)
+	var panel_style = StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.08, 0.08, 0.10, 0.97)
+	panel_style.border_color = Color(0.72, 0.72, 0.76, 1.0)
+	panel_style.border_width_left = 1
+	panel_style.border_width_top = 1
+	panel_style.border_width_right = 1
+	panel_style.border_width_bottom = 1
+	panel_style.corner_radius_top_left = 10
+	panel_style.corner_radius_top_right = 10
+	panel_style.corner_radius_bottom_left = 10
+	panel_style.corner_radius_bottom_right = 10
+	_language_panel.add_theme_stylebox_override("panel", panel_style)
+	add_child(_language_panel)
+
+	var margin = MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 12)
+	margin.add_theme_constant_override("margin_top", 12)
+	margin.add_theme_constant_override("margin_right", 12)
+	margin.add_theme_constant_override("margin_bottom", 12)
+	_language_panel.add_child(margin)
+
+	var root = VBoxContainer.new()
+	root.add_theme_constant_override("separation", 8)
+	margin.add_child(root)
+
+	_language_title_label = Label.new()
+	_language_title_label.text = _tr("language_title")
+	_language_title_label.add_theme_font_size_override("font_size", 15)
+	root.add_child(_language_title_label)
+
+	for option in LOCALE_OPTIONS:
+		var locale_id = String(option.get("id", ""))
+		if locale_id == "":
+			continue
+		var button = Button.new()
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.mouse_filter = Control.MOUSE_FILTER_STOP
+		button.pressed.connect(Callable(self, "_set_locale").bind(locale_id))
+		_language_option_buttons[locale_id] = button
+		root.add_child(button)
+	_refresh_language_panel()
+
+
 func _build_settings_shell() -> void:
 	var root_vbox = _editor_popup.get_node_or_null("MarginContainer/RootVBox")
 	if root_vbox == null:
@@ -787,6 +1311,13 @@ func _build_settings_shell() -> void:
 		root_vbox.add_child(header_row)
 		root_vbox.move_child(header_row, title_index)
 		root_vbox.remove_child(_title_label)
+		_language_button = Button.new()
+		_language_button.name = "LanguageButton"
+		_language_button.text = _tr("language_button")
+		_language_button.tooltip_text = _tr("language_select")
+		_language_button.custom_minimum_size = Vector2(86, 34)
+		_language_button.mouse_filter = Control.MOUSE_FILTER_STOP
+		header_row.add_child(_language_button)
 		_title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		header_row.add_child(_title_label)
 
@@ -796,6 +1327,8 @@ func _build_settings_shell() -> void:
 		_settings_button.custom_minimum_size = Vector2(42, 34)
 		_settings_button.mouse_filter = Control.MOUSE_FILTER_STOP
 		header_row.add_child(_settings_button)
+
+	_build_language_panel()
 
 	if _settings_panel != null:
 		return
@@ -872,11 +1405,6 @@ func _build_adjust_ui() -> void:
 	if _settings_maintenance_box != null:
 		_settings_maintenance_box.add_child(_restore_all_button)
 
-	_language_button = Button.new()
-	_language_button.text = "English"
-	_language_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	if _settings_general_box != null:
-		_settings_general_box.add_child(_language_button)
 	_gif_settings_button = Button.new()
 	_gif_settings_button.text = "GIF Settings"
 	_gif_settings_button.tooltip_text = "GIF Settings"
@@ -976,7 +1504,7 @@ func _build_adjust_ui() -> void:
 
 	_adjust_preview_label = Label.new()
 	_adjust_preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_adjust_preview_label.text = "Drag the preview to reposition it. Use zoom to crop tighter."
+	_adjust_preview_label.text = _tr("adjust_hint")
 	root.add_child(_adjust_preview_label)
 
 	root.add_child(_make_adjust_slider_row("확대", "_adjust_zoom_slider", 100, 300, 1, 100))
@@ -1177,7 +1705,7 @@ func _build_browser_shortcuts_ui() -> void:
 	path_row.add_child(_favorite_add_button)
 
 	_favorites_menu_button = MenuButton.new()
-	_favorites_menu_button.text = "즐겨찾기" if _locale == "ko" else "Favorites"
+	_favorites_menu_button.text = _tr("favorites")
 	_favorites_menu_button.custom_minimum_size = Vector2(110, 0)
 	path_row.add_child(_favorites_menu_button)
 
@@ -1284,14 +1812,13 @@ func _refresh_art_pack_manager_ui() -> void:
 	if _art_pack_list == null or _art_pack_variant_select == null or _art_pack_apply_button == null or _art_pack_category_select == null or _art_pack_apply_category_button == null:
 		return
 	var manager = _manager()
-	var is_ko = _locale == "ko"
-	_art_pack_list_label.text = "적용된 아트팩 목록" if is_ko else "Imported Art Packs"
-	_art_pack_category_label.text = "선택 팩 카테고리 적용" if is_ko else "Apply Selected Pack by Category"
-	_art_pack_variant_label.text = "현재 카드 아트팩 선택" if is_ko else "Current Card Art Pack"
-	_art_pack_remove_button.text = "목록에서 제거" if is_ko else "Remove"
-	_art_pack_apply_all_button.text = "선택 팩 전체 적용" if is_ko else "Apply Pack to All"
-	_art_pack_apply_category_button.text = "선택 카테고리 적용" if is_ko else "Apply Category"
-	_art_pack_apply_button.text = "적용" if is_ko else "Apply"
+	_art_pack_list_label.text = _tr("art_pack_list")
+	_art_pack_category_label.text = _tr("art_pack_apply_category")
+	_art_pack_variant_label.text = _tr("art_pack_current_variant")
+	_art_pack_remove_button.text = _tr("art_pack_remove")
+	_art_pack_apply_all_button.text = _tr("art_pack_apply_all")
+	_art_pack_apply_category_button.text = _tr("art_pack_apply_selected_category")
+	_art_pack_apply_button.text = _tr("apply")
 	var effective_source_path = _get_effective_source_path()
 	var packs = manager.get_art_pack_list() if manager != null else []
 	var variants = manager.get_art_pack_variants_for_source(effective_source_path) if manager != null and effective_source_path != "" else []
@@ -1321,7 +1848,7 @@ func _refresh_art_pack_manager_ui() -> void:
 		_art_pack_list.set_item_disabled(0, true)
 		_art_pack_remove_button.disabled = true
 		_art_pack_apply_all_button.disabled = true
-		_art_pack_category_select.add_item("선택 가능한 카테고리 없음" if is_ko else "No categories")
+		_art_pack_category_select.add_item(_tr("art_pack_no_categories"))
 		_art_pack_category_select.disabled = true
 		_art_pack_apply_category_button.disabled = true
 		_art_pack_apply_button.disabled = true
@@ -1333,7 +1860,7 @@ func _refresh_art_pack_manager_ui() -> void:
 		_art_pack_list.set_item_disabled(0, true)
 		_art_pack_remove_button.disabled = true
 		_art_pack_apply_all_button.disabled = true
-		_art_pack_category_select.add_item("선택 가능한 카테고리 없음" if is_ko else "No categories")
+		_art_pack_category_select.add_item(_tr("art_pack_no_categories"))
 		_art_pack_category_select.disabled = true
 		_art_pack_apply_category_button.disabled = true
 	else:
@@ -1353,7 +1880,7 @@ func _refresh_art_pack_manager_ui() -> void:
 		_refresh_art_pack_category_select(previous_category_id)
 
 	if variants.is_empty():
-		_art_pack_variant_select.add_item("\uC120\uD0DD \uAC00\uB2A5\uD55C \uC544\uD2B8\uD329 \uC5C6\uC74C" if is_ko else "No art pack variants")
+		_art_pack_variant_select.add_item(_tr("art_pack_no_variants"))
 		_art_pack_variant_select.disabled = true
 		_art_pack_apply_button.disabled = true
 		return
@@ -1364,7 +1891,7 @@ func _refresh_art_pack_manager_ui() -> void:
 		var variant = variants[index]
 		var label = String(variant.get("pack_name", "Art Pack"))
 		if bool(variant.get("active", false)):
-			label += " (현재 적용)" if is_ko else " (active)"
+			label += _tr("art_pack_active_suffix")
 			selected_index = index
 		_art_pack_variant_select.add_item(label)
 		_art_pack_variant_ids.append(String(variant.get("pack_id", "")))
@@ -1388,7 +1915,6 @@ func _refresh_art_pack_category_select(preferred_category_id: String = "") -> vo
 	if _art_pack_category_select == null or _art_pack_apply_category_button == null:
 		return
 	var manager = _manager()
-	var is_ko = _locale == "ko"
 	var previous_category_id := preferred_category_id
 	var previous_selected_index = _art_pack_category_select.selected
 	if previous_category_id == "" and previous_selected_index >= 0 and previous_selected_index < _art_pack_category_ids.size():
@@ -1398,7 +1924,7 @@ func _refresh_art_pack_category_select(preferred_category_id: String = "") -> vo
 	var pack_id = _get_selected_art_pack_id()
 	var categories = manager.get_art_pack_categories(pack_id) if manager != null and pack_id != "" and manager.has_method("get_art_pack_categories") else []
 	if categories.is_empty():
-		_art_pack_category_select.add_item("선택 가능한 카테고리 없음" if is_ko else "No categories")
+		_art_pack_category_select.add_item(_tr("art_pack_no_categories"))
 		_art_pack_category_select.disabled = true
 		_art_pack_apply_category_button.disabled = true
 		return
@@ -1490,6 +2016,7 @@ func _on_settings_pressed() -> void:
 	if _settings_panel.visible:
 		_settings_panel.hide()
 		return
+	_hide_language_panel()
 	_refresh_full_art_all_button()
 	_refresh_ancient_text_outside_all_button()
 	_refresh_full_art_rarity_fire_button()
@@ -1506,6 +2033,7 @@ func _on_edit_art_pressed() -> void:
 		_close_adjust_panel()
 		if _settings_panel != null:
 			_settings_panel.hide()
+		_hide_language_panel()
 		_close_file_browser()
 		_editor_popup.hide()
 		return
@@ -1526,6 +2054,7 @@ func _on_close_pressed() -> void:
 		_gif_settings_popup.hide()
 	if _settings_panel != null:
 		_settings_panel.hide()
+	_hide_language_panel()
 	_close_file_browser()
 	_editor_popup.hide()
 
@@ -1578,7 +2107,7 @@ func _on_gif_settings_apply_pressed() -> void:
 	if requires_rebuild:
 		await _reapply_gif_settings_globally()
 	else:
-		_set_status("GIF 설정을 적용했습니다." if _locale == "ko" else "GIF settings applied.", false)
+		_set_status(_tr("gif_settings_applied"), false)
 
 
 func _on_gif_hover_all_pressed() -> void:
@@ -1594,10 +2123,7 @@ func _on_gif_hover_all_pressed() -> void:
 		_apply_gif_processing_settings_to_manager()
 	_save_ui_settings()
 	_refresh_gif_settings_ui()
-	if _locale == "ko":
-		_set_status("모든 GIF 카드가 마우스 오버/선택 시에만 재생됩니다." if next_enabled else "모든 GIF 카드가 항상 재생됩니다.", false)
-	else:
-		_set_status("All GIF cards now play only on hover/selection." if next_enabled else "All GIF cards now play normally.", false)
+	_set_status(_tr("gif_hover_all_on") if next_enabled else _tr("gif_hover_all_off"), false)
 
 
 func _on_gif_settings_changed(_value = null) -> void:
@@ -1650,8 +2176,8 @@ func _reapply_gif_settings_globally() -> void:
 	var manager = _manager()
 	if manager == null or !manager.has_method("rebuild_all_gif_overrides_with_current_settings"):
 		return
-	_set_busy(true, "GIF 설정 전체 적용 중..." if _locale == "ko" else "Applying GIF settings to all GIF cards...")
-	_show_progress(0, 1, "GIF 설정 적용 준비 중..." if _locale == "ko" else "Preparing GIF settings update...")
+	_set_busy(true, _tr("gif_settings_all_busy"))
+	_show_progress(0, 1, _tr("gif_settings_all_prepare"))
 	var progress_callback := Callable(self, "_on_import_progress")
 	var result = await manager.rebuild_all_gif_overrides_with_current_settings(progress_callback)
 	_hide_progress()
@@ -1701,39 +2227,39 @@ func _refresh_inspect_card_after_restore() -> void:
 
 func _on_choose_image_pressed() -> void:
 	if _current_source_path == "":
-		_set_status("No card art is selected.", true)
+		_set_status(_tr("no_card_art_selected_status"), true)
 		return
-	_set_status("Choose an image file to replace the current card art.", false)
+	_set_status(_tr("choose_image_status"), false)
 	_open_file_browser(FILE_DIALOG_MODE_UPLOAD)
 
 
 func _on_import_shared_pressed() -> void:
 	var manager = _manager()
 	if manager == null:
-		_set_status("The card art manager is not available.", true)
+		_set_status(_tr("manager_unavailable"), true)
 		return
-	_set_status("Choose a shared art pack file to import all card image changes.", false)
+	_set_status(_tr("choose_pack_status"), false)
 	_open_file_browser(FILE_DIALOG_MODE_IMPORT_PACK)
 
 
 func _on_import_mod_pressed() -> void:
 	var manager = _manager()
 	if manager == null:
-		_set_status("The card art manager is not available.", true)
+		_set_status(_tr("manager_unavailable"), true)
 		return
-	_set_status("Choose a mod PCK or manifest JSON file to import card images.", false)
+	_set_status(_tr("choose_mod_status"), false)
 	_open_file_browser(FILE_DIALOG_MODE_IMPORT_MOD)
 
 
 func _on_export_override_pressed() -> void:
 	var manager = _manager()
 	if manager == null:
-		_set_status("The card art manager is not available.", true)
+		_set_status(_tr("manager_unavailable"), true)
 		return
 	if manager.get_override_count() == 0:
-		_set_status("Apply at least one custom image first, then export the pack.", true)
+		_set_status(_tr("export_no_images_status"), true)
 		return
-	_set_status("Choose where to save a bundle with all current custom card images.", false)
+	_set_status(_tr("choose_export_pack_status"), false)
 	_configure_export_dialog(EXPORT_DIALOG_MODE_PACK)
 	_export_file_dialog.current_file = "card_art_bundle.cardartpack.json"
 	var export_dir = _get_saved_export_dir(EXPORT_DIALOG_MODE_PACK)
@@ -1745,12 +2271,12 @@ func _on_export_override_pressed() -> void:
 func _on_export_current_png_pressed() -> void:
 	var manager = _manager()
 	if manager == null:
-		_set_status("The card art manager is not available.", true)
+		_set_status(_tr("manager_unavailable"), true)
 		return
 	if _current_source_path == "":
-		_set_status("No card art is selected.", true)
+		_set_status(_tr("no_card_art_selected_status"), true)
 		return
-	_set_status("Choose where to save the current card image as a PNG.", false)
+	_set_status(_tr("choose_export_png_status"), false)
 	_configure_export_dialog(EXPORT_DIALOG_MODE_CURRENT_PNG)
 	_export_file_dialog.current_file = "%s.png" % _current_source_path.get_file().get_basename()
 	var export_dir = _get_saved_export_dir(EXPORT_DIALOG_MODE_CURRENT_PNG)
@@ -1828,14 +2354,14 @@ func _on_export_dialog_canceled() -> void:
 func _on_adjust_pressed() -> void:
 	var manager = _manager()
 	if manager == null:
-		_set_status("The card art manager is not available.", true)
+		_set_status(_tr("manager_unavailable"), true)
 		return
 	var source_path = _get_effective_source_path()
 	if source_path == "":
-		_set_status("No card art is selected.", true)
+		_set_status(_tr("no_card_art_selected_status"), true)
 		return
 	if !manager.can_adjust_override(source_path):
-		_set_status("The current custom image cannot be adjusted right now.", true)
+		_set_status(_tr("adjust_unavailable_status"), true)
 		return
 
 	_current_source_path = source_path
@@ -1843,7 +2369,7 @@ func _on_adjust_pressed() -> void:
 	_adjust_source_image = manager.get_adjustable_override_image(source_path)
 	if _adjust_source_image == null:
 		_adjust_source_path = ""
-		_set_status("The current custom image could not be prepared for adjustment.", true)
+		_set_status(_tr("adjust_prepare_error_status"), true)
 		return
 
 	var adjustment_state = manager.get_override_adjustment_state(source_path)
@@ -1880,8 +2406,8 @@ func _on_full_art_all_pressed() -> void:
 	var next_enabled = true
 	if manager.has_method("is_all_full_art_mode_enabled"):
 		next_enabled = !bool(manager.is_all_full_art_mode_enabled())
-	_set_busy(true, "모든 카드 풀아트 적용 중..." if _locale == "ko" else "Applying full art to all cards...")
-	_show_progress(0, 1, "모든 카드 풀아트 적용 준비 중..." if _locale == "ko" else "Preparing full-art update...")
+	_set_busy(true, _tr("full_art_all_busy"))
+	_show_progress(0, 1, _tr("full_art_all_prepare"))
 	var progress_callback := Callable(self, "_on_import_progress")
 	var result = await manager.set_all_full_art_mode_enabled(next_enabled, progress_callback)
 	_hide_progress()
@@ -1982,18 +2508,18 @@ func _on_art_pack_apply_all_pressed() -> void:
 		return
 	var selected_items = _art_pack_list.get_selected_items()
 	if selected_items.is_empty():
-		_set_status("적용할 아트팩을 먼저 선택하세요." if _locale == "ko" else "Select an art pack first.", true)
+		_set_status(_tr("select_art_pack_first"), true)
 		return
 	var selected_index = int(selected_items[0])
 	if selected_index < 0 or selected_index >= _art_pack_list_ids.size():
-		_set_status("적용할 아트팩을 먼저 선택하세요." if _locale == "ko" else "Select an art pack first.", true)
+		_set_status(_tr("select_art_pack_first"), true)
 		return
 	var pack_id = String(_art_pack_list_ids[selected_index])
 	if pack_id == "":
-		_set_status("적용할 아트팩을 먼저 선택하세요." if _locale == "ko" else "Select an art pack first.", true)
+		_set_status(_tr("select_art_pack_first"), true)
 		return
-	_set_busy(true, "아트팩 전체 적용 중..." if _locale == "ko" else "Applying art pack to all cards...")
-	_show_progress(0, 1, "아트팩 전체 적용 준비 중..." if _locale == "ko" else "Preparing art pack application...")
+	_set_busy(true, _tr("art_pack_apply_all_busy"))
+	_show_progress(0, 1, _tr("art_pack_apply_all_prepare"))
 	var progress_callback := Callable(self, "_on_import_progress")
 	var result = await manager.apply_art_pack_to_all(pack_id, progress_callback)
 	_hide_progress()
@@ -2012,18 +2538,18 @@ func _on_art_pack_apply_category_pressed() -> void:
 		return
 	var pack_id = _get_selected_art_pack_id()
 	if pack_id == "":
-		_set_status("적용할 아트팩을 먼저 선택하세요." if _locale == "ko" else "Select an art pack first.", true)
+		_set_status(_tr("select_art_pack_first"), true)
 		return
 	var selected_index = _art_pack_category_select.selected
 	if selected_index < 0 or selected_index >= _art_pack_category_ids.size():
-		_set_status("적용할 카테고리를 먼저 선택하세요." if _locale == "ko" else "Select a category first.", true)
+		_set_status(_tr("select_category_first"), true)
 		return
 	var category_id = String(_art_pack_category_ids[selected_index])
 	if category_id == "":
-		_set_status("적용할 카테고리를 먼저 선택하세요." if _locale == "ko" else "Select a category first.", true)
+		_set_status(_tr("select_category_first"), true)
 		return
-	_set_busy(true, "아트팩 카테고리 적용 중..." if _locale == "ko" else "Applying art pack category...")
-	_show_progress(0, 1, "아트팩 카테고리 적용 준비 중..." if _locale == "ko" else "Preparing category application...")
+	_set_busy(true, _tr("art_pack_apply_category_busy"))
+	_show_progress(0, 1, _tr("art_pack_apply_category_prepare"))
 	var progress_callback := Callable(self, "_on_import_progress")
 	var result = await manager.apply_art_pack_to_category(pack_id, category_id, progress_callback)
 	_hide_progress()
@@ -2038,15 +2564,15 @@ func _on_art_pack_remove_pressed() -> void:
 		return
 	var selected_items = _art_pack_list.get_selected_items()
 	if selected_items.is_empty():
-		_set_status("제거할 아트팩을 먼저 선택하세요." if _locale == "ko" else "Select an art pack to remove first.", true)
+		_set_status(_tr("select_art_pack_remove_first"), true)
 		return
 	var selected_index = int(selected_items[0])
 	if selected_index < 0 or selected_index >= _art_pack_list_ids.size():
-		_set_status("제거할 아트팩을 먼저 선택하세요." if _locale == "ko" else "Select an art pack to remove first.", true)
+		_set_status(_tr("select_art_pack_remove_first"), true)
 		return
 	var pack_id = String(_art_pack_list_ids[selected_index])
 	if pack_id == "":
-		_set_status("제거할 아트팩을 먼저 선택하세요." if _locale == "ko" else "Select an art pack to remove first.", true)
+		_set_status(_tr("select_art_pack_remove_first"), true)
 		return
 	var result = manager.remove_art_pack(pack_id)
 	_set_status(String(result.get("message", "Unknown art pack result.")), !bool(result.get("ok", false)))
@@ -2070,10 +2596,7 @@ func _on_infection_effect_pressed() -> void:
 	if screen != null and screen.has_method("UpdateCardDisplay"):
 		screen.call_deferred("UpdateCardDisplay")
 	_refresh_infection_effect_button()
-	if _locale == "ko":
-		_set_status("감염 테두리 이펙트를 숨겼습니다." if next_hidden_enabled else "감염 테두리 이펙트를 다시 표시합니다.", false)
-	else:
-		_set_status("Infection border effect hidden." if next_hidden_enabled else "Infection border effect shown.", false)
+	_set_status(_tr("infection_hidden") if next_hidden_enabled else _tr("infection_shown"), false)
 
 
 func _on_full_art_rarity_fire_pressed() -> void:
@@ -2083,7 +2606,7 @@ func _on_full_art_rarity_fire_pressed() -> void:
 		return
 	var source_path = _get_effective_source_path()
 	if source_path == "" or !_is_current_full_art_rarity_fire_supported_card():
-		_set_status("풀아트 가능한 카드에서만 사용할 수 있습니다." if _locale == "ko" else "This option is only available for full-art capable cards.", true)
+		_set_status(_tr("full_art_required"), true)
 		return
 	var current_enabled = bool(manager.is_full_art_rarity_fire_enabled_for_source(source_path)) if manager.has_method("is_full_art_rarity_fire_enabled_for_source") else _full_art_rarity_fire_enabled
 	var next_enabled = !current_enabled
@@ -2098,10 +2621,7 @@ func _on_full_art_rarity_fire_pressed() -> void:
 	if manager.has_method("refresh_all_portraits"):
 		manager.refresh_all_portraits()
 	_refresh_full_art_rarity_fire_button()
-	if _locale == "ko":
-		_set_status("이 카드의 풀아트 레어도 불꽃 색상을 켰습니다." if next_enabled else "이 카드의 풀아트 레어도 불꽃 색상을 껐습니다.", false)
-	else:
-		_set_status("Full-art rarity flame colors enabled for this card." if next_enabled else "Full-art rarity flame colors disabled for this card.", false)
+	_set_status(_tr("rarity_fire_card_on") if next_enabled else _tr("rarity_fire_card_off"), false)
 
 
 func _on_full_art_rarity_fire_all_pressed() -> void:
@@ -2126,10 +2646,7 @@ func _on_full_art_rarity_fire_all_pressed() -> void:
 	if manager.has_method("refresh_all_portraits"):
 		manager.refresh_all_portraits()
 	_refresh_full_art_rarity_fire_button()
-	if _locale == "ko":
-		_set_status("모든 카드의 풀아트 레어도 불꽃 색상을 켰습니다." if next_enabled else "모든 카드의 풀아트 레어도 불꽃 색상을 껐습니다.", false)
-	else:
-		_set_status("Full-art rarity flame colors enabled for all cards." if next_enabled else "Full-art rarity flame colors disabled for all cards.", false)
+	_set_status(_tr("rarity_fire_all_on") if next_enabled else _tr("rarity_fire_all_off"), false)
 
 
 func _on_reset_settings_pressed() -> void:
@@ -2165,10 +2682,7 @@ func _on_reset_settings_pressed() -> void:
 	_refresh_infection_effect_button()
 	_refresh_ancient_text_outside_button()
 	_refresh_settings_panel_visibility()
-	if _locale == "ko":
-		_set_status("설정을 기본값으로 초기화했습니다.", false)
-	else:
-		_set_status("Settings reset to defaults.", false)
+	_set_status(_tr("settings_reset_status"), false)
 
 
 func _on_ancient_text_outside_pressed() -> void:
@@ -2178,7 +2692,7 @@ func _on_ancient_text_outside_pressed() -> void:
 		return
 	var source_path = _get_effective_source_path()
 	if source_path == "" or !_is_current_ancient_text_outside_supported_card():
-		_set_status("풀아트 또는 고대 카드에서만 사용할 수 있습니다." if _locale == "ko" else "This option is only available for full-art or Ancient cards.", true)
+		_set_status(_tr("text_outside_required"), true)
 		return
 	var next_enabled = !bool(manager.is_ancient_text_outside_enabled(source_path))
 	manager.set_ancient_text_outside_enabled(source_path, next_enabled)
@@ -2192,10 +2706,7 @@ func _on_ancient_text_outside_pressed() -> void:
 	if manager.has_method("refresh_all_portraits"):
 		manager.refresh_all_portraits()
 	_refresh_ancient_text_outside_button()
-	if _locale == "ko":
-		_set_status("카드 텍스트를 밖으로 뺐습니다." if next_enabled else "카드 텍스트를 원위치로 되돌렸습니다.", false)
-	else:
-		_set_status("Card text moved outside." if next_enabled else "Card text restored.", false)
+	_set_status(_tr("text_outside_on") if next_enabled else _tr("text_outside_off"), false)
 
 
 func _on_adjust_preview_gui_input(event: InputEvent) -> void:
@@ -2231,7 +2742,7 @@ func _close_adjust_panel() -> void:
 	if _adjust_preview != null:
 		_adjust_preview.texture = null
 	if _adjust_preview_label != null:
-		_adjust_preview_label.text = "Drag the preview to reposition it. Use zoom to crop tighter."
+		_adjust_preview_label.text = _tr("adjust_hint")
 	_adjust_drag_active = false
 	_adjust_source_image = null
 	_adjust_source_path = ""
@@ -2280,13 +2791,16 @@ func _update_adjust_preview() -> void:
 	)
 	if preview_image == null:
 		_adjust_preview.texture = null
-		_adjust_preview_label.text = "미리보기를 만들지 못했습니다."
+		_adjust_preview_label.text = _tr("adjust_preview_error")
 		return
 	_adjust_preview.texture = ImageTexture.create_from_image(preview_image)
-	_adjust_preview_label.text = "Drag preview to reposition.\nZoom %d%% / X %d / Y %d" % [
-		int(_adjust_zoom_slider.value),
-		int(_adjust_x_slider.value),
-		int(_adjust_y_slider.value)
+	_adjust_preview_label.text = "%s\n%s" % [
+		_tr("adjust_hint"),
+		_tr("adjust_preview_format") % [
+			int(_adjust_zoom_slider.value),
+			int(_adjust_x_slider.value),
+			int(_adjust_y_slider.value)
+		]
 	]
 
 
@@ -2608,7 +3122,7 @@ func _configure_file_dialog() -> void:
 func _bind_signals() -> void:
 	_edit_art_button.pressed.connect(_on_edit_art_pressed)
 	_settings_button.pressed.connect(_on_settings_pressed)
-	_language_button.pressed.connect(_toggle_locale)
+	_language_button.pressed.connect(_on_language_pressed)
 	_gif_settings_button.pressed.connect(_on_gif_settings_pressed)
 	_close_button.pressed.connect(_on_close_pressed)
 	_restore_button.pressed.connect(_on_restore_pressed)
@@ -2773,7 +3287,7 @@ func _refresh_favorites_menu() -> void:
 	var popup = _favorites_menu_button.get_popup()
 	popup.clear()
 	if _favorite_dirs.is_empty():
-		popup.add_item("(empty)" if _locale == "en" else "(\uBE44\uC5B4 \uC788\uC74C)", -1)
+		popup.add_item(_tr("favorites_empty"), -1)
 		popup.set_item_disabled(0, true)
 		return
 	for index in range(_favorite_dirs.size()):
@@ -2783,15 +3297,15 @@ func _refresh_favorites_menu() -> void:
 func _on_favorite_add_pressed() -> void:
 	var normalized = _normalize_existing_dir(_browser_current_dir)
 	if normalized == "":
-		_set_status("No folder is open in the browser." if _locale == "en" else "현재 브라우저에서 열린 폴더가 없습니다.", true)
+		_set_status(_tr("favorite_no_folder"), true)
 		return
 	if _favorite_dirs.has(normalized):
-		_set_status("This folder is already in favorites." if _locale == "en" else "이미 즐겨찾기에 등록된 폴더입니다.", false)
+		_set_status(_tr("favorite_exists"), false)
 		return
 	_favorite_dirs.append(normalized)
 	_refresh_favorites_menu()
 	_save_ui_settings()
-	_set_status(("Added to favorites: %s" if _locale == "en" else "즐겨찾기에 추가됨: %s") % normalized, false)
+	_set_status(_tr("favorite_added_format") % normalized, false)
 
 
 func _on_favorite_menu_id_pressed(id: int) -> void:
@@ -2824,7 +3338,7 @@ func _open_file_browser(mode: String) -> void:
 	elif mode == FILE_DIALOG_MODE_IMPORT_PACK:
 		_file_browser_title.text = _tr("browser_title_pack")
 	else:
-		_file_browser_title.text = "Choose Mod PCK or Manifest"
+		_file_browser_title.text = _tr("browser_title_mod")
 	_file_browser_panel.show()
 	_file_browser_panel.move_to_front()
 	_refresh_favorites_menu()
@@ -2868,7 +3382,7 @@ func _clear_browser_population_queue() -> void:
 
 
 func _get_browser_loading_label() -> String:
-	return ("폴더 항목 불러오는 중... %d / %d" if _locale == "ko" else "Loading folder items... %d / %d") % [
+	return _tr("browser_loading_format") % [
 		_browser_pending_entry_index,
 		_browser_pending_total
 	]
@@ -2909,7 +3423,7 @@ func _refresh_file_browser(target_dir: String) -> void:
 	_clear_browser_population_queue()
 	var dir = DirAccess.open(target_dir)
 	if dir == null:
-		_set_status("해당 경로를 열 수 없습니다.", true)
+		_set_status(_tr("browser_open_path_error"), true)
 		return
 
 	_browser_current_dir = _normalize_existing_dir(target_dir)
@@ -2992,38 +3506,6 @@ func _on_browser_path_submitted(new_text: String) -> void:
 
 func _on_browser_item_selected(index: int) -> void:
 	_handle_browser_item_selected(index)
-	return
-	var entry = _browser_item_list.get_item_metadata(index)
-	if !(entry is Dictionary):
-		return
-	_browser_selected_path = String(entry.get("path", ""))
-	_browser_selection_is_dir = bool(entry.get("is_dir", false))
-	_browser_open_button.disabled = _browser_selected_path == ""
-	if _browser_selection_is_dir:
-		_browser_preview.texture = null
-		_browser_preview_label.text = "폴더를 열려면 아래 버튼을 누르거나 항목을 한 번 더 선택하세요.\n%s" % _browser_selected_path
-		return
-	if _file_dialog_mode == FILE_DIALOG_MODE_IMPORT_PACK:
-		_browser_preview.texture = null
-		_browser_preview_label.text = "선택한 아트팩 파일:\n%s" % _browser_selected_path.get_file()
-		return
-
-	var manager = _manager()
-	if manager == null:
-		return
-	var extension = _browser_selected_path.get_extension().to_lower()
-	var image = manager.load_first_gif_frame(_browser_selected_path) if extension == "gif" else manager.load_image_from_file(_browser_selected_path)
-	if image == null:
-		_browser_preview.texture = null
-		_browser_preview_label.text = "이미지를 미리보기로 불러올 수 없습니다."
-		return
-	_browser_preview.texture = ImageTexture.create_from_image(image)
-	_browser_preview_label.text = "%s\n%d x %d%s" % [
-		_browser_selected_path.get_file(),
-		image.get_width(),
-		image.get_height(),
-		_tr("browser_gif_preview") if extension == "gif" else ""
-	]
 
 
 func _handle_browser_item_selected(index: int) -> void:
@@ -3035,15 +3517,15 @@ func _handle_browser_item_selected(index: int) -> void:
 	_browser_open_button.disabled = _browser_selected_path == ""
 	if _browser_selection_is_dir:
 		_browser_preview.texture = null
-		_browser_preview_label.text = "Open this folder or select a file inside it.\n%s" % _browser_selected_path
+		_browser_preview_label.text = _tr("browser_directory_hint") % _browser_selected_path
 		return
 	if _file_dialog_mode == FILE_DIALOG_MODE_IMPORT_PACK:
 		_browser_preview.texture = null
-		_browser_preview_label.text = "Selected art pack:\n%s" % _browser_selected_path.get_file()
+		_browser_preview_label.text = _tr("browser_pack_hint") % _browser_selected_path.get_file()
 		return
 	if _file_dialog_mode == FILE_DIALOG_MODE_IMPORT_MOD:
 		_browser_preview.texture = null
-		_browser_preview_label.text = "Selected mod file:\n%s" % _browser_selected_path.get_file()
+		_browser_preview_label.text = _tr("browser_mod_hint") % _browser_selected_path.get_file()
 		return
 	var manager = _manager()
 	if manager == null:
@@ -3052,7 +3534,7 @@ func _handle_browser_item_selected(index: int) -> void:
 	var image = manager.load_first_gif_frame(_browser_selected_path) if extension == "gif" else manager.load_image_from_file(_browser_selected_path)
 	if image == null:
 		_browser_preview.texture = null
-		_browser_preview_label.text = "Could not load the image preview."
+		_browser_preview_label.text = _tr("browser_image_error")
 		return
 	_browser_preview.texture = ImageTexture.create_from_image(image)
 	_browser_preview_label.text = "%s\n%d x %d%s" % [
@@ -3077,7 +3559,7 @@ func _on_browser_open_pressed() -> void:
 				_browser_selected_path = String(entry.get("path", ""))
 				_browser_selection_is_dir = bool(entry.get("is_dir", false))
 	if _browser_selected_path == "":
-		_set_status("파일 브라우저에서 선택한 경로를 읽지 못했습니다. 항목을 한 번 클릭한 뒤 다시 열기를 눌러 주세요.", true)
+		_set_status(_tr("browser_open_selection_error"), true)
 		return
 	if _browser_selection_is_dir:
 		_refresh_file_browser(_browser_selected_path)
