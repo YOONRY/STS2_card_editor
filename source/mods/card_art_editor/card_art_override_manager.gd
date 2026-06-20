@@ -1382,10 +1382,9 @@ func get_source_path_for_texture_rect(texture_rect) -> String:
 func get_source_path_for_card_node(card_node) -> String:
 	if card_node == null:
 		return ""
-	if card_node.has_meta(META_INSPECT_SOURCE_PATH):
-		var inspect_source_path = _as_valid_card_art_source(String(card_node.get_meta(META_INSPECT_SOURCE_PATH, "")))
-		if inspect_source_path != "":
-			return inspect_source_path
+	var model_source_path = _get_model_or_inspect_source_path(card_node)
+	if model_source_path != "":
+		return model_source_path
 	var portrait_canvas_group = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup")
 	var ancient_portrait = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
 	var portrait = card_node.get_node_or_null("CardContainer/PortraitCanvasGroup/Portrait")
@@ -1409,13 +1408,6 @@ func get_source_path_for_card_node(card_node) -> String:
 			var full_art_owner = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
 			if full_art_owner != "":
 				return full_art_owner
-	var current = card_node
-	while current != null:
-		if current.has_meta(META_INSPECT_SOURCE_PATH):
-			var current_meta_source = _as_valid_card_art_source(String(current.get_meta(META_INSPECT_SOURCE_PATH, "")))
-			if current_meta_source != "":
-				return current_meta_source
-		current = current.get_parent()
 	if ancient_portrait is TextureRect:
 		return get_source_path_for_texture_rect(ancient_portrait)
 	if portrait is TextureRect:
@@ -1425,6 +1417,21 @@ func get_source_path_for_card_node(card_node) -> String:
 
 func get_source_path_for_model(model) -> String:
 	return _as_valid_card_art_source(_extract_model_portrait_path(model))
+
+
+func _get_model_or_inspect_source_path(node) -> String:
+	var ancestor = node
+	while ancestor != null:
+		var model = ancestor.get("Model")
+		var model_path = _as_valid_card_art_source(_extract_model_portrait_path(model))
+		if model_path != "":
+			return model_path
+		if ancestor.has_meta(META_INSPECT_SOURCE_PATH):
+			var inspect_source = _as_valid_card_art_source(String(ancestor.get_meta(META_INSPECT_SOURCE_PATH, "")))
+			if inspect_source != "":
+				return inspect_source
+		ancestor = ancestor.get_parent()
+	return ""
 
 
 func is_valid_card_source_path(source_path: String) -> bool:
@@ -1481,6 +1488,18 @@ func get_source_image(source_path: String):
 		return texture.get_image()
 
 	return null
+
+
+func _load_source_texture(source_path: String):
+	source_path = _as_valid_card_art_source(source_path)
+	if source_path == "":
+		return null
+	if source_path.begins_with("res://") and !ResourceLoader.exists(source_path):
+		return null
+	if source_path.begins_with("user://") and !FileAccess.file_exists(ProjectSettings.globalize_path(source_path)):
+		return null
+	var texture = load(source_path)
+	return texture if texture is Texture2D else null
 
 
 func export_source_image_to_png(source_path: String, export_path: String) -> Dictionary:
@@ -5533,6 +5552,9 @@ func _refresh_tracked_portraits(max_items: int = PORTRAIT_REFRESH_FRAME_BUDGET) 
 func _get_card_root_source_path(card_root) -> String:
 	if card_root == null:
 		return ""
+	var model_source_path = _get_model_or_inspect_source_path(card_root)
+	if model_source_path != "":
+		return model_source_path
 	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
 	var portrait = _find_named_descendant(card_root, "Portrait")
 	var ancient_visible = ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible
@@ -5545,13 +5567,6 @@ func _get_card_root_source_path(card_root) -> String:
 		var portrait_path = _resolve_texture_source_path(portrait, portrait.texture)
 		if portrait_path != "":
 			return portrait_path
-	var ancestor = card_root
-	while ancestor != null:
-		var model = ancestor.get("Model")
-		var model_path = _extract_model_portrait_path(model)
-		if model_path != "":
-			return model_path
-		ancestor = ancestor.get_parent()
 	var full_art_layer = _get_full_art_layer(card_root)
 	if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
 		var full_art_owner = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
@@ -5693,15 +5708,22 @@ func _refresh_portrait_node(texture_rect) -> void:
 			if owner_path != "" and owner_path != current_path:
 				_clear_custom_full_art_layer(current_root)
 		if stored_source_path != current_path:
+			var source_texture = _load_source_texture(current_path)
 			if String(texture_rect.name) == "Portrait":
 				_restore_full_art_state(texture_rect)
-			texture_rect.set_meta(META_SOURCE_PATH, current_path)
-			if current_texture is Texture2D:
+			if source_texture is Texture2D:
+				texture_rect.texture = source_texture
+				current_texture = source_texture
+				texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(source_texture.get_width(), source_texture.get_height()))
+				texture_rect.set_meta(META_ORIGINAL_TEXTURE, source_texture)
+			elif current_texture is Texture2D and !bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false)):
 				texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
 				texture_rect.set_meta(META_ORIGINAL_TEXTURE, current_texture)
+			texture_rect.set_meta(META_SOURCE_PATH, current_path)
 			texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+			texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
 			stored_source_path = current_path
-		elif current_texture is Texture2D and (!texture_rect.has_meta(META_ORIGINAL_TEXTURE) or bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))):
+		elif current_texture is Texture2D and !texture_rect.has_meta(META_ORIGINAL_TEXTURE) and !bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false)):
 			texture_rect.set_meta(META_ORIGINAL_TEXTURE, current_texture)
 			texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
 			texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
@@ -5878,7 +5900,11 @@ func _looks_like_card_art_source(path: String) -> bool:
 
 
 func _resolve_texture_source_path(texture_rect, current_texture: Texture2D) -> String:
-	var current_path = _normalize_source_path(String(current_texture.resource_path))
+	var model_source_path = _get_model_or_inspect_source_path(texture_rect)
+	if model_source_path != "":
+		return model_source_path
+
+	var current_path = _normalize_source_path(String(current_texture.resource_path)) if current_texture is Texture2D else ""
 	if current_path != "" and _looks_like_card_art_source(current_path):
 		return current_path
 

@@ -2424,20 +2424,19 @@ func _update_context(force_refresh: bool) -> void:
 	if screen != null:
 		var inspect_card = screen.get_node_or_null("Card")
 		if inspect_card != null:
-			var inspect_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/Portrait")
-			var inspect_ancient_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
-			if inspect_ancient_portrait is TextureRect and (inspect_ancient_portrait as CanvasItem).visible:
-				portrait_source_path = manager.get_source_path_for_texture_rect(inspect_ancient_portrait)
-				next_source_path = portrait_source_path
-			elif inspect_portrait is TextureRect and (inspect_portrait as CanvasItem).visible:
-				portrait_source_path = manager.get_source_path_for_texture_rect(inspect_portrait)
-				next_source_path = portrait_source_path
+			model_source_path = manager.get_source_path_for_model(inspect_card.get("Model"))
+			next_source_path = model_source_path
 			if next_source_path == "":
 				card_node_source_path = manager.get_source_path_for_card_node(inspect_card)
 				next_source_path = card_node_source_path
-			if next_source_path == "":
-				model_source_path = manager.get_source_path_for_model(inspect_card.get("Model"))
-				next_source_path = model_source_path
+			var inspect_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/Portrait")
+			var inspect_ancient_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
+			if next_source_path == "" and inspect_ancient_portrait is TextureRect and (inspect_ancient_portrait as CanvasItem).visible:
+				portrait_source_path = manager.get_source_path_for_texture_rect(inspect_ancient_portrait)
+				next_source_path = portrait_source_path
+			elif next_source_path == "" and inspect_portrait is TextureRect and (inspect_portrait as CanvasItem).visible:
+				portrait_source_path = manager.get_source_path_for_texture_rect(inspect_portrait)
+				next_source_path = portrait_source_path
 	if next_source_path == "":
 		var portrait = _get_active_portrait()
 		if portrait != null:
