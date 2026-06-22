@@ -39,7 +39,9 @@ const META_ORIGINAL_TEXTURE := "_card_art_original_texture"
 const META_OVERRIDE_ACTIVE := "_card_art_override_active"
 const META_FULL_ART_ACTIVE := "_card_art_full_art_active"
 const META_FULL_ART_OWNER_PATH := "_card_art_full_art_owner_path"
+const META_FULL_ART_OWNER_CARD_ID := "_card_art_full_art_owner_card_id"
 const META_INSPECT_SOURCE_PATH := "_card_art_inspect_source_path"
+const META_INSPECT_CARD_ID := "_card_art_inspect_card_id"
 const META_PORTRAIT_GROUP_ORIGINAL_MATERIAL := "_card_art_portrait_group_original_material"
 const META_ANCIENT_TEXT_LAYOUT_DEFAULTS := "_card_art_ancient_text_layout_defaults"
 const META_ANCIENT_TEXT_OUTSIDE_APPLIED := "_card_art_ancient_text_outside_applied"
@@ -1382,6 +1384,10 @@ func get_source_path_for_texture_rect(texture_rect) -> String:
 func get_source_path_for_card_node(card_node) -> String:
 	if card_node == null:
 		return ""
+	var card_root = card_node.get_node_or_null("CardContainer")
+	var active_full_art_owner = _get_current_card_active_full_art_owner_path(card_root)
+	if active_full_art_owner != "":
+		return active_full_art_owner
 	var model_source_path = _get_model_or_inspect_source_path(card_node)
 	if model_source_path != "":
 		return model_source_path
@@ -5042,6 +5048,60 @@ func _get_card_model_from_root(card_root):
 	return null
 
 
+func _get_card_id_from_model(model) -> String:
+	if model == null:
+		return ""
+	var id = model.get("Id")
+	if id != null:
+		var entry = String(id.get("Entry")).strip_edges()
+		if entry != "":
+			return entry
+	var type_name = String(model.get_class()).strip_edges()
+	return type_name
+
+
+func _get_card_id_from_ancestor(node) -> String:
+	var current = node
+	while current != null:
+		if current.has_meta(META_INSPECT_CARD_ID):
+			var inspect_card_id = String(current.get_meta(META_INSPECT_CARD_ID, "")).strip_edges()
+			if inspect_card_id != "":
+				return inspect_card_id
+		current = current.get_parent()
+	return ""
+
+
+func _get_card_root_card_id(card_root) -> String:
+	if card_root == null:
+		return ""
+	var ancestor_card_id = _get_card_id_from_ancestor(card_root)
+	if ancestor_card_id != "":
+		return ancestor_card_id
+	return _get_card_id_from_model(_get_card_model_from_root(card_root))
+
+
+func _is_custom_full_art_owner_current_card(card_root, full_art_layer) -> bool:
+	if card_root == null or !(full_art_layer is TextureRect):
+		return false
+	var owner_card_id = String((full_art_layer as TextureRect).get_meta(META_FULL_ART_OWNER_CARD_ID, "")).strip_edges()
+	var current_card_id = _get_card_root_card_id(card_root)
+	return owner_card_id != "" and current_card_id != "" and owner_card_id.to_upper() == current_card_id.to_upper()
+
+
+func _get_current_card_active_full_art_owner_path(card_root) -> String:
+	if card_root == null:
+		return ""
+	var full_art_layer = _get_full_art_layer(card_root)
+	if !(full_art_layer is TextureRect) or !bool((full_art_layer as TextureRect).get_meta(META_FULL_ART_ACTIVE, false)):
+		return ""
+	if !_is_custom_full_art_owner_current_card(card_root, full_art_layer):
+		return ""
+	var owner_path = _canonicalize_source_key(String((full_art_layer as TextureRect).get_meta(META_FULL_ART_OWNER_PATH, "")))
+	if owner_path == "" or !is_full_art_mode(owner_path):
+		return ""
+	return owner_path
+
+
 func _normalize_card_rarity_name(raw_value) -> String:
 	if raw_value == null:
 		return ""
@@ -5333,6 +5393,11 @@ func _apply_full_art_state(texture_rect, source_path: String, override_texture) 
 	layer.visible = true
 	layer.set_meta(META_FULL_ART_ACTIVE, true)
 	layer.set_meta(META_FULL_ART_OWNER_PATH, source_path)
+	var owner_card_id = _get_card_root_card_id(card_root)
+	if owner_card_id != "":
+		layer.set_meta(META_FULL_ART_OWNER_CARD_ID, owner_card_id)
+	else:
+		layer.remove_meta(META_FULL_ART_OWNER_CARD_ID)
 	_sync_active_custom_full_art_layer(card_root)
 	texture_rect.visible = false
 	texture_rect.self_modulate = Color(1, 1, 1, 0)
@@ -5384,6 +5449,7 @@ func _clear_custom_full_art_layer(card_root) -> void:
 		full_art_layer.texture = null
 		full_art_layer.set_meta(META_FULL_ART_ACTIVE, false)
 		full_art_layer.remove_meta(META_FULL_ART_OWNER_PATH)
+		full_art_layer.remove_meta(META_FULL_ART_OWNER_CARD_ID)
 	if portrait_canvas_group is CanvasItem:
 		portrait_canvas_group.visible = true
 	_restore_full_art_portrait_mask(portrait_canvas_group)
@@ -5449,6 +5515,7 @@ func _restore_full_art_state(texture_rect) -> void:
 		full_art_layer.texture = null
 		full_art_layer.set_meta(META_FULL_ART_ACTIVE, false)
 		full_art_layer.remove_meta(META_FULL_ART_OWNER_PATH)
+		full_art_layer.remove_meta(META_FULL_ART_OWNER_CARD_ID)
 	if portrait_canvas_group is CanvasItem:
 		portrait_canvas_group.visible = true
 	_restore_full_art_portrait_mask(portrait_canvas_group)
@@ -5552,6 +5619,9 @@ func _refresh_tracked_portraits(max_items: int = PORTRAIT_REFRESH_FRAME_BUDGET) 
 func _get_card_root_source_path(card_root) -> String:
 	if card_root == null:
 		return ""
+	var active_full_art_owner = _get_current_card_active_full_art_owner_path(card_root)
+	if active_full_art_owner != "":
+		return active_full_art_owner
 	var model_source_path = _get_model_or_inspect_source_path(card_root)
 	if model_source_path != "":
 		return model_source_path
@@ -5596,11 +5666,15 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 		texture_path = String(current_texture.resource_path)
 	var full_art_active := false
 	var full_art_owner := ""
+	var full_art_owner_card_id := ""
+	var card_root_card_id := ""
 	if card_root != null:
+		card_root_card_id = _get_card_root_card_id(card_root)
 		var full_art_layer = _get_full_art_layer(card_root)
 		if full_art_layer is TextureRect:
 			full_art_active = bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false))
 			full_art_owner = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
+			full_art_owner_card_id = String(full_art_layer.get_meta(META_FULL_ART_OWNER_CARD_ID, ""))
 	var tracked_source_path = current_path if current_path != "" else stored_source_path
 	var has_override_for_path = tracked_source_path != "" and _manifest.has(tracked_source_path)
 	var rarity_fire_source_path = full_art_owner if full_art_owner != "" else tracked_source_path
@@ -5629,8 +5703,10 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 		"frame_count": frame_count,
 		"portrait_visible": portrait_visible,
 		"ancient_visible": ancient_visible,
+		"card_id": card_root_card_id,
 		"full_art_active": full_art_active,
 		"full_art_owner": full_art_owner,
+		"full_art_owner_card_id": full_art_owner_card_id,
 		"full_art_rarity_fire_enabled": _full_art_rarity_fire_enabled,
 		"full_art_rarity_fire_source": rarity_fire_source_path,
 		"full_art_rarity_fire_source_enabled": is_full_art_rarity_fire_enabled_for_source(rarity_fire_source_path),
@@ -5710,7 +5786,10 @@ func _refresh_portrait_node(texture_rect) -> void:
 		if stored_source_path != current_path:
 			var source_texture = _load_source_texture(current_path)
 			if String(texture_rect.name) == "Portrait":
-				_restore_full_art_state(texture_rect)
+				if _get_current_card_active_full_art_owner_path(current_root) == current_path:
+					_enforce_custom_full_art_layer_visibility(current_root)
+				else:
+					_restore_full_art_state(texture_rect)
 			if source_texture is Texture2D:
 				texture_rect.texture = source_texture
 				current_texture = source_texture
@@ -5900,6 +5979,11 @@ func _looks_like_card_art_source(path: String) -> bool:
 
 
 func _resolve_texture_source_path(texture_rect, current_texture: Texture2D) -> String:
+	var card_root = _find_card_root(texture_rect)
+	var active_full_art_owner = _get_current_card_active_full_art_owner_path(card_root)
+	if active_full_art_owner != "":
+		return active_full_art_owner
+
 	var model_source_path = _get_model_or_inspect_source_path(texture_rect)
 	if model_source_path != "":
 		return model_source_path
