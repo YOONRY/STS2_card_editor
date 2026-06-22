@@ -62,7 +62,7 @@ const FULL_ART_INSET_STATIC := 0
 const FULL_ART_INSET_ANIMATED := 0
 const STARTUP_RESCAN_FRAMES := 45
 const STARTUP_RESCAN_STEP_INTERVAL := 45
-const PORTRAIT_REFRESH_FRAME_BUDGET := 24
+const PORTRAIT_REFRESH_FRAME_BUDGET := 12
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
 const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
@@ -5692,31 +5692,32 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 			var entry_frame_paths = entry.get("frame_paths", [])
 			if entry_frame_paths is Array:
 				frame_count = entry_frame_paths.size()
-	return JSON.stringify({
-		"node": node_name,
-		"tracked": tracked_source_path,
-		"stored": stored_source_path,
-		"override": has_override_for_path,
-		"mode": display_mode,
-		"entry_type": entry_type,
-		"entry_updated_at": entry_updated_at,
-		"frame_count": frame_count,
-		"portrait_visible": portrait_visible,
-		"ancient_visible": ancient_visible,
-		"card_id": card_root_card_id,
-		"full_art_active": full_art_active,
-		"full_art_owner": full_art_owner,
-		"full_art_owner_card_id": full_art_owner_card_id,
-		"full_art_rarity_fire_enabled": _full_art_rarity_fire_enabled,
-		"full_art_rarity_fire_source": rarity_fire_source_path,
-		"full_art_rarity_fire_source_enabled": is_full_art_rarity_fire_enabled_for_source(rarity_fire_source_path),
-		"gif_hover_playback_enabled": _is_gif_hover_playback_only_enabled(),
-		"gif_hover_playback_source": gif_hover_source_path,
-		"gif_hover_playback_source_enabled": is_gif_hover_playback_only_enabled_for_source(gif_hover_source_path),
-		"texture_path": texture_path,
-		"texture_size": [texture_size.x, texture_size.y],
-		"override_active": bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))
-	})
+	return "|".join([
+		node_name,
+		tracked_source_path,
+		stored_source_path,
+		"1" if has_override_for_path else "0",
+		display_mode,
+		entry_type,
+		entry_updated_at,
+		str(frame_count),
+		"1" if portrait_visible else "0",
+		"1" if ancient_visible else "0",
+		card_root_card_id,
+		"1" if full_art_active else "0",
+		full_art_owner,
+		full_art_owner_card_id,
+		"1" if _full_art_rarity_fire_enabled else "0",
+		rarity_fire_source_path,
+		"1" if is_full_art_rarity_fire_enabled_for_source(rarity_fire_source_path) else "0",
+		"1" if _is_gif_hover_playback_only_enabled() else "0",
+		gif_hover_source_path,
+		"1" if is_gif_hover_playback_only_enabled_for_source(gif_hover_source_path) else "0",
+		texture_path,
+		str(texture_size.x),
+		str(texture_size.y),
+		"1" if bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false)) else "0"
+	])
 
 
 func _refresh_portrait_node(texture_rect) -> void:
