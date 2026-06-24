@@ -660,8 +660,8 @@ func _rebuild_override_for_display_mode(source_path: String, display_mode: Strin
 		}
 
 	if _is_animated_entry(entry):
-		var source_frames = entry.get("source_frame_paths", entry.get("frame_paths", []))
-		var frame_delays = entry.get("frame_delays", [])
+		var source_frames = entry.get("source_animation_frame_paths", entry.get("source_frame_paths", entry.get("frame_paths", [])))
+		var frame_delays = entry.get("source_animation_frame_delays", entry.get("frame_delays", []))
 		if !(source_frames is Array) or source_frames.is_empty():
 			return {
 				"ok": false,
@@ -749,8 +749,8 @@ func get_adjustable_override_payload(source_path: String) -> Dictionary:
 	if _is_animated_entry(entry):
 		var images: Array = []
 		var delays: Array = []
-		var frame_paths = entry.get("source_frame_paths", entry.get("frame_paths", []))
-		var frame_delays = entry.get("frame_delays", [])
+		var frame_paths = entry.get("source_animation_frame_paths", entry.get("source_frame_paths", entry.get("frame_paths", [])))
+		var frame_delays = entry.get("source_animation_frame_delays", entry.get("frame_delays", []))
 		if !(frame_paths is Array):
 			return {}
 		for index in range(frame_paths.size()):
@@ -3078,7 +3078,7 @@ func save_adjusted_override(source_path: String, zoom: float, offset_x: float, o
 				"ok": false,
 				"message": "The adjusted GIF frames could not be generated."
 			}
-		var result = save_animated_override_images(source_path, adjusted_images, delays, get_display_mode(source_path))
+		var result = save_animated_override_images(source_path, adjusted_images, delays, get_display_mode(source_path), source_images)
 		if bool(result.get("ok", false)):
 			var entry = _manifest.get(source_path, null)
 			if entry is Dictionary:
@@ -3308,7 +3308,7 @@ func rebuild_all_gif_overrides_with_current_settings(progress_callback: Callable
 	}
 
 
-func save_animated_override_images(source_path: String, images: Array, delays: Array, display_mode: String = DISPLAY_MODE_DEFAULT) -> Dictionary:
+func save_animated_override_images(source_path: String, images: Array, delays: Array, display_mode: String = DISPLAY_MODE_DEFAULT, source_images: Array = []) -> Dictionary:
 	source_path = _canonicalize_source_key(source_path)
 	if source_path == "":
 		return {
@@ -3364,7 +3364,8 @@ func save_animated_override_images(source_path: String, images: Array, delays: A
 		var save_error = normalized_image.save_png(absolute_frame_path)
 		if save_error != OK:
 			continue
-		if source_image != null and source_image.save_png(absolute_source_frame_path) == OK:
+		var original_source_image = source_images[index] if index < source_images.size() and source_images[index] != null else source_image
+		if original_source_image != null and original_source_image.save_png(absolute_source_frame_path) == OK:
 			source_frame_paths.append(source_frame_path)
 		else:
 			source_frame_paths.append(frame_path)
@@ -4157,6 +4158,11 @@ func _sync_active_custom_full_art_layer(card_root) -> void:
 	var source_path = _canonicalize_source_key(String(layer.get_meta(META_FULL_ART_OWNER_PATH, "")))
 	if source_path == "":
 		return
+	if layer.texture == null:
+		var restored_texture = _get_override_texture(source_path, _should_animate_gif_card(card_root, source_path))
+		if restored_texture == null:
+			return
+		layer.texture = restored_texture
 	var entry = _manifest.get(source_path, null)
 	var full_art_inset = FULL_ART_INSET_ANIMATED if _is_animated_entry(entry) else FULL_ART_INSET_STATIC
 	_configure_full_art_layer(card_root, layer, full_art_inset)
@@ -4166,6 +4172,7 @@ func _sync_active_custom_full_art_layer(card_root) -> void:
 	layer.self_modulate = Color(1, 1, 1, 1)
 	layer.texture_repeat = CanvasItem.TEXTURE_REPEAT_DISABLED
 	_hide_base_portraits_for_custom_full_art(card_root)
+	_sync_full_art_fire_rarity_color(card_root, source_path)
 
 
 func _hide_base_portraits_for_custom_full_art(card_root) -> void:
@@ -4325,6 +4332,7 @@ func _enforce_custom_full_art_layer_visibility(card_root) -> void:
 		var visible_layer = _find_named_descendant(card_root, node_name)
 		if visible_layer is CanvasItem:
 			visible_layer.visible = true
+	_sync_full_art_fire_rarity_color(card_root)
 
 
 func _is_card_root_ancient_text_outside_eligible(card_root, source_path: String = "", is_ancient_layout := false) -> bool:
@@ -5102,6 +5110,26 @@ func _get_current_card_active_full_art_owner_path(card_root) -> String:
 	return owner_path
 
 
+func _is_full_art_layer_ready_for_source(card_root, source_path: String) -> bool:
+	if card_root == null:
+		return false
+	source_path = _canonicalize_source_key(source_path)
+	if source_path == "" or !is_full_art_mode(source_path):
+		return false
+	var full_art_layer = _get_full_art_layer(card_root)
+	if !(full_art_layer is TextureRect):
+		return false
+	var layer := full_art_layer as TextureRect
+	if !bool(layer.get_meta(META_FULL_ART_ACTIVE, false)):
+		return false
+	if _canonicalize_source_key(String(layer.get_meta(META_FULL_ART_OWNER_PATH, ""))) != source_path:
+		return false
+	var owner_card_id = String(layer.get_meta(META_FULL_ART_OWNER_CARD_ID, "")).strip_edges()
+	if owner_card_id != "" and !_is_custom_full_art_owner_current_card(card_root, layer):
+		return false
+	return layer.texture != null
+
+
 func _normalize_card_rarity_name(raw_value) -> String:
 	if raw_value == null:
 		return ""
@@ -5244,13 +5272,38 @@ func _apply_full_art_fire_rarity_color(card_root, source_path: String = "") -> v
 	var shader = _get_full_art_fire_shader()
 	if !(shader is Shader):
 		return
+	var canvas_item = fire as CanvasItem
+	var tint_color = _get_full_art_highlight_color_for_card(card_root)
+	var current_material = canvas_item.material
+	if current_material is ShaderMaterial and (current_material as ShaderMaterial).shader == shader:
+		var current_shader_material := current_material as ShaderMaterial
+		var current_tint = current_shader_material.get_shader_parameter("tint_color")
+		if !(current_tint is Color) or current_tint != tint_color:
+			current_shader_material.set_shader_parameter("tint_color", tint_color)
+		canvas_item.self_modulate = Color(1, 1, 1, 1)
+		canvas_item.visible = true
+		return
 	var material := ShaderMaterial.new()
 	material.shader = shader
-	material.set_shader_parameter("tint_color", _get_full_art_highlight_color_for_card(card_root))
-	var canvas_item = fire as CanvasItem
+	material.set_shader_parameter("tint_color", tint_color)
 	canvas_item.material = material
 	canvas_item.self_modulate = Color(1, 1, 1, 1)
 	canvas_item.visible = true
+
+
+func _sync_full_art_fire_rarity_color(card_root, source_path: String = "") -> void:
+	if card_root == null:
+		return
+	var resolved_source = _canonicalize_source_key(source_path)
+	if resolved_source == "":
+		resolved_source = _get_current_card_active_full_art_owner_path(card_root)
+	if resolved_source == "":
+		var full_art_layer = _get_full_art_layer(card_root)
+		if full_art_layer is TextureRect and bool((full_art_layer as TextureRect).get_meta(META_FULL_ART_ACTIVE, false)):
+			resolved_source = _canonicalize_source_key(String((full_art_layer as TextureRect).get_meta(META_FULL_ART_OWNER_PATH, "")))
+	if resolved_source == "" or !is_full_art_mode(resolved_source):
+		return
+	_apply_full_art_fire_rarity_color(card_root, resolved_source)
 
 
 func _get_effective_ancient_card_type_name(model) -> String:
@@ -5773,9 +5826,14 @@ func _refresh_portrait_node(texture_rect) -> void:
 	var stored_source_path = String(texture_rect.get_meta(META_SOURCE_PATH, ""))
 	var refresh_signature = _build_refresh_signature(texture_rect, current_texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible)
 	if String(texture_rect.get_meta(META_REFRESH_SIGNATURE, "")) == refresh_signature:
-		_sync_active_custom_full_art_layer(card_root)
-		_apply_ancient_text_outside_layout(card_root)
-		return
+		var expected_full_art_path = _canonicalize_source_key(current_path if current_path != "" else stored_source_path)
+		if node_name == "Portrait" and expected_full_art_path != "" and is_full_art_mode(expected_full_art_path) and !_is_full_art_layer_ready_for_source(card_root, expected_full_art_path):
+			texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
+		else:
+			_sync_active_custom_full_art_layer(card_root)
+			_enforce_custom_full_art_layer_visibility(card_root)
+			_apply_ancient_text_outside_layout(card_root)
+			return
 
 	if current_path != "" and _looks_like_card_art_source(current_path):
 		var current_root = _find_card_root(texture_rect)
@@ -5824,7 +5882,7 @@ func _refresh_portrait_node(texture_rect) -> void:
 			var current_portrait = _find_named_descendant(card_root, "Portrait")
 			var current_full_art_layer = _get_full_art_layer(card_root)
 			var current_full_art_active = current_full_art_layer is TextureRect and bool(current_full_art_layer.get_meta(META_FULL_ART_ACTIVE, false))
-			if current_portrait is CanvasItem and !(current_portrait as CanvasItem).visible and !current_full_art_active:
+			if current_portrait is CanvasItem and !(current_portrait as CanvasItem).visible and !current_full_art_active and display_mode != DISPLAY_MODE_FULL_ART:
 				return
 		if display_mode == DISPLAY_MODE_FULL_ART and node_name == "Portrait":
 			if _apply_full_art_state(texture_rect, stored_source_path, override_texture):
