@@ -63,6 +63,10 @@ const FULL_ART_INSET_ANIMATED := 0
 const STARTUP_RESCAN_FRAMES := 45
 const STARTUP_RESCAN_STEP_INTERVAL := 45
 const PORTRAIT_REFRESH_FRAME_BUDGET := 12
+const PORTRAIT_NAVIGATION_REFRESH_BUDGET := 72
+const PORTRAIT_NAVIGATION_REFRESH_FRAMES := 8
+const PORTRAIT_VISIBLE_REFRESH_INTERVAL := 0.05
+const PORTRAIT_VISIBLE_REFRESH_BUDGET := 18
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
 const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
@@ -91,8 +95,11 @@ var _full_art_rarity_fire_enabled := false
 var _full_art_rarity_fire_by_source := {}
 var _ancient_text_outside_by_source := {}
 var _needs_full_refresh := true
+var _portrait_navigation_refresh_frames_remaining := 0
 var _startup_rescan_tick := 0
 var _portrait_refresh_cursor := 0
+var _visible_portrait_refresh_accumulator := 0.0
+var _visible_portrait_refresh_cursor := 0
 var _gif_processing_settings := {
 	"use_cache": true,
 	"skip_duplicate_frames": true,
@@ -137,6 +144,8 @@ var _full_art_fire_shader = null
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# Let the game's card UI finish assigning portrait textures before we re-apply overrides.
+	process_priority = 1000
 	set_process_input(true)
 	_ensure_storage()
 	_load_persistent_preferences()
@@ -297,6 +306,16 @@ func _process(delta: float) -> void:
 			_gif_playback_refresh_accumulator = 0.0
 	else:
 		_clear_gif_playback_poll_state()
+	if _portrait_navigation_refresh_frames_remaining > 0:
+		_portrait_navigation_refresh_frames_remaining -= 1
+		_refresh_visible_tracked_portraits(PORTRAIT_NAVIGATION_REFRESH_BUDGET)
+	elif _should_poll_visible_portrait_refresh():
+		_visible_portrait_refresh_accumulator += delta
+		if _visible_portrait_refresh_accumulator >= PORTRAIT_VISIBLE_REFRESH_INTERVAL:
+			_visible_portrait_refresh_accumulator = 0.0
+			_refresh_visible_tracked_portraits(PORTRAIT_VISIBLE_REFRESH_BUDGET, true)
+	else:
+		_visible_portrait_refresh_accumulator = 0.0
 	if !_needs_full_refresh:
 		return
 	if REFRESH_INTERVAL <= 0.0:
@@ -332,6 +351,8 @@ func _input(event) -> void:
 		_track_ancient_text_hover_mouse_position(click_position)
 		_track_gif_hover_mouse_position(click_position)
 		if mouse_event.button_index != MOUSE_BUTTON_LEFT:
+			if mouse_event.button_index == MOUSE_BUTTON_WHEEL_UP or mouse_event.button_index == MOUSE_BUTTON_WHEEL_DOWN or mouse_event.button_index == MOUSE_BUTTON_WHEEL_LEFT or mouse_event.button_index == MOUSE_BUTTON_WHEEL_RIGHT:
+				_request_card_navigation_portrait_refresh()
 			_request_ancient_text_hover_refresh()
 			_request_gif_playback_refresh()
 			return
@@ -354,6 +375,7 @@ func _input(event) -> void:
 				_clear_pressed_gif_card()
 				call_deferred("_reset_ancient_text_drag_state")
 				return
+			_request_card_navigation_portrait_refresh()
 			_reset_ancient_text_drag_state()
 			_pending_ancient_text_click_position = click_position
 			if !_pending_ancient_text_click_from_hitbox:
@@ -3950,10 +3972,73 @@ func refresh_all_portraits() -> void:
 		_batch_refresh_requested = true
 		return
 	_portrait_refresh_cursor = 0
+	_visible_portrait_refresh_cursor = 0
 	_needs_full_refresh = true
 	_refresh_accumulator = REFRESH_INTERVAL
 	_request_ancient_text_hover_refresh(true)
 	_request_gif_playback_refresh(true)
+
+
+func _request_card_navigation_portrait_refresh() -> void:
+	if _manifest.is_empty():
+		return
+	_portrait_navigation_refresh_frames_remaining = max(_portrait_navigation_refresh_frames_remaining, PORTRAIT_NAVIGATION_REFRESH_FRAMES)
+	_needs_full_refresh = true
+	_refresh_accumulator = REFRESH_INTERVAL
+
+
+func _should_poll_visible_portrait_refresh() -> bool:
+	return !_manifest.is_empty() and !_portrait_refs.is_empty()
+
+
+func _refresh_visible_tracked_portraits(max_items: int = PORTRAIT_NAVIGATION_REFRESH_BUDGET, use_cursor: bool = false) -> void:
+	if max_items <= 0 or _portrait_refs.is_empty():
+		return
+	if use_cursor:
+		_refresh_visible_tracked_portraits_from_cursor(max_items)
+		return
+	var processed := 0
+	for index in range(_portrait_refs.size() - 1, -1, -1):
+		var texture_rect = _portrait_refs[index].get_ref()
+		if texture_rect == null:
+			_portrait_refs.remove_at(index)
+			continue
+		var card_root = _find_card_root(texture_rect)
+		if card_root == null or !is_instance_valid(card_root) or !_is_node_visible_in_tree(card_root):
+			continue
+		if texture_rect is CanvasItem and !(texture_rect as CanvasItem).is_visible_in_tree():
+			continue
+		_refresh_portrait_node(texture_rect)
+		processed += 1
+		if processed >= max_items:
+			break
+
+
+func _refresh_visible_tracked_portraits_from_cursor(max_items: int) -> void:
+	if max_items <= 0 or _portrait_refs.is_empty():
+		_visible_portrait_refresh_cursor = 0
+		return
+	var processed := 0
+	var scanned := 0
+	var scan_limit = min(_portrait_refs.size(), max(max_items * 4, max_items))
+	while processed < max_items and scanned < scan_limit and !_portrait_refs.is_empty():
+		if _visible_portrait_refresh_cursor >= _portrait_refs.size():
+			_visible_portrait_refresh_cursor = 0
+		var texture_rect = _portrait_refs[_visible_portrait_refresh_cursor].get_ref()
+		if texture_rect == null:
+			_portrait_refs.remove_at(_visible_portrait_refresh_cursor)
+			if _visible_portrait_refresh_cursor >= _portrait_refs.size():
+				_visible_portrait_refresh_cursor = 0
+			continue
+		_visible_portrait_refresh_cursor += 1
+		scanned += 1
+		var card_root = _find_card_root(texture_rect)
+		if card_root == null or !is_instance_valid(card_root) or !_is_node_visible_in_tree(card_root):
+			continue
+		if texture_rect is CanvasItem and !(texture_rect as CanvasItem).is_visible_in_tree():
+			continue
+		_refresh_portrait_node(texture_rect)
+		processed += 1
 
 
 func apply_override_to_texture_rect(texture_rect) -> void:
