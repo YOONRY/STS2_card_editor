@@ -1,12 +1,14 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Reflection;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Exceptions;
 using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 
 namespace CardArtEditorBootstrap;
@@ -23,8 +25,12 @@ public static class Bootstrap
     private const string OverlayScenePath = "res://mods/card_art_editor/inspect_card_art_editor.tscn";
     internal const string InspectSourcePathMeta = "_card_art_inspect_source_path";
     internal const string InspectCardIdMeta = "_card_art_inspect_card_id";
+    private const string HotRefreshTickMeta = "_card_art_hot_refresh_tick";
     private const string InfectionEffectSuppressedMeta = "_card_art_infection_effect_suppressed";
     private const string InfectionEffectOriginalVisibleMeta = "_card_art_infection_effect_original_visible";
+    private const long HotRefreshMinIntervalMs = 8;
+    private static Node? _pendingManager;
+    private static readonly Dictionary<Type, MemberInfo?> CardNodeMemberCache = new();
 
     public static void Init()
     {
@@ -81,7 +87,13 @@ public static class Bootstrap
         var existing = root.GetNodeOrNull<Node>(ManagerNodeName);
         if (existing is not null)
         {
+            _pendingManager = existing;
             return existing;
+        }
+
+        if (_pendingManager is not null && GodotObject.IsInstanceValid(_pendingManager))
+        {
+            return _pendingManager;
         }
 
         var script = ResourceLoader.Load(ManagerScriptPath) as GDScript;
@@ -109,6 +121,7 @@ public static class Bootstrap
         _loggedManagerLoadFailure = false;
         _loggedManagerInstantiateFailure = false;
         manager.Name = ManagerNodeName;
+        _pendingManager = manager;
         root.CallDeferred(Node.MethodName.AddChild, manager);
         Log("Manager node queued for add to /root.");
         return manager;
@@ -270,17 +283,7 @@ public static class Bootstrap
 
             UpdateInspectCardMetadataFromCard(card);
 
-            var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
-            if (portrait is not null)
-            {
-                manager.Call("apply_override_to_texture_rect", portrait);
-            }
-
-            var ancientPortrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/AncientPortrait");
-            if (ancientPortrait is not null)
-            {
-                manager.Call("apply_override_to_texture_rect", ancientPortrait);
-            }
+            ApplyOverridesToCardPortraits(manager, card);
 
             TrySuppressSpecialCardEffects(card);
         }
@@ -322,7 +325,7 @@ public static class Bootstrap
         }
     }
 
-    private static bool TryGetCardModel(NCard card, out CardModel? model)
+    private static bool TryGetCardModel(NCard card, out CardModel? model, bool logFailures = true)
     {
         model = null;
         try
@@ -332,12 +335,18 @@ public static class Bootstrap
         }
         catch (ModelNotFoundException ex)
         {
-            Log($"Skipping card '{card?.Name}' because model lookup failed: {ex.Message}");
+            if (logFailures)
+            {
+                Log($"Skipping card '{card?.Name}' because model lookup failed: {ex.Message}");
+            }
             return false;
         }
         catch (Exception ex)
         {
-            Log($"Unexpected card model lookup failure for '{card?.Name}': {ex}");
+            if (logFailures)
+            {
+                Log($"Unexpected card model lookup failure for '{card?.Name}': {ex}");
+            }
             return false;
         }
     }
@@ -423,6 +432,184 @@ public static class Bootstrap
         }
     }
 
+    private static void ApplyOverridesToCardPortraits(Node manager, NCard card)
+    {
+        var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
+        if (portrait is not null)
+        {
+            manager.Call("apply_override_to_texture_rect", portrait);
+        }
+
+        var ancientPortrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/AncientPortrait");
+        if (ancientPortrait is not null)
+        {
+            manager.Call("apply_override_to_texture_rect", ancientPortrait);
+        }
+    }
+
+    private static bool ShouldSkipHotRefresh(NCard card)
+    {
+        var now = (long)Time.GetTicksMsec();
+        if (card.HasMeta(HotRefreshTickMeta))
+        {
+            var lastValue = card.GetMeta(HotRefreshTickMeta);
+            var last = lastValue.VariantType == Variant.Type.Int ? lastValue.AsInt64() : 0L;
+            if (last > 0 && now - last < HotRefreshMinIntervalMs)
+            {
+                return true;
+            }
+        }
+
+        card.SetMeta(HotRefreshTickMeta, now);
+        return false;
+    }
+
+    internal static void RefreshCardOverridesAfterGameVisualUpdate(NCard card)
+    {
+        try
+        {
+            if (card is null || !GodotObject.IsInstanceValid(card))
+            {
+                return;
+            }
+
+            var manager = TryEnsureManager();
+            if (manager is null)
+            {
+                return;
+            }
+
+            if (!TryGetCardModel(card, out var model, false) || model is null)
+            {
+                return;
+            }
+
+            var sourcePath = model.PortraitPath ?? string.Empty;
+            if (string.IsNullOrEmpty(sourcePath) || !manager.Call("has_override", sourcePath).AsBool())
+            {
+                return;
+            }
+
+            if (ShouldSkipHotRefresh(card))
+            {
+                return;
+            }
+
+            card.SetMeta(InspectSourcePathMeta, sourcePath);
+            card.SetMeta(InspectCardIdMeta, model.Id.Entry ?? string.Empty);
+            ApplyOverridesToCardPortraits(manager, card);
+        }
+        catch (Exception ex)
+        {
+            Log("RefreshCardOverridesAfterGameVisualUpdate failed: " + ex);
+        }
+    }
+
+    private static NCard? TryAsValidCard(object? value)
+    {
+        if (value is NCard card && GodotObject.IsInstanceValid(card))
+        {
+            return card;
+        }
+
+        return null;
+    }
+
+    internal static NCard? TryFindCardNode(object? source)
+    {
+        try
+        {
+            if (source is null)
+            {
+                return null;
+            }
+
+            var directCard = TryAsValidCard(source);
+            if (directCard is not null)
+            {
+                return directCard;
+            }
+
+            var type = source.GetType();
+            if (!CardNodeMemberCache.TryGetValue(type, out var member))
+            {
+                member = ResolveCardNodeMember(type);
+                CardNodeMemberCache[type] = member;
+            }
+
+            return TryGetCardFromMember(source, member);
+        }
+        catch (Exception ex)
+        {
+            Log("TryFindCardNode failed: " + ex);
+            return null;
+        }
+    }
+
+    private static MemberInfo? ResolveCardNodeMember(Type type)
+    {
+        const BindingFlags flags =
+            BindingFlags.Public |
+            BindingFlags.NonPublic |
+            BindingFlags.Instance;
+
+        foreach (var memberName in new[] { "CardNode", "_cardNode", "cardNode", "Card", "_card", "card" })
+        {
+            var property = type.GetProperty(memberName, flags);
+            if (property is not null && property.GetIndexParameters().Length == 0 && typeof(NCard).IsAssignableFrom(property.PropertyType))
+            {
+                return property;
+            }
+
+            var field = type.GetField(memberName, flags);
+            if (field is not null && typeof(NCard).IsAssignableFrom(field.FieldType))
+            {
+                return field;
+            }
+        }
+
+        foreach (var property in type.GetProperties(flags))
+        {
+            if (property.GetIndexParameters().Length == 0 && typeof(NCard).IsAssignableFrom(property.PropertyType))
+            {
+                return property;
+            }
+        }
+
+        foreach (var field in type.GetFields(flags))
+        {
+            if (typeof(NCard).IsAssignableFrom(field.FieldType))
+            {
+                return field;
+            }
+        }
+
+        return null;
+    }
+
+    private static NCard? TryGetCardFromMember(object source, MemberInfo? member)
+    {
+        if (member is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return member switch
+            {
+                PropertyInfo property => TryAsValidCard(property.GetValue(source)),
+                FieldInfo field => TryAsValidCard(field.GetValue(source)),
+                _ => null
+            };
+        }
+        catch (Exception ex)
+        {
+            Log("TryGetCardFromMember failed: " + ex);
+            return null;
+        }
+    }
+
     private static string DescribeNodePath(Node node)
     {
         try
@@ -489,5 +676,27 @@ internal static class NCardReloadPatch
     private static void Postfix(NCard __instance)
     {
         Bootstrap.RefreshCardOverrides(__instance);
+    }
+}
+
+[HarmonyPatch(typeof(NCard), "UpdatePortrait")]
+internal static class NCardUpdatePortraitPatch
+{
+    private static void Postfix(NCard __instance)
+    {
+        Bootstrap.RefreshCardOverridesAfterGameVisualUpdate(__instance);
+    }
+}
+
+[HarmonyPatch(typeof(NCardPlayQueue), "UpdateCardVisuals")]
+internal static class NCardPlayQueueUpdateCardVisualsPatch
+{
+    private static void Postfix(object __0)
+    {
+        var cardNode = Bootstrap.TryFindCardNode(__0);
+        if (cardNode is not null)
+        {
+            Bootstrap.RefreshCardOverridesAfterGameVisualUpdate(cardNode);
+        }
     }
 }
