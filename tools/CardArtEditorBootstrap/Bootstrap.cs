@@ -38,6 +38,7 @@ public static class Bootstrap
         {
             Log("Init start.");
             Harmony.PatchAll(typeof(Bootstrap).Assembly);
+            PatchOptionalCardVisualHooks();
             TryEnsureManager();
             TryAttachToOpenInspectScreens();
             Log("Init complete.");
@@ -46,6 +47,87 @@ public static class Bootstrap
         {
             Log("Init failed: " + ex);
             GD.PushError($"CardArtEditor: bootstrap failed: {ex}");
+        }
+    }
+
+    private static void PatchOptionalCardVisualHooks()
+    {
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "ReassignToCard", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "SetCard", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "OnCardReassigned", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Multiplayer.NMultiplayerCardIntent", "_Ready", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyPowerVfx", "Create", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyPowerVfx", "_Ready", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyVfx", "Create", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyVfx", "_Ready", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.Cards.NCardExhaustQuickVfx", "Create", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.Cards.NCardExhaustVfx", "Create", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardSmithVfx", "Create", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardSmithVfx", "_Ready", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardEnchantVfx", "_Ready", nameof(RefreshCardOwnerPostfix));
+    }
+
+    private static void TryPatchOptionalPostfix(string typeName, string methodName, string postfixName)
+    {
+        try
+        {
+            var type = AccessTools.TypeByName(typeName);
+            if (type is null)
+            {
+                Log($"Optional patch skipped: type not found {typeName}.");
+                return;
+            }
+
+            const BindingFlags flags =
+                BindingFlags.Public |
+                BindingFlags.NonPublic |
+                BindingFlags.Instance |
+                BindingFlags.Static |
+                BindingFlags.DeclaredOnly;
+            MethodInfo? target = null;
+            var matchCount = 0;
+            foreach (var method in type.GetMethods(flags))
+            {
+                if (!string.Equals(method.Name, methodName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                target = method;
+                matchCount++;
+            }
+
+            if (target is null)
+            {
+                Log($"Optional patch skipped: method not found {typeName}.{methodName}.");
+                return;
+            }
+
+            if (matchCount != 1)
+            {
+                Log($"Optional patch skipped: ambiguous method {typeName}.{methodName} ({matchCount} matches).");
+                return;
+            }
+
+            if (target.IsAbstract)
+            {
+                Log($"Optional patch skipped: abstract method {typeName}.{methodName}.");
+                return;
+            }
+
+            var postfix = typeof(Bootstrap).GetMethod(postfixName, BindingFlags.NonPublic | BindingFlags.Static);
+            if (postfix is null)
+            {
+                Log($"Optional patch skipped: postfix not found {postfixName}.");
+                return;
+            }
+
+            Harmony.Patch(target, postfix: new HarmonyMethod(postfix));
+            Log($"Optional patch applied: {typeName}.{methodName}.");
+        }
+        catch (Exception ex)
+        {
+            Log($"Optional patch failed for {typeName}.{methodName}: {ex}");
         }
     }
 
@@ -447,6 +529,21 @@ public static class Bootstrap
         }
     }
 
+    private static void ApplyOverridesToCardPortraitsDeferred(Node manager, NCard card)
+    {
+        var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
+        if (portrait is not null)
+        {
+            manager.CallDeferred("apply_override_to_texture_rect", portrait);
+        }
+
+        var ancientPortrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/AncientPortrait");
+        if (ancientPortrait is not null)
+        {
+            manager.CallDeferred("apply_override_to_texture_rect", ancientPortrait);
+        }
+    }
+
     private static bool ShouldSkipHotRefresh(NCard card)
     {
         var now = (long)Time.GetTicksMsec();
@@ -464,7 +561,7 @@ public static class Bootstrap
         return false;
     }
 
-    internal static void RefreshCardOverridesAfterGameVisualUpdate(NCard card)
+    internal static void RefreshCardOverridesAfterGameVisualUpdate(NCard card, bool force = false, bool alsoDeferred = false)
     {
         try
         {
@@ -490,7 +587,7 @@ public static class Bootstrap
                 return;
             }
 
-            if (ShouldSkipHotRefresh(card))
+            if (!force && ShouldSkipHotRefresh(card))
             {
                 return;
             }
@@ -498,6 +595,10 @@ public static class Bootstrap
             card.SetMeta(InspectSourcePathMeta, sourcePath);
             card.SetMeta(InspectCardIdMeta, model.Id.Entry ?? string.Empty);
             ApplyOverridesToCardPortraits(manager, card);
+            if (alsoDeferred)
+            {
+                ApplyOverridesToCardPortraitsDeferred(manager, card);
+            }
         }
         catch (Exception ex)
         {
@@ -510,6 +611,42 @@ public static class Bootstrap
         if (value is NCard card && GodotObject.IsInstanceValid(card))
         {
             return card;
+        }
+
+        return null;
+    }
+
+    private static NCard? TryFindCardNodeInTree(Node node)
+    {
+        var visited = 0;
+        return TryFindCardNodeInTree(node, ref visited);
+    }
+
+    private static NCard? TryFindCardNodeInTree(Node node, ref int visited)
+    {
+        if (!GodotObject.IsInstanceValid(node) || visited >= 96)
+        {
+            return null;
+        }
+
+        visited++;
+        if (node is NCard card && GodotObject.IsInstanceValid(card))
+        {
+            return card;
+        }
+
+        foreach (var child in node.GetChildren())
+        {
+            if (child is not Node childNode)
+            {
+                continue;
+            }
+
+            var found = TryFindCardNodeInTree(childNode, ref visited);
+            if (found is not null)
+            {
+                return found;
+            }
         }
 
         return null;
@@ -537,7 +674,13 @@ public static class Bootstrap
                 CardNodeMemberCache[type] = member;
             }
 
-            return TryGetCardFromMember(source, member);
+            var cardFromMember = TryGetCardFromMember(source, member);
+            if (cardFromMember is not null)
+            {
+                return cardFromMember;
+            }
+
+            return source is Node node ? TryFindCardNodeInTree(node) : null;
         }
         catch (Exception ex)
         {
@@ -608,6 +751,20 @@ public static class Bootstrap
             Log("TryGetCardFromMember failed: " + ex);
             return null;
         }
+    }
+
+    private static void RefreshCardOwner(object? source, bool force, bool alsoDeferred)
+    {
+        var cardNode = TryFindCardNode(source);
+        if (cardNode is not null)
+        {
+            RefreshCardOverridesAfterGameVisualUpdate(cardNode, force, alsoDeferred);
+        }
+    }
+
+    private static void RefreshCardOwnerPostfix(object __instance)
+    {
+        RefreshCardOwner(__instance, true, true);
     }
 
     private static string DescribeNodePath(Node node)
@@ -684,7 +841,7 @@ internal static class NCardUpdatePortraitPatch
 {
     private static void Postfix(NCard __instance)
     {
-        Bootstrap.RefreshCardOverridesAfterGameVisualUpdate(__instance);
+        Bootstrap.RefreshCardOverridesAfterGameVisualUpdate(__instance, false, false);
     }
 }
 
@@ -696,7 +853,7 @@ internal static class NCardPlayQueueUpdateCardVisualsPatch
         var cardNode = Bootstrap.TryFindCardNode(__0);
         if (cardNode is not null)
         {
-            Bootstrap.RefreshCardOverridesAfterGameVisualUpdate(cardNode);
+            Bootstrap.RefreshCardOverridesAfterGameVisualUpdate(cardNode, true, true);
         }
     }
 }
