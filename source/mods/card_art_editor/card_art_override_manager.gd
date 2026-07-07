@@ -69,7 +69,6 @@ const PORTRAIT_NAVIGATION_REFRESH_BUDGET := 72
 const PORTRAIT_NAVIGATION_REFRESH_FRAMES := 8
 const PORTRAIT_VISIBLE_REFRESH_INTERVAL := 0.05
 const PORTRAIT_VISIBLE_REFRESH_BUDGET := 18
-const PORTRAIT_VISIBLE_REFRESH_BURST_ROUNDS := 8
 const MODEL_PORTRAIT_PATH_CACHE_LIMIT := 2048
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
@@ -104,7 +103,6 @@ var _startup_rescan_tick := 0
 var _portrait_refresh_cursor := 0
 var _visible_portrait_refresh_accumulator := 0.0
 var _visible_portrait_refresh_cursor := 0
-var _visible_portrait_refresh_rounds_remaining := 0
 var _gif_processing_settings := {
 	"use_cache": true,
 	"skip_duplicate_frames": true,
@@ -319,7 +317,6 @@ func _process(delta: float) -> void:
 		_visible_portrait_refresh_accumulator += delta
 		if _visible_portrait_refresh_accumulator >= PORTRAIT_VISIBLE_REFRESH_INTERVAL:
 			_visible_portrait_refresh_accumulator = 0.0
-			_visible_portrait_refresh_rounds_remaining -= 1
 			_refresh_visible_tracked_portraits(PORTRAIT_VISIBLE_REFRESH_BUDGET, true)
 	else:
 		_visible_portrait_refresh_accumulator = 0.0
@@ -4009,32 +4006,20 @@ func refresh_all_portraits() -> void:
 	_visible_portrait_refresh_cursor = 0
 	_needs_full_refresh = true
 	_refresh_accumulator = REFRESH_INTERVAL
-	_request_visible_portrait_refresh(PORTRAIT_VISIBLE_REFRESH_BURST_ROUNDS, true)
 	_request_ancient_text_hover_refresh(true)
 	_request_gif_playback_refresh(true)
-
-
-func _request_visible_portrait_refresh(rounds: int = PORTRAIT_VISIBLE_REFRESH_BURST_ROUNDS, reset_cursor: bool = false) -> void:
-	if _manifest.is_empty():
-		return
-	# Avoid always-on polling; burst refreshes catch delayed game-side texture resets.
-	_visible_portrait_refresh_rounds_remaining = max(_visible_portrait_refresh_rounds_remaining, max(1, rounds))
-	if reset_cursor:
-		_visible_portrait_refresh_cursor = 0
-	_visible_portrait_refresh_accumulator = PORTRAIT_VISIBLE_REFRESH_INTERVAL
 
 
 func _request_card_navigation_portrait_refresh() -> void:
 	if _manifest.is_empty():
 		return
 	_portrait_navigation_refresh_frames_remaining = max(_portrait_navigation_refresh_frames_remaining, PORTRAIT_NAVIGATION_REFRESH_FRAMES)
-	_request_visible_portrait_refresh(PORTRAIT_VISIBLE_REFRESH_BURST_ROUNDS, true)
 	_needs_full_refresh = true
 	_refresh_accumulator = REFRESH_INTERVAL
 
 
 func _should_poll_visible_portrait_refresh() -> bool:
-	return _visible_portrait_refresh_rounds_remaining > 0 and !_manifest.is_empty() and !_portrait_refs.is_empty()
+	return !_manifest.is_empty() and !_portrait_refs.is_empty()
 
 
 func _refresh_visible_tracked_portraits(max_items: int = PORTRAIT_NAVIGATION_REFRESH_BUDGET, use_cursor: bool = false) -> void:
@@ -5761,7 +5746,6 @@ func _track_portrait(texture_rect, defer_refresh: bool = false) -> void:
 	if card_root != null:
 		_track_ancient_text_card_hitbox(card_root)
 	_needs_full_refresh = true
-	_request_visible_portrait_refresh(PORTRAIT_VISIBLE_REFRESH_BURST_ROUNDS)
 	if defer_refresh:
 		_refresh_accumulator = REFRESH_INTERVAL
 		_request_ancient_text_hover_refresh(true)
