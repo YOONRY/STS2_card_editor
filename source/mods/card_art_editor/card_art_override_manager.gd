@@ -16,12 +16,14 @@ const PICTURES_EXTRACT_SUBDIR := "card_art_editor_extracted"
 const BUNDLE_VERSION := 1
 const MANAGED_TEXTURE_PREFIX := "res://images/packed/card_portraits/"
 const CARD_ATLAS_PREFIX := "res://images/atlases/card_atlas.sprites/"
+const MODDED_CARD_ATLAS_SEGMENT := "/images/atlases/card_atlas.sprites/"
 const DEFAULT_LANDSCAPE_SIZE := Vector2i(1000, 760)
 const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
 const FULL_ART_TARGET_SIZE := Vector2i(600, 847)
 const MOD_IMPORT_IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
 const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "defect", "colorless", "status", "token", "curse", "event", "necrobinder"]
-const ART_PACK_CATEGORY_SORT_ORDER := ["ironclad", "silent", "regent", "necrobinder", "defect", "colorless", "curse", "status", "token", "event", "seeker", "other"]
+const MODDED_CARD_PORTRAIT_FOLDERS := ["guardian", "hermit", "champ", "snecko", "automaton", "awakened", "collector", "slimeboss", "gremlins", "hexaghost", "downfall"]
+const ART_PACK_CATEGORY_SORT_ORDER := ["ironclad", "silent", "regent", "necrobinder", "defect", "colorless", "curse", "status", "token", "event", "seeker", "guardian", "hermit", "champ", "snecko", "automaton", "awakened", "collector", "slimeboss", "gremlins", "hexaghost", "downfall", "other"]
 const REFRESH_INTERVAL := 0.15
 const DISPLAY_MODE_DEFAULT := "default"
 const DISPLAY_MODE_FULL_ART := "full_art"
@@ -67,6 +69,7 @@ const PORTRAIT_NAVIGATION_REFRESH_BUDGET := 72
 const PORTRAIT_NAVIGATION_REFRESH_FRAMES := 8
 const PORTRAIT_VISIBLE_REFRESH_INTERVAL := 0.05
 const PORTRAIT_VISIBLE_REFRESH_BUDGET := 18
+const MODEL_PORTRAIT_PATH_CACHE_LIMIT := 2048
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
 const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
@@ -115,6 +118,7 @@ var _batch_refresh_requested := false
 var _batch_art_packs_changed := false
 var _batched_override_sources := {}
 var _managed_source_index_cache: Dictionary = {}
+var _model_portrait_path_cache: Dictionary = {}
 var _art_pack_variants_cache: Dictionary = {}
 var _ancient_text_hover_tip: Control
 var _ancient_text_hover_tip_title
@@ -1181,6 +1185,11 @@ func _normalize_art_pack_category_id(category_id: String) -> String:
 	return _safe_file_stem(category_id).to_lower()
 
 
+func _is_known_art_pack_category_id(category_id: String) -> bool:
+	category_id = _normalize_art_pack_category_id(category_id)
+	return CARD_PORTRAIT_FOLDERS.has(category_id) or MODDED_CARD_PORTRAIT_FOLDERS.has(category_id)
+
+
 func _get_art_pack_category_id_for_source(source_path: String) -> String:
 	var normalized = _canonicalize_source_key(source_path).replace("\\", "/").to_lower()
 	if normalized == "":
@@ -1193,7 +1202,7 @@ func _get_art_pack_category_id_for_source(source_path: String) -> String:
 				return folder
 	for part in parts:
 		var category_id = _normalize_art_pack_category_id(String(part))
-		if CARD_PORTRAIT_FOLDERS.has(category_id):
+		if _is_known_art_pack_category_id(category_id):
 			return category_id
 	return "other"
 
@@ -1222,6 +1231,28 @@ func _get_art_pack_category_display_name(category_id: String) -> String:
 			return "Event"
 		"necrobinder":
 			return "Necrobinder"
+		"guardian":
+			return "Guardian"
+		"hermit":
+			return "Hermit"
+		"champ":
+			return "Champ"
+		"snecko":
+			return "Snecko"
+		"automaton":
+			return "Automaton"
+		"awakened":
+			return "Awakened"
+		"collector":
+			return "Collector"
+		"slimeboss":
+			return "Slime Boss"
+		"gremlins":
+			return "Gremlins"
+		"hexaghost":
+			return "Hexaghost"
+		"downfall":
+			return "Downfall"
 		_:
 			return "Other"
 
@@ -6105,10 +6136,29 @@ func _is_portrait_node(node) -> bool:
 	return node_name == "Portrait" or node_name == "AncientPortrait"
 
 
+func _looks_like_modded_card_atlas_source(path: String) -> bool:
+	var normalized = path.replace("\\", "/").to_lower()
+	return normalized.begins_with("res://") and normalized.contains(MODDED_CARD_ATLAS_SEGMENT) and normalized.ends_with(".tres")
+
+
+func _looks_like_modded_card_portrait_image_source(path: String) -> bool:
+	var normalized = path.replace("\\", "/").to_lower()
+	return (
+		normalized.begins_with("res://")
+		and !normalized.begins_with(MANAGED_TEXTURE_PREFIX)
+		and normalized.contains("/images/card_portraits/")
+		and MOD_IMPORT_IMAGE_EXTENSIONS.has(normalized.get_extension())
+	)
+
+
 func _looks_like_card_art_source(path: String) -> bool:
 	if path == "":
 		return false
 	if path.begins_with(MANAGED_TEXTURE_PREFIX) or path.begins_with(CARD_ATLAS_PREFIX):
+		return true
+	if _looks_like_modded_card_atlas_source(path):
+		return true
+	if _looks_like_modded_card_portrait_image_source(path):
 		return true
 	if path.begins_with("res://") and (
 		path.contains("/card_portraits/")
@@ -6156,14 +6206,40 @@ func _resolve_texture_source_path(texture_rect, current_texture: Texture2D) -> S
 	return current_path if current_path != "" and _looks_like_card_art_source(current_path) else ""
 
 
+func _get_model_portrait_path_cache_key(model) -> String:
+	if model == null or !(model is Object) or !is_instance_valid(model):
+		return ""
+	return str(model.get_instance_id())
+
+
+func _remember_model_portrait_path(cache_key: String, source_path: String) -> void:
+	if cache_key == "" or source_path == "":
+		return
+	if _model_portrait_path_cache.size() >= MODEL_PORTRAIT_PATH_CACHE_LIMIT:
+		_model_portrait_path_cache.clear()
+	_model_portrait_path_cache[cache_key] = source_path
+
+
 func _extract_model_portrait_path(model) -> String:
 	if model == null:
 		return ""
+
+	var cache_key = _get_model_portrait_path_cache_key(model)
+	if cache_key != "" and _model_portrait_path_cache.has(cache_key):
+		return String(_model_portrait_path_cache[cache_key])
+
+	var custom_portrait_path_variant = model.get("CustomPortraitPath")
+	if custom_portrait_path_variant != null:
+		var custom_portrait_path = _normalize_source_path(String(custom_portrait_path_variant))
+		if custom_portrait_path != "" and _looks_like_card_art_source(custom_portrait_path):
+			_remember_model_portrait_path(cache_key, custom_portrait_path)
+			return custom_portrait_path
 
 	var portrait_path_variant = model.get("PortraitPath")
 	if portrait_path_variant != null:
 		var portrait_path = _normalize_source_path(String(portrait_path_variant))
 		if portrait_path != "" and _looks_like_card_art_source(portrait_path):
+			_remember_model_portrait_path(cache_key, portrait_path)
 			return portrait_path
 
 	var all_portrait_paths = model.get("AllPortraitPaths")
@@ -6171,6 +6247,7 @@ func _extract_model_portrait_path(model) -> String:
 		for portrait_entry in all_portrait_paths:
 			var normalized_path = _normalize_source_path(String(portrait_entry))
 			if normalized_path != "" and _looks_like_card_art_source(normalized_path):
+				_remember_model_portrait_path(cache_key, normalized_path)
 				return normalized_path
 
 	return ""
@@ -6186,6 +6263,9 @@ func _normalize_source_path(path: String) -> String:
 		var res_candidate = "res://%s" % path.trim_prefix("/")
 		if ResourceLoader.exists(res_candidate):
 			path = res_candidate
+
+	if _looks_like_modded_card_portrait_image_source(path):
+		return path
 
 	if path.begins_with(MANAGED_TEXTURE_PREFIX):
 		var canonical_managed_path = _canonicalize_managed_card_source_path(path)
@@ -6308,6 +6388,8 @@ func _is_manifest_source_still_valid(source_path: String) -> bool:
 	if _is_invalid_source_path_text(source_path):
 		return false
 	if source_path.begins_with(MANAGED_TEXTURE_PREFIX) or source_path.begins_with(CARD_ATLAS_PREFIX):
+		return true
+	if _looks_like_modded_card_atlas_source(source_path):
 		return true
 	if source_path.begins_with("res://"):
 		return ResourceLoader.exists(source_path)

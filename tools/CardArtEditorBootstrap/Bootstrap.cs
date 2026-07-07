@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Modding;
@@ -25,12 +26,16 @@ public static class Bootstrap
     private const string OverlayScenePath = "res://mods/card_art_editor/inspect_card_art_editor.tscn";
     internal const string InspectSourcePathMeta = "_card_art_inspect_source_path";
     internal const string InspectCardIdMeta = "_card_art_inspect_card_id";
+    private const string CachedPortraitPathMeta = "_card_art_cached_portrait_path";
+    private const string CachedPortraitCardIdMeta = "_card_art_cached_portrait_card_id";
+    private const string CachedPortraitModelKeyMeta = "_card_art_cached_portrait_model_key";
     private const string HotRefreshTickMeta = "_card_art_hot_refresh_tick";
     private const string InfectionEffectSuppressedMeta = "_card_art_infection_effect_suppressed";
     private const string InfectionEffectOriginalVisibleMeta = "_card_art_infection_effect_original_visible";
     private const long HotRefreshMinIntervalMs = 8;
     private static Node? _pendingManager;
     private static readonly Dictionary<Type, MemberInfo?> CardNodeMemberCache = new();
+    private static readonly Dictionary<Type, PropertyInfo?> CustomPortraitPathPropertyCache = new();
 
     public static void Init()
     {
@@ -328,13 +333,15 @@ public static class Bootstrap
 
             if (!TryGetCardModel(card, out var model) || model is null)
             {
+                ClearCachedPortraitPath(card);
                 card.SetMeta(InspectSourcePathMeta, string.Empty);
                 card.SetMeta(InspectCardIdMeta, string.Empty);
                 return;
             }
 
-            card.SetMeta(InspectSourcePathMeta, model.PortraitPath ?? string.Empty);
-            card.SetMeta(InspectCardIdMeta, model.Id.Entry ?? string.Empty);
+            var cardId = GetCardId(model);
+            card.SetMeta(InspectSourcePathMeta, GetCachedPortraitPath(card, model, cardId));
+            card.SetMeta(InspectCardIdMeta, cardId);
         }
         catch (Exception ex)
         {
@@ -433,6 +440,94 @@ public static class Bootstrap
         }
     }
 
+    private static string GetCardId(CardModel model)
+    {
+        return model.Id.Entry ?? string.Empty;
+    }
+
+    private static long GetModelCacheKey(CardModel model)
+    {
+        return RuntimeHelpers.GetHashCode(model);
+    }
+
+    private static void ClearCachedPortraitPath(NCard card)
+    {
+        if (card.HasMeta(CachedPortraitPathMeta))
+        {
+            card.RemoveMeta(CachedPortraitPathMeta);
+        }
+
+        if (card.HasMeta(CachedPortraitCardIdMeta))
+        {
+            card.RemoveMeta(CachedPortraitCardIdMeta);
+        }
+
+        if (card.HasMeta(CachedPortraitModelKeyMeta))
+        {
+            card.RemoveMeta(CachedPortraitModelKeyMeta);
+        }
+    }
+
+    private static string GetCachedPortraitPath(NCard card, CardModel model, string cardId)
+    {
+        var modelKey = GetModelCacheKey(model);
+        if (card.HasMeta(CachedPortraitPathMeta) &&
+            card.HasMeta(CachedPortraitCardIdMeta) &&
+            card.HasMeta(CachedPortraitModelKeyMeta))
+        {
+            var cachedCardId = card.GetMeta(CachedPortraitCardIdMeta).AsString();
+            var cachedModelKey = card.GetMeta(CachedPortraitModelKeyMeta).AsInt64();
+            if (string.Equals(cachedCardId, cardId, StringComparison.Ordinal) && cachedModelKey == modelKey)
+            {
+                return card.GetMeta(CachedPortraitPathMeta).AsString();
+            }
+        }
+
+        var sourcePath = GetPreferredPortraitPath(model);
+        card.SetMeta(CachedPortraitPathMeta, sourcePath);
+        card.SetMeta(CachedPortraitCardIdMeta, cardId);
+        card.SetMeta(CachedPortraitModelKeyMeta, modelKey);
+        return sourcePath;
+    }
+
+    private static string GetPreferredPortraitPath(CardModel model)
+    {
+        var customPortraitPath = TryGetCustomPortraitPath(model);
+        if (!string.IsNullOrEmpty(customPortraitPath))
+        {
+            return customPortraitPath;
+        }
+
+        return model.PortraitPath ?? string.Empty;
+    }
+
+    private static string TryGetCustomPortraitPath(CardModel model)
+    {
+        try
+        {
+            var type = model.GetType();
+            if (!CustomPortraitPathPropertyCache.TryGetValue(type, out var property))
+            {
+                property = type.GetProperty(
+                    "CustomPortraitPath",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance
+                );
+                CustomPortraitPathPropertyCache[type] = property;
+            }
+
+            if (property is null || property.PropertyType != typeof(string))
+            {
+                return string.Empty;
+            }
+
+            return property.GetValue(model) as string ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     private static void UpdateInspectCardMetadataFromCard(NCard card)
     {
         try
@@ -444,13 +539,15 @@ public static class Bootstrap
 
             if (!TryGetCardModel(card, out var model) || model is null)
             {
+                ClearCachedPortraitPath(card);
                 card.SetMeta(InspectSourcePathMeta, string.Empty);
                 card.SetMeta(InspectCardIdMeta, string.Empty);
                 return;
             }
 
-            card.SetMeta(InspectSourcePathMeta, model.PortraitPath ?? string.Empty);
-            card.SetMeta(InspectCardIdMeta, model.Id.Entry ?? string.Empty);
+            var cardId = GetCardId(model);
+            card.SetMeta(InspectSourcePathMeta, GetCachedPortraitPath(card, model, cardId));
+            card.SetMeta(InspectCardIdMeta, cardId);
         }
         catch (Exception ex)
         {
@@ -581,7 +678,8 @@ public static class Bootstrap
                 return;
             }
 
-            var sourcePath = model.PortraitPath ?? string.Empty;
+            var cardId = GetCardId(model);
+            var sourcePath = GetCachedPortraitPath(card, model, cardId);
             if (string.IsNullOrEmpty(sourcePath) || !manager.Call("has_override", sourcePath).AsBool())
             {
                 return;
@@ -593,7 +691,7 @@ public static class Bootstrap
             }
 
             card.SetMeta(InspectSourcePathMeta, sourcePath);
-            card.SetMeta(InspectCardIdMeta, model.Id.Entry ?? string.Empty);
+            card.SetMeta(InspectCardIdMeta, cardId);
             ApplyOverridesToCardPortraits(manager, card);
             if (alsoDeferred)
             {
