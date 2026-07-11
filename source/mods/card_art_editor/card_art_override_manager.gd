@@ -17,6 +17,7 @@ const BUNDLE_VERSION := 1
 const MANAGED_TEXTURE_PREFIX := "res://images/packed/card_portraits/"
 const CARD_ATLAS_PREFIX := "res://images/atlases/card_atlas.sprites/"
 const MODDED_CARD_ATLAS_SEGMENT := "/images/atlases/card_atlas.sprites/"
+const MODDED_CARD_IMAGE_SEGMENTS := ["/images/card_portraits/", "/images/cards/"]
 const DEFAULT_LANDSCAPE_SIZE := Vector2i(1000, 760)
 const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
 const FULL_ART_TARGET_SIZE := Vector2i(600, 847)
@@ -6143,12 +6144,14 @@ func _looks_like_modded_card_atlas_source(path: String) -> bool:
 
 func _looks_like_modded_card_portrait_image_source(path: String) -> bool:
 	var normalized = path.replace("\\", "/").to_lower()
-	return (
-		normalized.begins_with("res://")
-		and !normalized.begins_with(MANAGED_TEXTURE_PREFIX)
-		and normalized.contains("/images/card_portraits/")
-		and MOD_IMPORT_IMAGE_EXTENSIONS.has(normalized.get_extension())
-	)
+	if !normalized.begins_with("res://") or normalized.begins_with(MANAGED_TEXTURE_PREFIX):
+		return false
+	if !MOD_IMPORT_IMAGE_EXTENSIONS.has(normalized.get_extension()):
+		return false
+	for segment in MODDED_CARD_IMAGE_SEGMENTS:
+		if normalized.contains(segment):
+			return true
+	return false
 
 
 func _looks_like_card_art_source(path: String) -> bool:
@@ -6390,6 +6393,8 @@ func _is_manifest_source_still_valid(source_path: String) -> bool:
 	if source_path.begins_with(MANAGED_TEXTURE_PREFIX) or source_path.begins_with(CARD_ATLAS_PREFIX):
 		return true
 	if _looks_like_modded_card_atlas_source(source_path):
+		return true
+	if _looks_like_modded_card_portrait_image_source(source_path):
 		return true
 	if source_path.begins_with("res://"):
 		return ResourceLoader.exists(source_path)
