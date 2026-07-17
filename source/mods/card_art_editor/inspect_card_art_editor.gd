@@ -95,11 +95,16 @@ const TRANSLATIONS := {
 		"gif_use_frame_limit": "프레임 제한 사용",
 		"gif_hover_all_enable": "모든 카드 마우스 오버시 GIF 재생 켜기",
 		"gif_hover_all_disable": "모든 카드 마우스 오버시 GIF 재생 끄기",
-		"art_pack_list": "적용된 아트팩 목록",
+		"art_pack_list": "등록된 아트팩 목록",
 		"art_pack_apply_category": "선택 팩 카테고리 적용",
 		"art_pack_current_variant": "현재 카드 아트팩 선택",
 		"art_pack_remove": "목록에서 제거",
 		"art_pack_apply_all": "선택 팩 전체 적용",
+		"art_pack_scan_workshop": "창작마당 아트팩 스캔",
+		"art_pack_scan_busy": "창작마당 아트팩 스캔 중...",
+		"art_pack_scan_prepare": "Steam 창작마당 경로 확인 중...",
+		"art_pack_scan_result": "아트팩 스캔 완료: 새로 등록 %d개, 건너뜀 %d개, 실패 %d개.",
+		"art_pack_scan_no_root": "Steam 창작마당 콘텐츠 폴더를 찾지 못했습니다.",
 		"art_pack_apply_selected_category": "선택 카테고리 적용",
 		"art_pack_no_categories": "선택 가능한 카테고리 없음",
 		"art_pack_no_variants": "선택 가능한 아트팩 없음",
@@ -232,6 +237,11 @@ const TRANSLATIONS := {
 		"art_pack_current_variant": "Current Card Art Pack",
 		"art_pack_remove": "Remove",
 		"art_pack_apply_all": "Apply Pack to All",
+		"art_pack_scan_workshop": "Scan Workshop Art Packs",
+		"art_pack_scan_busy": "Scanning Steam Workshop art packs...",
+		"art_pack_scan_prepare": "Checking the Steam Workshop folder...",
+		"art_pack_scan_result": "Art Pack scan complete: %d registered, %d skipped, %d failed.",
+		"art_pack_scan_no_root": "The Steam Workshop content folder could not be found.",
 		"art_pack_apply_selected_category": "Apply Category",
 		"art_pack_no_categories": "No categories",
 		"art_pack_no_variants": "No art pack variants",
@@ -364,6 +374,11 @@ const TRANSLATIONS := {
 		"art_pack_current_variant": "当前卡牌美术包",
 		"art_pack_remove": "移除",
 		"art_pack_apply_all": "应用到全部",
+		"art_pack_scan_workshop": "扫描创意工坊美术包",
+		"art_pack_scan_busy": "正在扫描 Steam 创意工坊美术包...",
+		"art_pack_scan_prepare": "正在检查 Steam 创意工坊目录...",
+		"art_pack_scan_result": "美术包扫描完成：新注册 %d 个，跳过 %d 个，失败 %d 个。",
+		"art_pack_scan_no_root": "找不到 Steam 创意工坊内容文件夹。",
 		"art_pack_apply_selected_category": "应用分类",
 		"art_pack_no_categories": "没有可用分类",
 		"art_pack_no_variants": "没有可用美术包版本",
@@ -496,6 +511,11 @@ const TRANSLATIONS := {
 		"art_pack_current_variant": "現在のカードのアートパック",
 		"art_pack_remove": "削除",
 		"art_pack_apply_all": "すべてに適用",
+		"art_pack_scan_workshop": "ワークショップのアートパックをスキャン",
+		"art_pack_scan_busy": "Steam ワークショップのアートパックをスキャン中...",
+		"art_pack_scan_prepare": "Steam ワークショップフォルダーを確認中...",
+		"art_pack_scan_result": "アートパックのスキャン完了：新規登録 %d 件、スキップ %d 件、失敗 %d 件。",
+		"art_pack_scan_no_root": "Steam ワークショップのコンテンツフォルダーが見つかりません。",
 		"art_pack_apply_selected_category": "カテゴリを適用",
 		"art_pack_no_categories": "利用可能なカテゴリなし",
 		"art_pack_no_variants": "利用可能なアートパックなし",
@@ -646,6 +666,7 @@ var _progress_bar: ProgressBar
 var _art_pack_panel: PanelContainer
 var _art_pack_list_label: Label
 var _art_pack_list: ItemList
+var _art_pack_workshop_scan_button: Button
 var _art_pack_apply_all_button: Button
 var _art_pack_remove_button: Button
 var _art_pack_category_label: Label
@@ -1669,11 +1690,126 @@ func _make_adjust_slider_row(label_text: String, slider_property: String, min_va
 	return row
 
 
+func _make_ui_style(background: Color, border: Color, radius: int = 8, border_width: int = 1, horizontal_padding: float = 10.0, vertical_padding: float = 6.0) -> StyleBoxFlat:
+	var style = StyleBoxFlat.new()
+	style.bg_color = background
+	style.border_color = border
+	style.border_width_left = border_width
+	style.border_width_top = border_width
+	style.border_width_right = border_width
+	style.border_width_bottom = border_width
+	style.corner_radius_top_left = radius
+	style.corner_radius_top_right = radius
+	style.corner_radius_bottom_left = radius
+	style.corner_radius_bottom_right = radius
+	style.content_margin_left = horizontal_padding
+	style.content_margin_right = horizontal_padding
+	style.content_margin_top = vertical_padding
+	style.content_margin_bottom = vertical_padding
+	return style
+
+
+
+func _style_editor_button(button: Button, _primary: bool = false) -> void:
+	var normal_background = Color(0.075, 0.08, 0.09, 0.82)
+	var normal_border = Color(0.20, 0.55, 0.88, 1.0)
+	var hover_background = Color(0.08, 0.18, 0.27, 0.92)
+	var pressed_background = Color(0.07, 0.26, 0.44, 0.95)
+	button.add_theme_stylebox_override("normal", _make_ui_style(normal_background, normal_border, 7, 1, 11, 6))
+	button.add_theme_stylebox_override("hover", _make_ui_style(hover_background, Color(0.32, 0.68, 1.0, 1.0), 7, 2, 11, 5))
+	button.add_theme_stylebox_override("pressed", _make_ui_style(pressed_background, Color(0.50, 0.78, 1.0, 1.0), 7, 2, 11, 5))
+	button.add_theme_stylebox_override("disabled", _make_ui_style(Color(0.09, 0.095, 0.105, 1.0), Color(0.20, 0.22, 0.25, 1.0), 7, 1, 11, 6))
+	button.add_theme_stylebox_override("focus", _make_ui_style(Color(0, 0, 0, 0), Color(0.38, 0.70, 1.0, 1.0), 7, 2, 0, 0))
+	button.add_theme_color_override("font_color", Color(0.94, 0.96, 0.99, 1.0))
+	button.add_theme_color_override("font_hover_color", Color.WHITE)
+	button.add_theme_color_override("font_pressed_color", Color.WHITE)
+	button.add_theme_color_override("font_disabled_color", Color(0.40, 0.42, 0.46, 1.0))
+	button.custom_minimum_size = Vector2(button.custom_minimum_size.x, max(button.custom_minimum_size.y, 34.0))
+
+
+func _style_editor_item_list(item_list: ItemList) -> void:
+	item_list.add_theme_stylebox_override("panel", _make_ui_style(Color(0.025, 0.03, 0.04, 0.84), Color(0.15, 0.36, 0.58, 1.0), 8, 1, 7, 7))
+	item_list.add_theme_stylebox_override("selected", _make_ui_style(Color(0.07, 0.27, 0.46, 1.0), Color(0.25, 0.62, 0.96, 1.0), 5, 1, 5, 3))
+	item_list.add_theme_stylebox_override("selected_focus", _make_ui_style(Color(0.08, 0.32, 0.55, 1.0), Color(0.42, 0.74, 1.0, 1.0), 5, 2, 5, 2))
+	item_list.add_theme_stylebox_override("hovered", _make_ui_style(Color(0.10, 0.17, 0.24, 1.0), Color(0.20, 0.48, 0.75, 1.0), 5, 1, 5, 3))
+	item_list.add_theme_color_override("font_color", Color(0.88, 0.90, 0.94, 1.0))
+	item_list.add_theme_color_override("font_selected_color", Color.WHITE)
+
+
+func _style_editor_text_input(control: Control) -> void:
+	control.add_theme_stylebox_override("normal", _make_ui_style(Color(0.04, 0.045, 0.055, 0.84), Color(0.15, 0.36, 0.58, 1.0), 7, 1, 9, 6))
+	control.add_theme_stylebox_override("focus", _make_ui_style(Color(0.055, 0.07, 0.085, 0.92), Color(0.32, 0.68, 1.0, 1.0), 7, 2, 8, 5))
+	control.add_theme_color_override("font_color", Color(0.94, 0.95, 0.97, 1.0))
+	control.add_theme_color_override("font_placeholder_color", Color(0.46, 0.49, 0.54, 1.0))
+	control.add_theme_color_override("caret_color", Color(0.45, 0.76, 1.0, 1.0))
+	control.add_theme_color_override("selection_color", Color(0.08, 0.33, 0.56, 0.90))
+
+
+func _style_editor_tab_container(tab_container: TabContainer) -> void:
+	tab_container.add_theme_stylebox_override("panel", _make_ui_style(Color(0.055, 0.06, 0.07, 0.76), Color(0.14, 0.39, 0.64, 1.0), 9, 1, 12, 10))
+	var flat_tab_style = _make_ui_style(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, 0, 10, 5)
+	tab_container.add_theme_stylebox_override("tab_selected", flat_tab_style)
+	tab_container.add_theme_stylebox_override("tab_unselected", flat_tab_style)
+	tab_container.add_theme_stylebox_override("tab_hovered", flat_tab_style)
+	tab_container.add_theme_color_override("font_selected_color", Color(0.92, 0.94, 0.97, 1.0))
+	tab_container.add_theme_color_override("font_unselected_color", Color(0.66, 0.68, 0.72, 1.0))
+	tab_container.add_theme_color_override("font_hovered_color", Color(0.92, 0.94, 0.97, 1.0))
+	tab_container.focus_mode = Control.FOCUS_NONE
+	var tab_bar = tab_container.get_tab_bar()
+	if tab_bar != null:
+		tab_bar.focus_mode = Control.FOCUS_NONE
+		tab_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+
+func _style_editor_control_tree(root: Node) -> void:
+	for child in root.get_children():
+		if child is Button and !(child is CheckBox) and !(child is CheckButton):
+			_style_editor_button(child as Button)
+		elif child is ItemList:
+			_style_editor_item_list(child as ItemList)
+		elif child is LineEdit or child is TextEdit:
+			_style_editor_text_input(child as Control)
+		elif child is TabContainer:
+			_style_editor_tab_container(child as TabContainer)
+		_style_editor_control_tree(child)
+
+
+func _apply_editor_visual_theme() -> void:
+	_editor_popup.add_theme_stylebox_override("panel", _make_ui_style(Color(0.035, 0.04, 0.05, 0.88), Color(0.18, 0.49, 0.78, 1.0), 12, 2, 0, 0))
+	_file_browser_panel.add_theme_stylebox_override("panel", _make_ui_style(Color(0.035, 0.04, 0.05, 0.90), Color(0.18, 0.49, 0.78, 1.0), 12, 2, 0, 0))
+	if _art_pack_panel != null:
+		_art_pack_panel.add_theme_stylebox_override("panel", _make_ui_style(Color(0.055, 0.06, 0.07, 0.76), Color(0.15, 0.42, 0.69, 1.0), 9, 1, 0, 0))
+	for floating_panel in [_language_panel, _settings_panel, _adjust_panel, _gif_settings_popup]:
+		if floating_panel is PanelContainer:
+			floating_panel.add_theme_stylebox_override("panel", _make_ui_style(Color(0.04, 0.045, 0.055, 0.92), Color(0.18, 0.49, 0.78, 1.0), 10, 2, 0, 0))
+	_style_editor_control_tree(_editor_popup)
+	_style_editor_control_tree(_file_browser_panel)
+	for floating_panel in [_language_panel, _settings_panel, _adjust_panel, _gif_settings_popup]:
+		if floating_panel is Control:
+			_style_editor_control_tree(floating_panel)
+	for primary_button in [_choose_image_button, _art_pack_workshop_scan_button, _art_pack_apply_all_button, _art_pack_apply_category_button, _art_pack_apply_button, _adjust_apply_button, _gif_settings_apply_button]:
+		if primary_button is Button:
+			_style_editor_button(primary_button as Button, true)
+	_title_label.add_theme_color_override("font_color", Color(0.96, 0.97, 0.99, 1.0))
+	_title_label.add_theme_font_size_override("font_size", 22)
+	_current_card_label.add_theme_color_override("font_color", Color(0.83, 0.85, 0.89, 1.0))
+	_hint_label.add_theme_color_override("font_color", Color(0.67, 0.69, 0.73, 1.0))
+	_upload_hint_label.add_theme_color_override("font_color", Color(0.72, 0.74, 0.78, 1.0))
+	_status_label.add_theme_color_override("font_color", Color(0.86, 0.88, 0.92, 1.0))
+	if _art_pack_list_label != null:
+		_art_pack_list_label.add_theme_color_override("font_color", Color(0.80, 0.88, 0.96, 1.0))
+		_art_pack_list_label.add_theme_font_size_override("font_size", 15)
+	if _progress_bar != null:
+		_progress_bar.add_theme_stylebox_override("background", _make_ui_style(Color(0.04, 0.045, 0.055, 1.0), Color(0.15, 0.36, 0.58, 1.0), 6, 1, 0, 0))
+		_progress_bar.add_theme_stylebox_override("fill", _make_ui_style(Color(0.08, 0.38, 0.66, 1.0), Color(0.32, 0.68, 1.0, 1.0), 6, 1, 0, 0))
+
+
 func _ready() -> void:
 	_build_adjust_ui()
 	_build_progress_ui()
 	_build_browser_shortcuts_ui()
 	_build_art_pack_manager_ui()
+	_apply_editor_visual_theme()
 	_configure_quality_options()
 	_configure_file_dialog()
 	_bind_signals()
@@ -1767,6 +1903,9 @@ func _build_art_pack_manager_ui() -> void:
 	pack_button_row.add_theme_constant_override("separation", 8)
 	root.add_child(pack_button_row)
 
+	_art_pack_workshop_scan_button = Button.new()
+	pack_button_row.add_child(_art_pack_workshop_scan_button)
+
 	var pack_spacer = Control.new()
 	pack_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pack_button_row.add_child(pack_spacer)
@@ -1817,6 +1956,8 @@ func _refresh_art_pack_manager_ui() -> void:
 	_art_pack_variant_label.text = _tr("art_pack_current_variant")
 	_art_pack_remove_button.text = _tr("art_pack_remove")
 	_art_pack_apply_all_button.text = _tr("art_pack_apply_all")
+	_art_pack_workshop_scan_button.text = _tr("art_pack_scan_workshop")
+	_art_pack_workshop_scan_button.disabled = manager == null or !manager.has_method("scan_workshop_art_packs")
 	_art_pack_apply_category_button.text = _tr("art_pack_apply_selected_category")
 	_art_pack_apply_button.text = _tr("apply")
 	var effective_source_path = _get_effective_source_path()
@@ -1985,16 +2126,20 @@ func _position_settings_panel() -> void:
 		return
 	var popup_rect = _editor_popup.get_global_rect()
 	var viewport_rect = get_viewport_rect()
-	var panel_size = _settings_panel.size
+	# Runtime-created panels can retain a previous parent-sized height. Shrink the
+	# drawer back to its content before placing it beside the editor.
+	_settings_panel.reset_size()
+	var panel_size = _settings_panel.get_combined_minimum_size()
 	if panel_size.x <= 1.0 or panel_size.y <= 1.0:
 		panel_size = Vector2(280, 360)
+	_settings_panel.size = panel_size
 	var margin := 12.0
 	var target_x = popup_rect.position.x + popup_rect.size.x + margin
-	if target_x + panel_size.x > viewport_rect.size.x - margin:
+	if target_x + panel_size.x > viewport_rect.position.x + viewport_rect.size.x - margin:
 		target_x = popup_rect.position.x + popup_rect.size.x - panel_size.x - 16.0
 	var target_y = popup_rect.position.y + 16.0
-	target_x = clamp(target_x, margin, max(margin, viewport_rect.size.x - panel_size.x - margin))
-	target_y = clamp(target_y, margin, max(margin, viewport_rect.size.y - panel_size.y - margin))
+	target_x = clamp(target_x, viewport_rect.position.x + margin, max(viewport_rect.position.x + margin, viewport_rect.position.x + viewport_rect.size.x - panel_size.x - margin))
+	target_y = clamp(target_y, viewport_rect.position.y + margin, max(viewport_rect.position.y + margin, viewport_rect.position.y + viewport_rect.size.y - panel_size.y - margin))
 	_settings_panel.position = Vector2(target_x, target_y)
 
 
@@ -2498,6 +2643,31 @@ func _on_art_pack_apply_pressed() -> void:
 		return
 	var result = manager.apply_art_pack_variant(source_path, pack_id)
 	_set_status(String(result.get("message", "Unknown art pack result.")), !bool(result.get("ok", false)))
+	_update_context(true)
+
+
+func _on_art_pack_workshop_scan_pressed() -> void:
+	var manager = _manager()
+	if manager == null or !manager.has_method("scan_workshop_art_packs"):
+		_set_status(_tr("manager_unavailable"), true)
+		return
+	_set_busy(true, _tr("art_pack_scan_busy"))
+	_show_progress(0, 1, _tr("art_pack_scan_prepare"))
+	var progress_callback := Callable(self, "_on_import_progress")
+	var result = await manager.scan_workshop_art_packs(progress_callback)
+	_hide_progress()
+	var succeeded = bool(result.get("ok", false))
+	var message = String(result.get("message", "Unknown Workshop scan result."))
+	if succeeded:
+		message = _tr("art_pack_scan_result") % [
+			int(result.get("imported_count", 0)),
+			int(result.get("skipped_count", 0)),
+			int(result.get("failed_count", 0))
+		]
+	elif String(result.get("reason", "")) == "workshop_root_not_found":
+		message = _tr("art_pack_scan_no_root")
+	_art_pack_ui_state = ""
+	_set_busy(false, message, !succeeded)
 	_update_context(true)
 
 
@@ -3171,6 +3341,7 @@ func _bind_signals() -> void:
 	_gif_preset_quality_button.pressed.connect(_on_gif_preset_quality_pressed)
 	_gif_settings_apply_button.pressed.connect(_on_gif_settings_apply_pressed)
 	_gif_settings_close_button.pressed.connect(_on_gif_settings_close_pressed)
+	_art_pack_workshop_scan_button.pressed.connect(_on_art_pack_workshop_scan_pressed)
 	_art_pack_remove_button.pressed.connect(_on_art_pack_remove_pressed)
 	_art_pack_apply_all_button.pressed.connect(_on_art_pack_apply_all_pressed)
 	_art_pack_list.item_selected.connect(_on_art_pack_list_item_selected)
@@ -3204,6 +3375,8 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 		_ancient_text_outside_button.disabled = is_busy or !_is_current_ancient_text_outside_supported_card() or effective_source_path == ""
 	if _art_pack_remove_button != null:
 		_art_pack_remove_button.disabled = is_busy or _art_pack_list_ids.is_empty()
+	if _art_pack_workshop_scan_button != null:
+		_art_pack_workshop_scan_button.disabled = is_busy or manager == null or !manager.has_method("scan_workshop_art_packs")
 	if _art_pack_apply_all_button != null:
 		_art_pack_apply_all_button.disabled = is_busy or _art_pack_list_ids.is_empty()
 	if _art_pack_category_select != null:

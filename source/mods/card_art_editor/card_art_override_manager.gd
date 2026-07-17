@@ -10,6 +10,8 @@ const STORAGE_MANIFEST_PATH := STORAGE_ROOT + "/manifest.json"
 const STORAGE_ART_PACK_DIR := STORAGE_ROOT + "/art_packs"
 const STORAGE_ART_PACK_REGISTRY_PATH := STORAGE_ROOT + "/art_pack_registry.json"
 const STORAGE_UI_SETTINGS_PATH := STORAGE_ROOT + "/ui_settings.json"
+const STEAM_WORKSHOP_APP_ID := "2868840"
+const WORKSHOP_ART_PACK_SUFFIX := ".cardartpack.json"
 const GIF_TOOL_RES_PATH := "res://mods/card_art_editor/extract_gif_frames.ps1"
 const GIF_TOOL_USER_PATH := STORAGE_ROOT + "/tools/extract_gif_frames.ps1"
 const PICTURES_EXTRACT_SUBDIR := "card_art_editor_extracted"
@@ -1042,6 +1044,256 @@ func get_art_pack_list() -> Array:
 	return result
 
 
+func scan_workshop_art_packs(progress_callback: Callable = Callable()) -> Dictionary:
+	var workshop_roots = _get_steam_workshop_content_roots()
+	if workshop_roots.is_empty():
+		return {
+			"ok": false,
+			"reason": "workshop_root_not_found",
+			"message": "The Steam Workshop content folder could not be found."
+		}
+	var candidates: Array = _collect_workshop_art_pack_files(workshop_roots)
+	var workshop_sources = _art_pack_registry.get("workshop_sources", {})
+	if !(workshop_sources is Dictionary):
+		workshop_sources = {}
+	var found_source_keys := {}
+	var imported_count := 0
+	var skipped_count := 0
+	var failed_count := 0
+	var removed_count := 0
+	var processed_count := 0
+	var candidate_total = max(candidates.size(), 1)
+	await _report_import_progress(progress_callback, 0, candidate_total, "Scanning Steam Workshop art packs...")
+	for candidate in candidates:
+		processed_count += 1
+		if !(candidate is Dictionary):
+			failed_count += 1
+			await _report_import_progress(progress_callback, processed_count, candidate_total, "Invalid Workshop entry")
+			continue
+		var source_file = String(candidate.get("path", ""))
+		if source_file == "" or !FileAccess.file_exists(source_file):
+			failed_count += 1
+			await _report_import_progress(progress_callback, processed_count, candidate_total, source_file.get_file())
+			continue
+		var source_key = _external_file_path_key(source_file)
+		if source_key == "":
+			failed_count += 1
+			await _report_import_progress(progress_callback, processed_count, candidate_total, source_file.get_file())
+			continue
+		found_source_keys[source_key] = true
+		var modified_time = int(FileAccess.get_modified_time(source_file))
+		var file_size = _get_external_file_size(source_file)
+		var previous_state = workshop_sources.get(source_key, {})
+		if !(previous_state is Dictionary):
+			previous_state = {}
+		var previous_pack_id = String(previous_state.get("pack_id", ""))
+		var dismissed = bool(previous_state.get("dismissed", false))
+		var unchanged = int(previous_state.get("modified_time", -1)) == modified_time and int(previous_state.get("file_size", -1)) == file_size
+		var packs = _art_pack_registry.get("packs", {})
+		var previous_pack_available = previous_pack_id != "" and packs is Dictionary and packs.has(previous_pack_id)
+		if unchanged and (previous_pack_available or dismissed):
+			skipped_count += 1
+			await _report_import_progress(progress_callback, processed_count, candidate_total, "Skipped %s" % source_file.get_file())
+			continue
+
+		# Workshop scans register packs only. Applying them remains an explicit user action.
+		var import_result = await import_bundle_from_file(source_file, progress_callback, {})
+		if !bool(import_result.get("ok", false)):
+			failed_count += 1
+			push_warning("Card Art Editor could not import Workshop art pack %s: %s" % [
+				source_file,
+				String(import_result.get("message", "Unknown import error."))
+			])
+			await _report_import_progress(progress_callback, processed_count, candidate_total, "Failed %s" % source_file.get_file())
+			continue
+		var new_pack_id = String(import_result.get("pack_id", ""))
+		if new_pack_id == "":
+			failed_count += 1
+			await _report_import_progress(progress_callback, processed_count, candidate_total, "Failed %s" % source_file.get_file())
+			continue
+		if previous_pack_id != "" and previous_pack_id != new_pack_id:
+			_remove_art_pack_registration(previous_pack_id, false, false)
+		packs = _art_pack_registry.get("packs", {})
+		if packs is Dictionary and packs.has(new_pack_id):
+			var pack_data = packs[new_pack_id]
+			if pack_data is Dictionary:
+				pack_data["source_type"] = "steam_workshop"
+				pack_data["workshop_item_id"] = String(candidate.get("workshop_item_id", ""))
+				packs[new_pack_id] = pack_data
+				_art_pack_registry["packs"] = packs
+		workshop_sources[source_key] = {
+			"path": source_file,
+			"pack_id": new_pack_id,
+			"workshop_item_id": String(candidate.get("workshop_item_id", "")),
+			"modified_time": modified_time,
+			"file_size": file_size,
+			"dismissed": false
+		}
+		_art_pack_registry["workshop_sources"] = workshop_sources
+		_save_art_pack_registry()
+		imported_count += 1
+		await _report_import_progress(progress_callback, processed_count, candidate_total, "Registered %s" % source_file.get_file())
+
+	var stale_source_keys: Array = []
+	for source_key in workshop_sources.keys():
+		if found_source_keys.has(source_key):
+			continue
+		var source_state = workshop_sources.get(source_key, null)
+		if !(source_state is Dictionary):
+			stale_source_keys.append(source_key)
+			continue
+		var source_path = String(source_state.get("path", ""))
+		if !_is_path_inside_any_root(source_path, workshop_roots):
+			continue
+		var stale_pack_id = String(source_state.get("pack_id", ""))
+		if stale_pack_id != "":
+			_remove_art_pack_registration(stale_pack_id, false, true)
+			removed_count += 1
+		stale_source_keys.append(source_key)
+	for source_key in stale_source_keys:
+		workshop_sources.erase(source_key)
+	if !stale_source_keys.is_empty():
+		_art_pack_registry["workshop_sources"] = workshop_sources
+		_save_art_pack_registry()
+	await _report_import_progress(progress_callback, candidate_total, candidate_total, "Workshop art pack scan complete")
+	print("Card Art Editor Workshop scan: registered %d, skipped %d, failed %d, removed %d." % [
+		imported_count,
+		skipped_count,
+		failed_count,
+		removed_count
+	])
+	return {
+		"ok": true,
+		"scanned_count": candidates.size(),
+		"imported_count": imported_count,
+		"skipped_count": skipped_count,
+		"failed_count": failed_count,
+		"removed_count": removed_count,
+		"message": "Workshop scan complete. Registered: %d, skipped: %d, failed: %d." % [imported_count, skipped_count, failed_count]
+	}
+
+
+func _get_steam_workshop_content_roots() -> Array:
+	var roots_by_key := {}
+	var root_override = OS.get_environment("CARD_ART_EDITOR_WORKSHOP_ROOT").strip_edges()
+	if root_override != "":
+		_add_workshop_content_root(roots_by_key, root_override)
+	var path_candidates: Array = [
+		OS.get_executable_path().get_base_dir(),
+		ProjectSettings.globalize_path("res://")
+	]
+	var compat_data_path = OS.get_environment("STEAM_COMPAT_DATA_PATH").strip_edges()
+	if compat_data_path != "":
+		path_candidates.append(compat_data_path)
+	for candidate_path in path_candidates:
+		var steamapps_path = _find_steamapps_ancestor(String(candidate_path))
+		if steamapps_path != "":
+			_add_workshop_content_root(roots_by_key, steamapps_path.path_join("workshop/content").path_join(STEAM_WORKSHOP_APP_ID))
+	var steam_install_path = OS.get_environment("STEAM_COMPAT_CLIENT_INSTALL_PATH").strip_edges()
+	if steam_install_path != "":
+		_add_workshop_content_root(roots_by_key, steam_install_path.path_join("steamapps/workshop/content").path_join(STEAM_WORKSHOP_APP_ID))
+	var roots: Array = roots_by_key.values()
+	roots.sort()
+	return roots
+
+
+func _add_workshop_content_root(roots_by_key: Dictionary, candidate_path: String) -> void:
+	var normalized_path = _normalize_external_file_path(candidate_path)
+	if normalized_path == "" or !DirAccess.dir_exists_absolute(normalized_path):
+		return
+	roots_by_key[_external_file_path_key(normalized_path)] = normalized_path
+
+
+func _find_steamapps_ancestor(start_path: String) -> String:
+	var cursor = _normalize_external_file_path(start_path)
+	for _index in range(12):
+		var folder_name = cursor.get_file().to_lower()
+		if folder_name == "steamapps":
+			return cursor
+		if folder_name == "common":
+			return cursor.get_base_dir()
+		var parent = cursor.get_base_dir()
+		if parent == cursor or parent == "":
+			break
+		cursor = parent
+	return ""
+
+
+func _collect_workshop_art_pack_files(workshop_roots: Array) -> Array:
+	var result: Array = []
+	var seen_paths := {}
+	for workshop_root_value in workshop_roots:
+		var workshop_root = String(workshop_root_value)
+		_append_workshop_art_pack_files_from_directory(workshop_root, "", result, seen_paths)
+		var root_dir = DirAccess.open(workshop_root)
+		if root_dir == null:
+			continue
+		root_dir.list_dir_begin()
+		while true:
+			var entry_name = root_dir.get_next()
+			if entry_name == "":
+				break
+			if entry_name == "." or entry_name == ".." or !root_dir.current_is_dir():
+				continue
+			_append_workshop_art_pack_files_from_directory(
+				workshop_root.path_join(entry_name),
+				entry_name,
+				result,
+				seen_paths
+			)
+		root_dir.list_dir_end()
+	result.sort_custom(func(a, b): return String(a.get("path", "")) < String(b.get("path", "")))
+	return result
+
+
+func _append_workshop_art_pack_files_from_directory(directory_path: String, workshop_item_id: String, output: Array, seen_paths: Dictionary) -> void:
+	var dir = DirAccess.open(directory_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	while true:
+		var entry_name = dir.get_next()
+		if entry_name == "":
+			break
+		if dir.current_is_dir() or !entry_name.to_lower().ends_with(WORKSHOP_ART_PACK_SUFFIX):
+			continue
+		var entry_path = directory_path.path_join(entry_name)
+		var source_key = _external_file_path_key(entry_path)
+		if seen_paths.has(source_key):
+			continue
+		seen_paths[source_key] = true
+		output.append({
+			"path": _normalize_external_file_path(entry_path),
+			"workshop_item_id": workshop_item_id
+		})
+	dir.list_dir_end()
+
+
+func _normalize_external_file_path(path: String) -> String:
+	var normalized_path = path.strip_edges().replace("\\", "/")
+	if normalized_path == "":
+		return ""
+	return normalized_path.simplify_path().trim_suffix("/")
+
+
+func _external_file_path_key(path: String) -> String:
+	return _normalize_external_file_path(path).to_lower()
+
+
+func _get_external_file_size(path: String) -> int:
+	var file = FileAccess.open(path, FileAccess.READ)
+	return int(file.get_length()) if file != null else -1
+
+
+func _is_path_inside_any_root(path: String, roots: Array) -> bool:
+	var path_key = _external_file_path_key(path)
+	for root_value in roots:
+		var root_key = _external_file_path_key(String(root_value)).trim_suffix("/")
+		if path_key == root_key or path_key.begins_with(root_key + "/"):
+			return true
+	return false
+
+
 func get_art_pack_categories(pack_id: String) -> Array:
 	var packs = _art_pack_registry.get("packs", {})
 	if !(packs is Dictionary) or !packs.has(pack_id):
@@ -1394,6 +1646,10 @@ func apply_art_pack_to_category(pack_id: String, category_id: String, progress_c
 
 
 func remove_art_pack(pack_id: String) -> Dictionary:
+	return _remove_art_pack_registration(pack_id, true, true)
+
+
+func _remove_art_pack_registration(pack_id: String, mark_workshop_dismissed: bool, notify_changed: bool) -> Dictionary:
 	var packs = _art_pack_registry.get("packs", {})
 	if !(packs is Dictionary) or !packs.has(pack_id):
 		return {
@@ -1418,10 +1674,22 @@ func remove_art_pack(pack_id: String) -> Dictionary:
 		entry["provider_pack_id"] = ""
 		entry["provider_pack_name"] = ""
 		_manifest[source_path] = entry
+	if mark_workshop_dismissed:
+		var workshop_sources = _art_pack_registry.get("workshop_sources", {})
+		if workshop_sources is Dictionary:
+			for source_key in workshop_sources.keys():
+				var source_state = workshop_sources.get(source_key, null)
+				if !(source_state is Dictionary) or String(source_state.get("pack_id", "")) != pack_id:
+					continue
+				source_state["pack_id"] = ""
+				source_state["dismissed"] = true
+				workshop_sources[source_key] = source_state
+			_art_pack_registry["workshop_sources"] = workshop_sources
 
 	_save_manifest()
 	_save_art_pack_registry()
-	_notify_art_packs_changed()
+	if notify_changed:
+		_notify_art_packs_changed()
 	return {
 		"ok": true,
 		"message": "Removed \"%s\" from the art pack list." % pack_name
@@ -2459,7 +2727,14 @@ func save_override_from_file(source_path: String, import_path: String) -> Dictio
 
 func _build_art_pack_id(pack_name: String) -> String:
 	var base = _safe_file_stem(pack_name if pack_name != "" else "art_pack")
-	return "%s_%s" % [base, str(Time.get_unix_time_from_system())]
+	var initial_id = "%s_%s" % [base, str(Time.get_unix_time_from_system())]
+	var candidate_id = initial_id
+	var suffix := 2
+	var packs = _art_pack_registry.get("packs", {})
+	while (packs is Dictionary and packs.has(candidate_id)) or DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(_get_art_pack_dir(candidate_id))):
+		candidate_id = "%s_%d" % [initial_id, suffix]
+		suffix += 1
+	return candidate_id
 
 
 func _get_art_pack_dir(pack_id: String) -> String:
@@ -2715,7 +2990,7 @@ func _build_bundle_export_entry(source_path: String, entry: Dictionary) -> Dicti
 	return bundle_entry
 
 
-func import_bundle_from_file(import_path: String, progress_callback: Callable = Callable()) -> Dictionary:
+func import_bundle_from_file(import_path: String, progress_callback: Callable = Callable(), activation_sources = null) -> Dictionary:
 	var normalized_import_path = import_path
 	if !normalized_import_path.is_absolute_path():
 		normalized_import_path = ProjectSettings.globalize_path(import_path)
@@ -2750,7 +3025,8 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 	var pack_name = normalized_import_path.get_file().get_basename().trim_suffix(".cardartpack")
 	var pack_id = _build_art_pack_id(pack_name)
 	var pack_cards := {}
-	var imported_count := 0
+	var registered_count := 0
+	var applied_count := 0
 	var processed_count := 0
 	_begin_batch_updates()
 	await _report_import_progress(progress_callback, 0, overrides.size(), "Reading art pack...")
@@ -2796,17 +3072,16 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 			)
 			if !registered_entry.is_empty():
 				pack_cards[source_path] = registered_entry
-			var animated_result = _activate_registered_art_pack_entry(
-				source_path,
-				registered_entry,
-				pack_id,
-				pack_name
-			) if !registered_entry.is_empty() else {
-				"ok": false,
-				"message": "The animated art pack entry could not be registered."
-			}
-			if bool(animated_result.get("ok", false)):
-				imported_count += 1
+				registered_count += 1
+				if _should_activate_imported_art_pack_source(source_path, activation_sources):
+					var animated_result = _activate_registered_art_pack_entry(
+						source_path,
+						registered_entry,
+						pack_id,
+						pack_name
+					)
+					if bool(animated_result.get("ok", false)):
+						applied_count += 1
 			await _report_import_progress(progress_callback, processed_count, overrides.size(), source_path.get_file())
 		else:
 			var png_base64 = String(override_entry.get("edit_source_png_base64", override_entry.get("png_base64", "")))
@@ -2830,17 +3105,16 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 			)
 			if !registered_entry.is_empty():
 				pack_cards[source_path] = registered_entry
-			var result = _activate_registered_art_pack_entry(
-				source_path,
-				registered_entry,
-				pack_id,
-				pack_name
-			) if !registered_entry.is_empty() else {
-				"ok": false,
-				"message": "The art pack entry could not be registered."
-			}
-			if bool(result.get("ok", false)):
-				imported_count += 1
+				registered_count += 1
+				if _should_activate_imported_art_pack_source(source_path, activation_sources):
+					var result = _activate_registered_art_pack_entry(
+						source_path,
+						registered_entry,
+						pack_id,
+						pack_name
+					)
+					if bool(result.get("ok", false)):
+						applied_count += 1
 			await _report_import_progress(progress_callback, processed_count, overrides.size(), source_path.get_file())
 
 	if pack_cards.is_empty():
@@ -2864,12 +3138,22 @@ func import_bundle_from_file(import_path: String, progress_callback: Callable = 
 	_art_pack_registry["packs"] = packs
 	_save_art_pack_registry()
 	_notify_art_packs_changed()
-	refresh_all_portraits()
+	if applied_count > 0:
+		refresh_all_portraits()
 	_end_batch_updates()
 	return {
 		"ok": true,
-		"message": "Imported %d card images from the shared art pack and registered \"%s\"." % [imported_count, pack_name]
+		"message": "Imported %d card images from the shared art pack and registered \"%s\"." % [registered_count, pack_name],
+		"pack_id": pack_id,
+		"registered_count": registered_count,
+		"applied_count": applied_count
 	}
+
+
+func _should_activate_imported_art_pack_source(source_path: String, activation_sources) -> bool:
+	if activation_sources == null:
+		return true
+	return activation_sources is Dictionary and activation_sources.has(source_path)
 
 
 func import_mod_images_from_path(import_path: String, progress_callback: Callable = Callable()) -> Dictionary:
