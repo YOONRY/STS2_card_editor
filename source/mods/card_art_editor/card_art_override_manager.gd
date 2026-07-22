@@ -57,7 +57,9 @@ const META_GIF_PLAYBACK_ACTIVE := "_card_art_gif_playback_active"
 const META_GIF_PLAYBACK_SOURCE := "_card_art_gif_playback_source"
 const META_FULL_ART_FIRE_ORIGINAL_STATE := "_card_art_full_art_fire_original_state"
 const META_FULL_ART_LAYER_INSET := "_card_art_full_art_layer_inset"
+const META_SKIP_BACKGROUND_REFRESH := "_card_art_skip_background_refresh"
 const FULL_ART_LAYER_NAME := "CardArtFullArtLayer"
+const MULTIPLAYER_EXPANDED_STATE_SCRIPT_PATH := "res://src/Core/Nodes/Multiplayer/NMultiplayerPlayerExpandedState.cs"
 const STATIC_OVERRIDE_CACHE_SUFFIX := "::static"
 const FULL_ART_HIGHLIGHT_COMMON_COLOR := Color(0.72, 0.74, 0.78, 1.0)
 const FULL_ART_HIGHLIGHT_UNCOMMON_COLOR := Color(0.10, 0.22, 0.72, 1.0)
@@ -4323,6 +4325,8 @@ func _refresh_visible_tracked_portraits(max_items: int = PORTRAIT_NAVIGATION_REF
 		var card_root = _find_card_root(texture_rect)
 		if card_root == null or !is_instance_valid(card_root) or !_is_node_visible_in_tree(card_root):
 			continue
+		if _is_multiplayer_expanded_deck_card_root(card_root):
+			continue
 		if texture_rect is CanvasItem and !(texture_rect as CanvasItem).is_visible_in_tree():
 			continue
 		_refresh_portrait_node(texture_rect)
@@ -4351,6 +4355,8 @@ func _refresh_visible_tracked_portraits_from_cursor(max_items: int) -> void:
 		scanned += 1
 		var card_root = _find_card_root(texture_rect)
 		if card_root == null or !is_instance_valid(card_root) or !_is_node_visible_in_tree(card_root):
+			continue
+		if _is_multiplayer_expanded_deck_card_root(card_root):
 			continue
 		if texture_rect is CanvasItem and !(texture_rect as CanvasItem).is_visible_in_tree():
 			continue
@@ -4459,6 +4465,27 @@ func _find_named_descendant(node: Node, target_name: String):
 
 func _is_supported_card_root(node) -> bool:
 	return node != null and String(node.name) == "CardContainer" and node.get_node_or_null("PortraitCanvasGroup") != null
+
+
+func _is_multiplayer_expanded_deck_card_root(card_root) -> bool:
+	if card_root == null:
+		return false
+	if card_root.has_meta(META_SKIP_BACKGROUND_REFRESH):
+		return bool(card_root.get_meta(META_SKIP_BACKGROUND_REFRESH, false))
+	var current = card_root.get_parent()
+	while current != null:
+		var script = current.get_script()
+		if script != null and String(script.resource_path).replace("\\", "/") == MULTIPLAYER_EXPANDED_STATE_SCRIPT_PATH:
+			card_root.set_meta(META_SKIP_BACKGROUND_REFRESH, true)
+			return true
+		var deck_container = current.get_node_or_null("ScreenContents/Container/Cards/MarginContainer/CardContainer")
+		var player_name = current.get_node_or_null("ScreenContents/Container/MarginContainer/PlayerNameLabel")
+		if deck_container == card_root.get_parent() and player_name != null:
+			card_root.set_meta(META_SKIP_BACKGROUND_REFRESH, true)
+			return true
+		current = current.get_parent()
+	card_root.set_meta(META_SKIP_BACKGROUND_REFRESH, false)
+	return false
 
 
 func _find_card_root(texture_rect):
@@ -6106,7 +6133,9 @@ func _refresh_tracked_portraits(max_items: int = PORTRAIT_REFRESH_FRAME_BUDGET) 
 				_portrait_refresh_cursor = 0
 				completed_cycle = true
 			continue
-		_refresh_portrait_node(texture_rect)
+		var card_root = _find_card_root(texture_rect)
+		if !_is_multiplayer_expanded_deck_card_root(card_root):
+			_refresh_portrait_node(texture_rect)
 		processed += 1
 		_portrait_refresh_cursor += 1
 		if _portrait_refresh_cursor >= _portrait_ref_ids.size():
