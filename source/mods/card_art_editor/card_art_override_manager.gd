@@ -84,7 +84,8 @@ const GIF_PLAYBACK_MOUSE_MOVE_DISTANCE := 2.0
 signal overrides_changed(source_path)
 signal art_packs_changed()
 
-var _portrait_refs := []
+var _portrait_refs: Dictionary = {}
+var _portrait_ref_ids := []
 var _manifest := {}
 var _has_animated_overrides_cached := false
 var _animated_overrides_cache_dirty := true
@@ -4304,20 +4305,20 @@ func _request_card_navigation_portrait_refresh() -> void:
 
 
 func _should_poll_visible_portrait_refresh() -> bool:
-	return !_manifest.is_empty() and !_portrait_refs.is_empty()
+	return !_manifest.is_empty() and !_portrait_ref_ids.is_empty()
 
 
 func _refresh_visible_tracked_portraits(max_items: int = PORTRAIT_NAVIGATION_REFRESH_BUDGET, use_cursor: bool = false) -> void:
-	if max_items <= 0 or _portrait_refs.is_empty():
+	if max_items <= 0 or _portrait_ref_ids.is_empty():
 		return
 	if use_cursor:
 		_refresh_visible_tracked_portraits_from_cursor(max_items)
 		return
 	var processed := 0
-	for index in range(_portrait_refs.size() - 1, -1, -1):
-		var texture_rect = _portrait_refs[index].get_ref()
+	for index in range(_portrait_ref_ids.size() - 1, -1, -1):
+		var texture_rect = _get_tracked_portrait_at(index)
 		if texture_rect == null:
-			_portrait_refs.remove_at(index)
+			_remove_tracked_portrait_at(index)
 			continue
 		var card_root = _find_card_root(texture_rect)
 		if card_root == null or !is_instance_valid(card_root) or !_is_node_visible_in_tree(card_root):
@@ -4331,19 +4332,19 @@ func _refresh_visible_tracked_portraits(max_items: int = PORTRAIT_NAVIGATION_REF
 
 
 func _refresh_visible_tracked_portraits_from_cursor(max_items: int) -> void:
-	if max_items <= 0 or _portrait_refs.is_empty():
+	if max_items <= 0 or _portrait_ref_ids.is_empty():
 		_visible_portrait_refresh_cursor = 0
 		return
 	var processed := 0
 	var scanned := 0
-	var scan_limit = min(_portrait_refs.size(), max(max_items * 4, max_items))
-	while processed < max_items and scanned < scan_limit and !_portrait_refs.is_empty():
-		if _visible_portrait_refresh_cursor >= _portrait_refs.size():
+	var scan_limit = min(_portrait_ref_ids.size(), max(max_items * 4, max_items))
+	while processed < max_items and scanned < scan_limit and !_portrait_ref_ids.is_empty():
+		if _visible_portrait_refresh_cursor >= _portrait_ref_ids.size():
 			_visible_portrait_refresh_cursor = 0
-		var texture_rect = _portrait_refs[_visible_portrait_refresh_cursor].get_ref()
+		var texture_rect = _get_tracked_portrait_at(_visible_portrait_refresh_cursor)
 		if texture_rect == null:
-			_portrait_refs.remove_at(_visible_portrait_refresh_cursor)
-			if _visible_portrait_refresh_cursor >= _portrait_refs.size():
+			_remove_tracked_portrait_at(_visible_portrait_refresh_cursor)
+			if _visible_portrait_refresh_cursor >= _portrait_ref_ids.size():
 				_visible_portrait_refresh_cursor = 0
 			continue
 		_visible_portrait_refresh_cursor += 1
@@ -4364,10 +4365,10 @@ func apply_override_to_texture_rect(texture_rect) -> void:
 
 
 func _clear_source_overrides_from_tracked_portraits(source_path: String) -> void:
-	for index in range(_portrait_refs.size() - 1, -1, -1):
-		var texture_rect = _portrait_refs[index].get_ref()
+	for index in range(_portrait_ref_ids.size() - 1, -1, -1):
+		var texture_rect = _get_tracked_portrait_at(index)
 		if texture_rect == null:
-			_portrait_refs.remove_at(index)
+			_remove_tracked_portrait_at(index)
 			continue
 		var card_root = _find_card_root(texture_rect)
 		var tracked_source = String(texture_rect.get_meta(META_SOURCE_PATH, ""))
@@ -4456,11 +4457,20 @@ func _find_named_descendant(node: Node, target_name: String):
 	return found
 
 
+func _is_supported_card_root(node) -> bool:
+	return node != null and String(node.name) == "CardContainer" and node.get_node_or_null("PortraitCanvasGroup") != null
+
+
 func _find_card_root(texture_rect):
 	var current = texture_rect
+	var portrait_group = null
 	while current != null:
-		if String(current.name) == "CardContainer":
-			return current
+		if String(current.name) == "PortraitCanvasGroup":
+			portrait_group = current
+		elif String(current.name) == "CardContainer":
+			if portrait_group != null and portrait_group.get_parent() == current:
+				return current
+			return null
 		current = current.get_parent()
 	return null
 
@@ -4958,10 +4968,10 @@ func _find_animated_gif_card_root_at_position(mouse_position: Vector2):
 	var best_root = null
 	var best_area: float = INF
 	var seen_roots := {}
-	for index in range(_portrait_refs.size() - 1, -1, -1):
-		var texture_rect = _portrait_refs[index].get_ref()
+	for index in range(_portrait_ref_ids.size() - 1, -1, -1):
+		var texture_rect = _get_tracked_portrait_at(index)
 		if texture_rect == null:
-			_portrait_refs.remove_at(index)
+			_remove_tracked_portrait_at(index)
 			continue
 		var card_root = _find_card_root(texture_rect)
 		if card_root == null or seen_roots.has(card_root):
@@ -5092,10 +5102,10 @@ func _refresh_gif_playback_state() -> void:
 	else:
 		_gif_last_active_card_root = null
 		_gif_last_active_source_path = ""
-	for index in range(_portrait_refs.size() - 1, -1, -1):
-		var texture_rect = _portrait_refs[index].get_ref()
+	for index in range(_portrait_ref_ids.size() - 1, -1, -1):
+		var texture_rect = _get_tracked_portrait_at(index)
 		if texture_rect == null:
-			_portrait_refs.remove_at(index)
+			_remove_tracked_portrait_at(index)
 			continue
 		_sync_gif_texture_for_portrait(texture_rect, active_root)
 	_gif_playback_refresh_requested = false
@@ -5105,10 +5115,10 @@ func _find_ancient_text_card_root_at_position(mouse_position: Vector2):
 	var best_root = null
 	var best_area: float = INF
 	var seen_roots := {}
-	for index in range(_portrait_refs.size() - 1, -1, -1):
-		var texture_rect = _portrait_refs[index].get_ref()
+	for index in range(_portrait_ref_ids.size() - 1, -1, -1):
+		var texture_rect = _get_tracked_portrait_at(index)
 		if texture_rect == null:
-			_portrait_refs.remove_at(index)
+			_remove_tracked_portrait_at(index)
 			continue
 		var card_root = _find_card_root(texture_rect)
 		if card_root == null or seen_roots.has(card_root):
@@ -6004,7 +6014,7 @@ func _restore_full_art_state(texture_rect) -> void:
 func _on_node_added(node) -> void:
 	if _is_portrait_node(node):
 		_track_portrait(node)
-	elif String(node.name) == "CardContainer":
+	elif _is_supported_card_root(node):
 		_track_ancient_text_card_hitbox(node)
 	elif node is Control and String(node.name) == "InspectCardScreen":
 		call_deferred("_attach_overlay", node)
@@ -6013,7 +6023,7 @@ func _on_node_added(node) -> void:
 func _register_existing(node, defer_refresh: bool = false) -> void:
 	if _is_portrait_node(node):
 		_track_portrait(node, defer_refresh)
-	elif String(node.name) == "CardContainer":
+	elif _is_supported_card_root(node):
 		_track_ancient_text_card_hitbox(node)
 	elif node is Control and String(node.name) == "InspectCardScreen":
 		call_deferred("_attach_overlay", node)
@@ -6022,11 +6032,47 @@ func _register_existing(node, defer_refresh: bool = false) -> void:
 		_register_existing(child, defer_refresh)
 
 
+func _get_tracked_portrait_at(index: int):
+	if index < 0 or index >= _portrait_ref_ids.size():
+		return null
+	var instance_id = int(_portrait_ref_ids[index])
+	var portrait_ref = _portrait_refs.get(instance_id, null)
+	return portrait_ref.get_ref() if portrait_ref is WeakRef else null
+
+
+func _remove_tracked_portrait_at(index: int) -> void:
+	if index < 0 or index >= _portrait_ref_ids.size():
+		return
+	var instance_id = int(_portrait_ref_ids[index])
+	_portrait_refs.erase(instance_id)
+	_portrait_ref_ids.remove_at(index)
+	if index < _portrait_refresh_cursor:
+		_portrait_refresh_cursor -= 1
+	if index < _visible_portrait_refresh_cursor:
+		_visible_portrait_refresh_cursor -= 1
+	_portrait_refresh_cursor = clampi(_portrait_refresh_cursor, 0, _portrait_ref_ids.size())
+	_visible_portrait_refresh_cursor = clampi(_visible_portrait_refresh_cursor, 0, _portrait_ref_ids.size())
+
+
+func _on_tracked_portrait_tree_exiting(instance_id: int) -> void:
+	var index = _portrait_ref_ids.find(instance_id)
+	if index >= 0:
+		_remove_tracked_portrait_at(index)
+	else:
+		_portrait_refs.erase(instance_id)
+
+
 func _track_portrait(texture_rect, defer_refresh: bool = false) -> void:
-	for ref in _portrait_refs:
-		if ref.get_ref() == texture_rect:
-			return
-	_portrait_refs.append(weakref(texture_rect))
+	if !_is_portrait_node(texture_rect):
+		return
+	var instance_id = int(texture_rect.get_instance_id())
+	if _portrait_refs.has(instance_id):
+		return
+	_portrait_refs[instance_id] = weakref(texture_rect)
+	_portrait_ref_ids.append(instance_id)
+	var exit_callback = Callable(self, "_on_tracked_portrait_tree_exiting").bind(instance_id)
+	if !texture_rect.tree_exiting.is_connected(exit_callback):
+		texture_rect.tree_exiting.connect(exit_callback, Object.CONNECT_ONE_SHOT)
 	var card_root = _find_card_root(texture_rect)
 	if card_root != null:
 		_track_ancient_text_card_hitbox(card_root)
@@ -6042,32 +6088,32 @@ func _track_portrait(texture_rect, defer_refresh: bool = false) -> void:
 
 
 func _refresh_tracked_portraits(max_items: int = PORTRAIT_REFRESH_FRAME_BUDGET) -> bool:
-	if _portrait_refs.is_empty():
+	if _portrait_ref_ids.is_empty():
 		_portrait_refresh_cursor = 0
 		return true
-	var limit = _portrait_refs.size() if max_items <= 0 else max_items
+	var limit = _portrait_ref_ids.size() if max_items <= 0 else max_items
 	var processed := 0
 	var completed_cycle := false
-	while processed < limit and !_portrait_refs.is_empty():
-		if _portrait_refresh_cursor >= _portrait_refs.size():
+	while processed < limit and !_portrait_ref_ids.is_empty():
+		if _portrait_refresh_cursor >= _portrait_ref_ids.size():
 			_portrait_refresh_cursor = 0
 			completed_cycle = true
 			break
-		var texture_rect = _portrait_refs[_portrait_refresh_cursor].get_ref()
+		var texture_rect = _get_tracked_portrait_at(_portrait_refresh_cursor)
 		if texture_rect == null:
-			_portrait_refs.remove_at(_portrait_refresh_cursor)
-			if _portrait_refresh_cursor >= _portrait_refs.size():
+			_remove_tracked_portrait_at(_portrait_refresh_cursor)
+			if _portrait_refresh_cursor >= _portrait_ref_ids.size():
 				_portrait_refresh_cursor = 0
 				completed_cycle = true
 			continue
 		_refresh_portrait_node(texture_rect)
 		processed += 1
 		_portrait_refresh_cursor += 1
-		if _portrait_refresh_cursor >= _portrait_refs.size():
+		if _portrait_refresh_cursor >= _portrait_ref_ids.size():
 			_portrait_refresh_cursor = 0
 			completed_cycle = true
 			break
-	return completed_cycle or _portrait_refs.is_empty()
+	return completed_cycle or _portrait_ref_ids.is_empty()
 
 
 func _get_card_root_source_path(card_root) -> String:
@@ -6418,7 +6464,9 @@ func _is_portrait_node(node) -> bool:
 	if !(node is TextureRect):
 		return false
 	var node_name = String(node.name)
-	return node_name == "Portrait" or node_name == "AncientPortrait"
+	if node_name != "Portrait" and node_name != "AncientPortrait":
+		return false
+	return _find_card_root(node) != null
 
 
 func _looks_like_modded_card_atlas_source(path: String) -> bool:
