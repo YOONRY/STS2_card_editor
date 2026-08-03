@@ -29,11 +29,13 @@ public static class Bootstrap
     private const string CachedPortraitPathMeta = "_card_art_cached_portrait_path";
     private const string CachedPortraitCardIdMeta = "_card_art_cached_portrait_card_id";
     private const string CachedPortraitModelKeyMeta = "_card_art_cached_portrait_model_key";
-    private const string HotRefreshTickMeta = "_card_art_hot_refresh_tick";
+    private const string DeferredCardRefreshPendingMeta = "_card_art_deferred_card_refresh_pending";
+    private const string DeferredCardRefreshInvalidateModelMeta = "_card_art_deferred_card_refresh_invalidate_model";
+    private const string ManagerRefreshModeMeta = "_card_art_event_refresh_configured";
     private const string InfectionEffectSuppressedMeta = "_card_art_infection_effect_suppressed";
     private const string InfectionEffectOriginalVisibleMeta = "_card_art_infection_effect_original_visible";
-    private const long HotRefreshMinIntervalMs = 8;
     private static Node? _pendingManager;
+    private static bool _eventDrivenPortraitRefreshEnabled;
     private static readonly Dictionary<Type, MemberInfo?> CardNodeMemberCache = new();
     private static readonly Dictionary<Type, PropertyInfo?> CustomPortraitPathPropertyCache = new();
 
@@ -44,6 +46,7 @@ public static class Bootstrap
             Log("Init start.");
             Harmony.PatchAll(typeof(Bootstrap).Assembly);
             PatchOptionalCardVisualHooks();
+            _eventDrivenPortraitRefreshEnabled = true;
             TryEnsureManager();
             TryAttachToOpenInspectScreens();
             Log("Init complete.");
@@ -57,6 +60,7 @@ public static class Bootstrap
 
     private static void PatchOptionalCardVisualHooks()
     {
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.NCard", "UpdatePortrait", nameof(RefreshCardVisualPostfix));
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "ReassignToCard", nameof(RefreshCardOwnerPostfix));
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "SetCard", nameof(RefreshCardOwnerPostfix));
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "OnCardReassigned", nameof(RefreshCardOwnerPostfix));
@@ -175,11 +179,13 @@ public static class Bootstrap
         if (existing is not null)
         {
             _pendingManager = existing;
+            ConfigureManagerRefreshMode(existing);
             return existing;
         }
 
         if (_pendingManager is not null && GodotObject.IsInstanceValid(_pendingManager))
         {
+            ConfigureManagerRefreshMode(_pendingManager);
             return _pendingManager;
         }
 
@@ -209,9 +215,22 @@ public static class Bootstrap
         _loggedManagerInstantiateFailure = false;
         manager.Name = ManagerNodeName;
         _pendingManager = manager;
+        ConfigureManagerRefreshMode(manager);
         root.CallDeferred(Node.MethodName.AddChild, manager);
         Log("Manager node queued for add to /root.");
         return manager;
+    }
+
+    private static void ConfigureManagerRefreshMode(Node manager)
+    {
+        var configured = manager.GetMeta(ManagerRefreshModeMeta, false).AsBool();
+        if (configured == _eventDrivenPortraitRefreshEnabled)
+        {
+            return;
+        }
+
+        manager.Call("set_event_driven_portrait_refresh_enabled", _eventDrivenPortraitRefreshEnabled);
+        manager.SetMeta(ManagerRefreshModeMeta, _eventDrivenPortraitRefreshEnabled);
     }
 
     private static void TryAttachToOpenInspectScreens()
@@ -351,35 +370,7 @@ public static class Bootstrap
 
     internal static void RefreshCardOverrides(NCard card)
     {
-        try
-        {
-            if (card is null || !GodotObject.IsInstanceValid(card))
-            {
-                return;
-            }
-
-            var manager = TryEnsureManager();
-            if (manager is null)
-            {
-                return;
-            }
-
-            if (!TryGetCardModel(card, out _))
-            {
-                Log($"Skipping override refresh for card '{card.Name}' because its model is unavailable.");
-                return;
-            }
-
-            UpdateInspectCardMetadataFromCard(card);
-
-            ApplyOverridesToCardPortraits(manager, card);
-
-            TrySuppressSpecialCardEffects(card);
-        }
-        catch (Exception ex)
-        {
-            Log("RefreshCardOverrides failed: " + ex);
-        }
+        QueueCardOverrideRefresh(card);
     }
 
     private static void TrySuppressSpecialCardEffects(NCard card)
@@ -466,6 +457,37 @@ public static class Bootstrap
         {
             card.RemoveMeta(CachedPortraitModelKeyMeta);
         }
+    }
+
+    private static string SynchronizeCachedPortraitPath(Node manager, NCard card, CardModel model, string cardId)
+    {
+        var modelKey = GetModelCacheKey(model);
+        var sourcePath = GetPreferredPortraitPath(model);
+        var hasCompleteCache =
+            card.HasMeta(CachedPortraitPathMeta) &&
+            card.HasMeta(CachedPortraitCardIdMeta) &&
+            card.HasMeta(CachedPortraitModelKeyMeta);
+        var cacheMatches = false;
+        if (hasCompleteCache)
+        {
+            var cachedSourcePath = card.GetMeta(CachedPortraitPathMeta).AsString();
+            var cachedCardId = card.GetMeta(CachedPortraitCardIdMeta).AsString();
+            var cachedModelKey = card.GetMeta(CachedPortraitModelKeyMeta).AsInt64();
+            cacheMatches =
+                string.Equals(cachedSourcePath, sourcePath, StringComparison.Ordinal) &&
+                string.Equals(cachedCardId, cardId, StringComparison.Ordinal) &&
+                cachedModelKey == modelKey;
+        }
+
+        if (!cacheMatches)
+        {
+            manager.Call("invalidate_card_model_portrait_path_cache", card);
+            card.SetMeta(CachedPortraitPathMeta, sourcePath);
+            card.SetMeta(CachedPortraitCardIdMeta, cardId);
+            card.SetMeta(CachedPortraitModelKeyMeta, modelKey);
+        }
+
+        return sourcePath;
     }
 
     private static string GetCachedPortraitPath(NCard card, CardModel model, string cardId)
@@ -626,36 +648,41 @@ public static class Bootstrap
         }
     }
 
-    private static void ApplyOverridesToCardPortraitsDeferred(Node manager, NCard card)
+    private static void ApplyOverridesToCardPortraitsDeferred(Node manager, NCard card, bool invalidateModelCache = false)
     {
-        var portrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/Portrait");
-        if (portrait is not null)
-        {
-            manager.CallDeferred("apply_override_to_texture_rect", portrait);
-        }
-
-        var ancientPortrait = card.GetNodeOrNull<TextureRect>("CardContainer/PortraitCanvasGroup/AncientPortrait");
-        if (ancientPortrait is not null)
-        {
-            manager.CallDeferred("apply_override_to_texture_rect", ancientPortrait);
-        }
+        manager.Call("queue_card_override_refresh", card, invalidateModelCache);
     }
 
-    private static bool ShouldSkipHotRefresh(NCard card)
+    private static void QueueCardOverrideRefresh(NCard card)
     {
-        var now = (long)Time.GetTicksMsec();
-        if (card.HasMeta(HotRefreshTickMeta))
+        try
         {
-            var lastValue = card.GetMeta(HotRefreshTickMeta);
-            var last = lastValue.VariantType == Variant.Type.Int ? lastValue.AsInt64() : 0L;
-            if (last > 0 && now - last < HotRefreshMinIntervalMs)
+            if (card is null || !GodotObject.IsInstanceValid(card))
             {
-                return true;
+                return;
             }
-        }
 
-        card.SetMeta(HotRefreshTickMeta, now);
-        return false;
+            if (card.HasMeta(DeferredCardRefreshPendingMeta))
+            {
+                ClearCachedPortraitPath(card);
+                card.SetMeta(DeferredCardRefreshInvalidateModelMeta, true);
+                return;
+            }
+
+            TrySuppressSpecialCardEffects(card);
+            ClearCachedPortraitPath(card);
+            var manager = TryEnsureManager();
+            if (manager is null)
+            {
+                return;
+            }
+
+            ApplyOverridesToCardPortraitsDeferred(manager, card, true);
+        }
+        catch (Exception ex)
+        {
+            Log("QueueCardOverrideRefresh failed: " + ex);
+        }
     }
 
     internal static void RefreshCardOverridesAfterGameVisualUpdate(NCard card, bool force = false, bool alsoDeferred = false)
@@ -664,6 +691,12 @@ public static class Bootstrap
         {
             if (card is null || !GodotObject.IsInstanceValid(card))
             {
+                return;
+            }
+
+            if (!force)
+            {
+                QueueCardOverrideRefresh(card);
                 return;
             }
 
@@ -679,19 +712,14 @@ public static class Bootstrap
             }
 
             var cardId = GetCardId(model);
-            var sourcePath = GetCachedPortraitPath(card, model, cardId);
-            if (string.IsNullOrEmpty(sourcePath) || !manager.Call("has_override", sourcePath).AsBool())
-            {
-                return;
-            }
-
-            if (!force && ShouldSkipHotRefresh(card))
-            {
-                return;
-            }
-
+            var sourcePath = SynchronizeCachedPortraitPath(manager, card, model, cardId);
             card.SetMeta(InspectSourcePathMeta, sourcePath);
             card.SetMeta(InspectCardIdMeta, cardId);
+            if (!manager.Call("card_needs_override_refresh", card).AsBool())
+            {
+                TrySuppressSpecialCardEffects(card);
+                return;
+            }
             ApplyOverridesToCardPortraits(manager, card);
             if (alsoDeferred)
             {
@@ -862,7 +890,12 @@ public static class Bootstrap
 
     private static void RefreshCardOwnerPostfix(object __instance)
     {
-        RefreshCardOwner(__instance, true, true);
+        RefreshCardOwner(__instance, false, true);
+    }
+
+    private static void RefreshCardVisualPostfix(object __instance)
+    {
+        RefreshCardOwner(__instance, false, false);
     }
 
     private static string DescribeNodePath(Node node)
@@ -931,15 +964,6 @@ internal static class NCardReloadPatch
     private static void Postfix(NCard __instance)
     {
         Bootstrap.RefreshCardOverrides(__instance);
-    }
-}
-
-[HarmonyPatch(typeof(NCard), "UpdatePortrait")]
-internal static class NCardUpdatePortraitPatch
-{
-    private static void Postfix(NCard __instance)
-    {
-        Bootstrap.RefreshCardOverridesAfterGameVisualUpdate(__instance, false, false);
     }
 }
 
