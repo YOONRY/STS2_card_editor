@@ -10,6 +10,10 @@ const EXPORT_DIALOG_MODE_PACK := "pack"
 const EXPORT_DIALOG_MODE_CURRENT_PNG := "current_png"
 const IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
 const BROWSER_LIST_BATCH_SIZE := 40
+const META_INSPECT_CARD_NODE_PATH := "_card_art_inspect_card_node_path"
+const META_INSPECT_SOURCE_PATH := "_card_art_inspect_source_path"
+const META_INSPECT_CARD_ID := "_card_art_inspect_card_id"
+const META_MODEL_IS_BASE_GAME := "_card_art_model_is_base_game"
 const LOCALE_OPTIONS := [
 	{"id": "en", "name": "English"},
 	{"id": "ko", "name": "한국어"},
@@ -720,7 +724,39 @@ func _get_inspect_card():
 	var screen = get_parent()
 	if screen == null:
 		return null
-	return screen.get_node_or_null("Card")
+	if screen.has_meta(META_INSPECT_CARD_NODE_PATH):
+		var stamped_path = String(screen.get_meta(META_INSPECT_CARD_NODE_PATH, ""))
+		if stamped_path != "":
+			var stamped_card = screen.get_node_or_null(NodePath(stamped_path))
+			if stamped_card != null:
+				return stamped_card
+	var direct_card = screen.get_node_or_null("Card")
+	if direct_card != null:
+		return direct_card
+	return _find_inspect_card_candidate(screen)
+
+
+func _find_inspect_card_candidate(root):
+	if root == null:
+		return null
+	for child in root.get_children():
+		if child.get_node_or_null("CardContainer/PortraitCanvasGroup") != null:
+			return child
+		var nested_card = _find_inspect_card_candidate(child)
+		if nested_card != null:
+			return nested_card
+	return null
+
+
+func _get_stamped_inspect_source_path(screen, manager) -> String:
+	if screen == null or manager == null:
+		return ""
+	var source_path = String(screen.get_meta(META_INSPECT_SOURCE_PATH, ""))
+	var card_id = String(screen.get_meta(META_INSPECT_CARD_ID, ""))
+	var is_base_game_model = bool(screen.get_meta(META_MODEL_IS_BASE_GAME, false))
+	if manager.has_method("register_inspect_provider_source"):
+		return String(manager.register_inspect_provider_source(source_path, card_id, is_base_game_model))
+	return source_path
 
 
 func _pick_best_source_path(manager, candidates: Array) -> String:
@@ -754,7 +790,7 @@ func _get_effective_source_path() -> String:
 	if inspect_card != null:
 		if manager != null:
 			var card_path = manager.get_source_path_for_card_node(inspect_card)
-			var model_path = manager.get_source_path_for_model(inspect_card.get("Model"))
+			var model_path = manager.get_source_path_for_model(inspect_card.get("Model"), inspect_card)
 			var portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/Portrait")
 			var ancient_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
 			var portrait_path = ""
@@ -765,6 +801,9 @@ func _get_effective_source_path() -> String:
 			candidates.append(card_path)
 			candidates.append(model_path)
 			candidates.append(portrait_path)
+	var screen = get_parent()
+	if screen != null and manager != null:
+		candidates.append(_get_stamped_inspect_source_path(screen, manager))
 	return _pick_best_source_path(manager, candidates)
 
 
@@ -3106,9 +3145,9 @@ func _update_context(force_refresh: bool) -> void:
 	var portrait_source_path = ""
 	var screen = get_parent()
 	if screen != null:
-		var inspect_card = screen.get_node_or_null("Card")
+		var inspect_card = _get_inspect_card()
 		if inspect_card != null:
-			model_source_path = manager.get_source_path_for_model(inspect_card.get("Model"))
+			model_source_path = manager.get_source_path_for_model(inspect_card.get("Model"), inspect_card, force_refresh)
 			next_source_path = model_source_path
 			if next_source_path == "":
 				card_node_source_path = manager.get_source_path_for_card_node(inspect_card)
@@ -3121,6 +3160,8 @@ func _update_context(force_refresh: bool) -> void:
 			elif next_source_path == "" and inspect_portrait is TextureRect and (inspect_portrait as CanvasItem).visible:
 				portrait_source_path = manager.get_source_path_for_texture_rect(inspect_portrait)
 				next_source_path = portrait_source_path
+		if next_source_path == "":
+			next_source_path = _get_stamped_inspect_source_path(screen, manager)
 	if next_source_path == "":
 		var portrait = _get_active_portrait()
 		if portrait != null:
@@ -3139,7 +3180,7 @@ func _update_context(force_refresh: bool) -> void:
 		_refresh_card_label()
 
 	var effective_source_path = _get_effective_source_path()
-	_edit_art_button.disabled = effective_source_path == ""
+	_edit_art_button.disabled = false
 	if _editor_popup == null or !_editor_popup.visible:
 		return
 	_restore_button.disabled = effective_source_path == "" or !manager.has_override(effective_source_path)
@@ -3176,7 +3217,7 @@ func _get_active_portrait():
 	if screen == null:
 		return null
 
-	var inspect_card = screen.get_node_or_null("Card")
+	var inspect_card = _get_inspect_card()
 	if inspect_card != null:
 		var portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/Portrait")
 		var ancient_portrait = inspect_card.get_node_or_null("CardContainer/PortraitCanvasGroup/AncientPortrait")
@@ -3389,7 +3430,7 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 	if _reset_settings_button != null:
 		_reset_settings_button.disabled = is_busy or manager == null
 	_close_button.disabled = is_busy
-	_edit_art_button.disabled = is_busy or effective_source_path == ""
+	_edit_art_button.disabled = is_busy or manager == null
 	_set_status(message, is_error)
 
 

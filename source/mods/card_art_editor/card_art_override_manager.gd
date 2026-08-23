@@ -19,11 +19,6 @@ const BUNDLE_VERSION := 1
 const MANAGED_TEXTURE_PREFIX := "res://images/packed/card_portraits/"
 const CARD_ATLAS_PREFIX := "res://images/atlases/card_atlas.sprites/"
 const MODDED_CARD_ATLAS_SEGMENT := "/images/atlases/card_atlas.sprites/"
-const TARGET_RESKIN_ATLAS_PREFIXES := [
-	"res://ata_ironclad/images/atlases/lance_cards.sprites/",
-	"res://ata_silent/images/atlases/lance_cards.sprites/",
-	"res://lierentvmod/images/atlases/card_atlas.sprites/"
-]
 const MODDED_CARD_IMAGE_SEGMENTS := ["/images/card_portraits/", "/images/cards/"]
 const DEFAULT_LANDSCAPE_SIZE := Vector2i(1000, 760)
 const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
@@ -47,12 +42,15 @@ const META_SOURCE_PATH := "_card_art_source_path"
 const META_SOURCE_SIZE := "_card_art_source_size"
 const META_ORIGINAL_TEXTURE := "_card_art_original_texture"
 const META_ORIGINAL_SOURCE_KEY := "_card_art_original_source_key"
+const META_ORIGINAL_OWNER_KEY := "_card_art_original_owner_key"
 const META_OVERRIDE_ACTIVE := "_card_art_override_active"
 const META_FULL_ART_ACTIVE := "_card_art_full_art_active"
 const META_FULL_ART_OWNER_PATH := "_card_art_full_art_owner_path"
 const META_FULL_ART_OWNER_CARD_ID := "_card_art_full_art_owner_card_id"
 const META_INSPECT_SOURCE_PATH := "_card_art_inspect_source_path"
 const META_INSPECT_CARD_ID := "_card_art_inspect_card_id"
+const META_MODEL_IS_BASE_GAME := "_card_art_model_is_base_game"
+const META_MODEL_OWNER := "_card_art_model_owner"
 const META_PORTRAIT_GROUP_ORIGINAL_MATERIAL := "_card_art_portrait_group_original_material"
 const META_ANCIENT_TEXT_LAYOUT_DEFAULTS := "_card_art_ancient_text_layout_defaults"
 const META_ANCIENT_TEXT_OUTSIDE_APPLIED := "_card_art_ancient_text_outside_applied"
@@ -141,6 +139,10 @@ var _managed_source_index_cache: Dictionary = {}
 var _model_portrait_path_cache: Dictionary = {}
 var _model_portrait_path_cache_keys_by_source: Dictionary = {}
 var _stock_reskin_source_alias_cache: Dictionary = {}
+var _provider_source_alias_cache: Dictionary = {}
+var _registered_provider_source_paths: Dictionary = {}
+var _provider_source_registration_cache: Dictionary = {}
+var _managed_source_by_card_id_cache: Dictionary = {}
 var _art_pack_variants_cache: Dictionary = {}
 var _ancient_text_hover_tip: Control
 var _ancient_text_hover_tip_title
@@ -1765,19 +1767,37 @@ func get_source_path_for_card_node(card_node) -> String:
 	return ""
 
 
-func get_source_path_for_model(model) -> String:
-	return _as_valid_card_art_source(_extract_model_portrait_path(model))
+func get_source_path_for_model(model, owner_node = null, force_refresh: bool = false) -> String:
+	return _as_valid_provider_source(_extract_model_portrait_path(model, owner_node, force_refresh))
+
+
+func register_inspect_provider_source(source_path: String, card_id: String, is_base_game_model: bool) -> String:
+	return register_runtime_provider_source(source_path, card_id, is_base_game_model)
+
+
+func register_runtime_provider_source(source_path: String, card_id: String, is_base_game_model: bool) -> String:
+	var provider_path = _normalize_provider_resource_path(source_path)
+	var managed_source := ""
+	if is_base_game_model:
+		managed_source = _resolve_managed_source_from_card_id(card_id)
+	if provider_path == "":
+		return managed_source
+	var lower_path = provider_path.to_lower()
+	_registered_provider_source_paths[lower_path] = true
+	_provider_source_alias_cache[lower_path] = managed_source if managed_source != "" else provider_path
+	_provider_source_registration_cache[lower_path] = "runtime::%s::%s" % [str(is_base_game_model), card_id.strip_edges().to_upper()]
+	return provider_path
 
 
 func _get_model_or_inspect_source_path(node) -> String:
 	var ancestor = node
 	while ancestor != null:
 		var model = ancestor.get("Model")
-		var model_path = _as_valid_card_art_source(_extract_model_portrait_path(model))
+		var model_path = _as_valid_provider_source(_extract_model_portrait_path(model, ancestor))
 		if model_path != "":
 			return model_path
 		if ancestor.has_meta(META_INSPECT_SOURCE_PATH):
-			var inspect_source = _as_valid_card_art_source(String(ancestor.get_meta(META_INSPECT_SOURCE_PATH, "")))
+			var inspect_source = _as_valid_provider_source(String(ancestor.get_meta(META_INSPECT_SOURCE_PATH, "")))
 			if inspect_source != "":
 				return inspect_source
 		ancestor = ancestor.get_parent()
@@ -1841,7 +1861,8 @@ func get_source_image(source_path: String):
 
 
 func _load_source_texture(source_path: String):
-	source_path = _as_valid_card_art_source(source_path)
+	var provider_source_path = _as_valid_provider_source(source_path)
+	source_path = provider_source_path if provider_source_path != "" else _as_valid_card_art_source(source_path)
 	if source_path == "":
 		return null
 	if source_path.begins_with("res://") and !ResourceLoader.exists(source_path):
@@ -2022,11 +2043,23 @@ func _resolve_source_path_from_imported_texture_path(path: String) -> String:
 func _canonicalize_source_key(source_path: String) -> String:
 	if _is_invalid_source_path_text(source_path):
 		return ""
+	var provider_path = _normalize_provider_resource_path(source_path)
+	var provider_alias = String(_provider_source_alias_cache.get(provider_path.to_lower(), ""))
+	if provider_alias != "":
+		return provider_alias
 	var normalized = _normalize_source_path(source_path)
 	if normalized == "":
 		return source_path
+	var registered_alias = String(_provider_source_alias_cache.get(normalized.to_lower(), ""))
+	if registered_alias != "":
+		return registered_alias
 	var stock_reskin_alias = _resolve_stock_reskin_source_alias(normalized)
 	return stock_reskin_alias if stock_reskin_alias != "" else normalized
+
+
+func _source_keys_match(first_path: String, second_path: String) -> bool:
+	var first_key = _canonicalize_source_key(first_path)
+	return first_key != "" and first_key == _canonicalize_source_key(second_path)
 
 
 func _resolve_stock_reskin_source_alias(source_path: String) -> String:
@@ -2036,11 +2069,6 @@ func _resolve_stock_reskin_source_alias(source_path: String) -> String:
 		return ""
 	if _stock_reskin_source_alias_cache.has(lower_path):
 		return String(_stock_reskin_source_alias_cache[lower_path])
-	var target_atlas_key = _get_target_reskin_atlas_relative_key(lower_path)
-	if target_atlas_key != "":
-		var target_atlas_alias = _resolve_source_path_from_relative_card_key(target_atlas_key)
-		_remember_stock_reskin_source_alias(lower_path, target_atlas_alias)
-		return target_atlas_alias
 
 	var marker := "/card_portraits/"
 	var marker_index = lower_path.find(marker)
@@ -2078,21 +2106,120 @@ func _resolve_stock_reskin_source_alias(source_path: String) -> String:
 	_remember_stock_reskin_source_alias(lower_path, "")
 	return ""
 
-
-func _get_target_reskin_atlas_relative_key(lower_path: String) -> String:
-	if !lower_path.ends_with(".tres"):
-		return ""
-	for atlas_prefix in TARGET_RESKIN_ATLAS_PREFIXES:
-		var lower_prefix = String(atlas_prefix).to_lower()
-		if lower_path.begins_with(lower_prefix):
-			return lower_path.trim_prefix(lower_prefix).trim_suffix(".tres")
-	return ""
-
-
 func _remember_stock_reskin_source_alias(cache_key: String, source_path: String) -> void:
 	if _stock_reskin_source_alias_cache.size() >= MODEL_PORTRAIT_PATH_CACHE_LIMIT:
 		_stock_reskin_source_alias_cache.clear()
 	_stock_reskin_source_alias_cache[cache_key] = source_path
+
+
+func _register_model_provider_source(model, owner_node, source_path: String) -> String:
+	var normalized_path = _normalize_provider_resource_path(source_path)
+	if normalized_path == "" or (!normalized_path.begins_with("res://") and !normalized_path.begins_with("user://")):
+		return ""
+	var lower_path = normalized_path.to_lower()
+	_registered_provider_source_paths[lower_path] = true
+	var base_game_state = _get_base_game_model_state(model, owner_node)
+	var is_base_game_model = base_game_state == 1
+	if base_game_state < 0:
+		is_base_game_model = normalized_path.begins_with(MANAGED_TEXTURE_PREFIX) or normalized_path.begins_with(CARD_ATLAS_PREFIX)
+	var registration_key = _get_model_provider_registration_key(model, owner_node, is_base_game_model)
+	if String(_provider_source_registration_cache.get(lower_path, "")) == registration_key:
+		return normalized_path
+	var alias_path: String = normalized_path
+	if is_base_game_model:
+		var managed_source = _resolve_managed_source_from_card_id(_get_model_provider_card_id(model, owner_node))
+		if managed_source != "":
+			alias_path = managed_source
+	_provider_source_alias_cache[lower_path] = alias_path
+	_provider_source_registration_cache[lower_path] = registration_key
+	return normalized_path
+
+
+func _get_model_provider_registration_key(model, owner_node, is_base_game_model: bool) -> String:
+	var model_owner := ""
+	var current = owner_node
+	while model_owner == "" and current != null:
+		if current.has_meta(META_MODEL_OWNER):
+			model_owner = String(current.get_meta(META_MODEL_OWNER, "")).strip_edges()
+		current = current.get_parent()
+	if model_owner == "" and model is Object and is_instance_valid(model):
+		if model.has_meta(META_MODEL_OWNER):
+			model_owner = String(model.get_meta(META_MODEL_OWNER, "")).strip_edges()
+		if model_owner == "":
+			model_owner = String(model.get_class())
+	return "%s::%s::%s" % [str(is_base_game_model), model_owner, _get_model_provider_card_id(model, owner_node).strip_edges().to_upper()]
+
+
+func _get_model_provider_card_id(model, owner_node = null) -> String:
+	var card_id = _get_card_id_from_model(model).strip_edges()
+	if card_id != "":
+		return card_id
+	var current = owner_node
+	while current != null:
+		if current.has_meta(META_INSPECT_CARD_ID):
+			card_id = String(current.get_meta(META_INSPECT_CARD_ID, "")).strip_edges()
+			if card_id != "":
+				return card_id
+		current = current.get_parent()
+	return ""
+
+
+func _get_base_game_model_state(model, owner_node = null) -> int:
+	if model is Object and is_instance_valid(model) and model.has_meta(META_MODEL_IS_BASE_GAME):
+		return 1 if bool(model.get_meta(META_MODEL_IS_BASE_GAME, false)) else 0
+	var current = owner_node
+	while current != null:
+		if current.has_meta(META_MODEL_IS_BASE_GAME):
+			return 1 if bool(current.get_meta(META_MODEL_IS_BASE_GAME, false)) else 0
+		current = current.get_parent()
+	return -1
+
+
+func _resolve_managed_source_from_card_id(card_id: String) -> String:
+	var cache_key = card_id.strip_edges().to_upper()
+	if cache_key == "":
+		return ""
+	if _managed_source_by_card_id_cache.has(cache_key):
+		return String(_managed_source_by_card_id_cache[cache_key])
+	var basename = _camel_to_snake_case_match_key(card_id)
+	var resolved := ""
+	for category in CARD_PORTRAIT_FOLDERS:
+		if basename.ends_with("_%s" % category):
+			var category_candidate = "%s%s/%s.png" % [MANAGED_TEXTURE_PREFIX, category, basename]
+			if ResourceLoader.exists(category_candidate):
+				resolved = category_candidate
+				break
+	if resolved == "":
+		var direct_candidate_names: Array[String] = [basename]
+		resolved = _resolve_unique_managed_source_from_basenames(direct_candidate_names)
+	if resolved == "":
+		var source_index = _get_managed_source_index_cached()
+		var basename_map = source_index.get("basename", {})
+		var matches = basename_map.get(basename, []) if basename_map is Dictionary else []
+		resolved = _select_unique_managed_source(matches)
+	if resolved == "":
+		var source_index = _get_managed_source_index_cached()
+		var normalized_map = source_index.get("normalized", {})
+		var normalized_name = _normalize_card_match_key(card_id)
+		var normalized_matches = normalized_map.get(normalized_name, []) if normalized_map is Dictionary else []
+		resolved = _select_unique_managed_source(normalized_matches)
+	_managed_source_by_card_id_cache[cache_key] = resolved
+	return resolved
+
+
+func _select_unique_managed_source(matches) -> String:
+	if !(matches is Array):
+		return ""
+	var standard_matches: Array[String] = []
+	for match_path in matches:
+		var source_path = String(match_path)
+		if source_path.find("/beta/") < 0 and !standard_matches.has(source_path):
+			standard_matches.append(source_path)
+	if standard_matches.size() == 1:
+		return standard_matches[0]
+	if standard_matches.is_empty() and matches.size() == 1:
+		return String(matches[0])
+	return ""
 
 
 func _resolve_unique_managed_source_from_basenames(candidate_names: Array[String]) -> String:
@@ -2118,6 +2245,15 @@ func _as_valid_card_art_source(source_path: String) -> String:
 	if normalized == "" or !_looks_like_card_art_source(normalized):
 		return ""
 	return normalized
+
+
+func _as_valid_provider_source(source_path: String) -> String:
+	var provider_path = _normalize_provider_resource_path(source_path)
+	if provider_path == "":
+		return ""
+	if _registered_provider_source_paths.has(provider_path.to_lower()) or _looks_like_card_art_source(provider_path):
+		return provider_path
+	return _as_valid_card_art_source(provider_path)
 
 
 func _collect_card_source_paths(dir_path: String, output: Array) -> void:
@@ -5328,7 +5464,7 @@ func _sync_gif_texture_for_portrait(texture_rect, active_root) -> void:
 		if node_name != "Portrait":
 			return
 		var full_art_layer = _get_full_art_layer(card_root)
-		if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)) and String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, "")) == source_path:
+		if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)) and _source_keys_match(String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, "")), source_path):
 			_apply_gif_texture_to_target(full_art_layer, source_path, override_texture, should_animate)
 		return
 	if node_name != "Portrait" and node_name != "AncientPortrait":
@@ -6104,7 +6240,7 @@ func _apply_full_art_state(texture_rect, source_path: String, override_texture) 
 	var layer = full_art_layer as TextureRect
 	var layer_active = bool(layer.get_meta(META_FULL_ART_ACTIVE, false))
 	var layer_owner = String(layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
-	var already_same = layer_active and layer_owner == source_path and layer.texture == override_texture
+	var already_same = layer_active and _source_keys_match(layer_owner, source_path) and layer.texture == override_texture
 	if !already_same:
 		layer.texture = override_texture
 	layer.visible = true
@@ -6496,13 +6632,16 @@ func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
 	if node_name == FULL_ART_LAYER_NAME and bool(texture_rect.get_meta(META_FULL_ART_ACTIVE, false)):
 		var owner_path = String(texture_rect.get_meta(META_FULL_ART_OWNER_PATH, ""))
 		var resolved_card_path = _resolve_texture_source_path(texture_rect, current_texture)
-		if owner_path == "" or (resolved_card_path != "" and resolved_card_path != owner_path):
+		if owner_path == "" or (resolved_card_path != "" and !_source_keys_match(resolved_card_path, owner_path)):
 			var mismatch_root = _find_card_root(texture_rect)
 			_clear_custom_full_art_layer(mismatch_root)
 			return
 
 	var card_root_source_path = _get_card_root_source_path(card_root)
 	var current_path = card_root_source_path if card_root_source_path != "" else _resolve_texture_source_path(texture_rect, current_texture)
+	var can_register_provider = (node_name == "Portrait" or node_name == "AncientPortrait") and !bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))
+	if can_register_provider and card_root != null and current_texture is Texture2D:
+		_register_current_provider_source_if_verified(card_root, current_texture)
 	var stored_source_path = String(texture_rect.get_meta(META_SOURCE_PATH, ""))
 	var refresh_signature = _build_refresh_signature(texture_rect, current_texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible)
 	if String(texture_rect.get_meta(META_REFRESH_SIGNATURE, "")) == refresh_signature:
@@ -6520,12 +6659,12 @@ func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
 		var full_art_layer = _get_full_art_layer(current_root)
 		if full_art_layer is TextureRect and bool(full_art_layer.get_meta(META_FULL_ART_ACTIVE, false)):
 			var owner_path = String(full_art_layer.get_meta(META_FULL_ART_OWNER_PATH, ""))
-			if owner_path != "" and owner_path != current_path:
+			if owner_path != "" and !_source_keys_match(owner_path, current_path):
 				_clear_custom_full_art_layer(current_root)
 		if stored_source_path != current_path:
 			var source_texture = current_texture if _is_current_provider_texture_for_source(current_texture, current_path, stored_source_path) else _load_source_texture(current_path)
 			if String(texture_rect.name) == "Portrait":
-				if _get_current_card_active_full_art_owner_path(current_root) == current_path:
+				if _source_keys_match(_get_current_card_active_full_art_owner_path(current_root), current_path):
 					_enforce_custom_full_art_layer_visibility(current_root)
 				else:
 					_clear_custom_full_art_layer(current_root)
@@ -6604,6 +6743,7 @@ func _remember_original_texture(texture_rect, texture, source_path: String) -> v
 	texture_rect.set_meta(META_ORIGINAL_TEXTURE, texture)
 	texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(texture.get_width(), texture.get_height()))
 	texture_rect.set_meta(META_ORIGINAL_SOURCE_KEY, _canonicalize_source_key(source_path))
+	texture_rect.set_meta(META_ORIGINAL_OWNER_KEY, _get_card_visual_owner_key(_find_card_root(texture_rect)))
 
 
 func _get_original_texture_for_source(texture_rect, source_path: String):
@@ -6613,8 +6753,29 @@ func _get_original_texture_for_source(texture_rect, source_path: String):
 	var original_source_key = String(texture_rect.get_meta(META_ORIGINAL_SOURCE_KEY, ""))
 	if expected_source_key == "" or original_source_key != expected_source_key:
 		return null
+	var expected_owner_key = _get_card_visual_owner_key(_find_card_root(texture_rect))
+	var original_owner_key = String(texture_rect.get_meta(META_ORIGINAL_OWNER_KEY, ""))
+	if expected_owner_key != "" and original_owner_key != expected_owner_key:
+		return null
 	var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null)
 	return original_texture if original_texture is Texture2D else null
+
+
+func _register_current_provider_source_if_verified(card_root, current_texture: Texture2D) -> void:
+	var model = _get_card_model_from_root(card_root)
+	if model == null:
+		return
+	var declared_provider_path = _as_valid_provider_source(_extract_model_portrait_path(model, card_root))
+	var current_provider_path = _get_texture_resource_source_path(current_texture)
+	if declared_provider_path == "" or current_provider_path == "":
+		return
+	if current_provider_path == declared_provider_path:
+		_register_model_provider_source(model, card_root, current_provider_path)
+		return
+	var declared_source_key = _canonicalize_source_key(declared_provider_path)
+	var current_source_key = _canonicalize_source_key(current_provider_path)
+	if declared_source_key != "" and current_source_key == declared_source_key:
+		_register_model_provider_source(model, card_root, current_provider_path)
 
 
 func _is_current_provider_texture_for_source(current_texture, current_path: String, previous_source_path: String) -> bool:
@@ -6748,7 +6909,7 @@ func _looks_like_modded_card_atlas_source(path: String) -> bool:
 		return false
 	if normalized.contains(MODDED_CARD_ATLAS_SEGMENT):
 		return true
-	return _get_target_reskin_atlas_relative_key(normalized) != ""
+	return false
 
 
 func _looks_like_modded_card_portrait_image_source(path: String) -> bool:
@@ -6766,6 +6927,8 @@ func _looks_like_modded_card_portrait_image_source(path: String) -> bool:
 func _looks_like_card_art_source(path: String) -> bool:
 	if path == "":
 		return false
+	if _registered_provider_source_paths.has(path.replace("\\", "/").to_lower()):
+		return true
 	if path.begins_with(MANAGED_TEXTURE_PREFIX) or path.begins_with(CARD_ATLAS_PREFIX):
 		return true
 	if _looks_like_modded_card_atlas_source(path):
@@ -6787,16 +6950,33 @@ func _looks_like_card_art_source(path: String) -> bool:
 func _get_texture_resource_source_path(texture) -> String:
 	if !(texture is Texture2D):
 		return ""
-	var texture_path = _normalize_source_path(String(texture.resource_path))
+	var texture_path = _normalize_provider_resource_path(String(texture.resource_path))
 	if texture_path != "":
 		return texture_path
-	if texture is AtlasTexture and texture.atlas is Texture2D:
-		var atlas_path = _normalize_source_path(String(texture.atlas.resource_path))
-		var lower_atlas_path = atlas_path.to_lower()
-		if lower_atlas_path.begins_with("res://ata_ironclad/images/atlases/lance_cards_") or lower_atlas_path.begins_with("res://ata_silent/images/atlases/lance_cards_"):
-			return ""
-		return atlas_path
+	# Atlas pages are shared by multiple cards and cannot identify an owner.
 	return ""
+
+
+func _get_card_visual_owner_key(card_root) -> String:
+	if card_root == null:
+		return ""
+	var model = _get_card_model_from_root(card_root)
+	var model_owner := ""
+	if model is Object and is_instance_valid(model) and model.has_meta(META_MODEL_OWNER):
+		model_owner = String(model.get_meta(META_MODEL_OWNER, "")).strip_edges()
+	var current = card_root
+	while model_owner == "" and current != null:
+		if current.has_meta(META_MODEL_OWNER):
+			model_owner = String(current.get_meta(META_MODEL_OWNER, "")).strip_edges()
+		current = current.get_parent()
+	if model_owner == "" and model != null:
+		model_owner = String(model.get_class()).strip_edges()
+	var card_id = _get_card_root_card_id(card_root).strip_edges().to_upper()
+	if model_owner == "":
+		return card_id
+	if card_id == "":
+		return model_owner
+	return "%s::%s" % [model_owner, card_id]
 
 
 func _resolve_texture_source_path(texture_rect, current_texture: Texture2D) -> String:
@@ -6836,7 +7016,7 @@ func _resolve_texture_source_path(texture_rect, current_texture: Texture2D) -> S
 func _get_model_portrait_path_cache_key(model) -> String:
 	if model == null or !(model is Object) or !is_instance_valid(model):
 		return ""
-	return str(model.get_instance_id())
+	return "%s::%s" % [str(model.get_instance_id()), _get_card_id_from_model(model).strip_edges().to_upper()]
 
 
 func _remember_model_portrait_path(cache_key: String, source_path: String) -> void:
@@ -6906,24 +7086,30 @@ func invalidate_model_portrait_path_cache_for_source(source_path: String) -> voi
 	_model_portrait_path_cache_keys_by_source.erase(source_key)
 
 
-func _extract_model_portrait_path(model) -> String:
+func _extract_model_portrait_path(model, owner_node = null, force_refresh: bool = false) -> String:
 	if model == null:
 		return ""
 
 	var cache_key = _get_model_portrait_path_cache_key(model)
+	if force_refresh and cache_key != "":
+		_forget_model_portrait_path_cache_key(cache_key)
 	if cache_key != "" and _model_portrait_path_cache.has(cache_key):
-		return String(_model_portrait_path_cache[cache_key])
+		var cached_path = String(_model_portrait_path_cache[cache_key])
+		_register_model_provider_source(model, owner_node, cached_path)
+		return cached_path
 
 	var custom_portrait_path_variant = model.get("CustomPortraitPath")
 	if custom_portrait_path_variant != null:
-		var custom_portrait_path = _normalize_source_path(String(custom_portrait_path_variant))
+		var custom_portrait_path = _normalize_provider_resource_path(String(custom_portrait_path_variant))
+		_register_model_provider_source(model, owner_node, custom_portrait_path)
 		if custom_portrait_path != "" and _looks_like_card_art_source(custom_portrait_path):
 			_remember_model_portrait_path(cache_key, custom_portrait_path)
 			return custom_portrait_path
 
 	var portrait_path_variant = model.get("PortraitPath")
 	if portrait_path_variant != null:
-		var portrait_path = _normalize_source_path(String(portrait_path_variant))
+		var portrait_path = _normalize_provider_resource_path(String(portrait_path_variant))
+		_register_model_provider_source(model, owner_node, portrait_path)
 		if portrait_path != "" and _looks_like_card_art_source(portrait_path):
 			_remember_model_portrait_path(cache_key, portrait_path)
 			return portrait_path
@@ -6931,12 +7117,31 @@ func _extract_model_portrait_path(model) -> String:
 	var all_portrait_paths = model.get("AllPortraitPaths")
 	if all_portrait_paths is Array:
 		for portrait_entry in all_portrait_paths:
-			var normalized_path = _normalize_source_path(String(portrait_entry))
+			var normalized_path = _normalize_provider_resource_path(String(portrait_entry))
+			_register_model_provider_source(model, owner_node, normalized_path)
 			if normalized_path != "" and _looks_like_card_art_source(normalized_path):
 				_remember_model_portrait_path(cache_key, normalized_path)
 				return normalized_path
 
+	if _get_base_game_model_state(model, owner_node) == 1:
+		var managed_source = _resolve_managed_source_from_card_id(_get_model_provider_card_id(model, owner_node))
+		if managed_source != "":
+			_register_model_provider_source(model, owner_node, managed_source)
+			_remember_model_portrait_path(cache_key, managed_source)
+			return managed_source
+
 	return ""
+
+
+func _normalize_provider_resource_path(path: String) -> String:
+	if _is_invalid_source_path_text(path):
+		return ""
+	path = path.replace("\\", "/")
+	if !path.begins_with("res://") and !path.begins_with("user://"):
+		var res_candidate = "res://%s" % path.trim_prefix("/")
+		if ResourceLoader.exists(res_candidate):
+			return res_candidate
+	return path
 
 
 func _normalize_source_path(path: String) -> String:

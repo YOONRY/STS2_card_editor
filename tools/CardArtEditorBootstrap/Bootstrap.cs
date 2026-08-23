@@ -25,6 +25,9 @@ public static class Bootstrap
     private const string OverlayScenePath = "res://mods/card_art_editor/inspect_card_art_editor.tscn";
     internal const string InspectSourcePathMeta = "_card_art_inspect_source_path";
     internal const string InspectCardIdMeta = "_card_art_inspect_card_id";
+    internal const string InspectCardNodePathMeta = "_card_art_inspect_card_node_path";
+    internal const string InspectBaseGameModelMeta = "_card_art_model_is_base_game";
+    internal const string InspectModelOwnerMeta = "_card_art_model_owner";
     private const string CachedPortraitPathMeta = "_card_art_cached_portrait_path";
     private const string CachedPortraitCardIdMeta = "_card_art_cached_portrait_card_id";
     private const string CachedPortraitModelKeyMeta = "_card_art_cached_portrait_model_key";
@@ -37,6 +40,7 @@ public static class Bootstrap
     private static bool _eventDrivenPortraitRefreshEnabled;
     private static readonly Dictionary<Type, MemberInfo?> CardNodeMemberCache = new();
     private static readonly Dictionary<Type, PropertyInfo?> CustomPortraitPathPropertyCache = new();
+    private static string _lastInspectMetadataDiagnostic = string.Empty;
 
     public static void Init()
     {
@@ -156,6 +160,7 @@ public static class Bootstrap
                 return;
             }
 
+            UpdateInspectCardMetadata(screen);
             AttachOverlay(screen);
         }
         catch (Exception ex)
@@ -346,20 +351,48 @@ public static class Bootstrap
             var card = Traverse.Create(screen).Field("_card").GetValue<NCard>();
             if (card is null || !GodotObject.IsInstanceValid(card))
             {
+                screen.SetMeta(InspectCardNodePathMeta, string.Empty);
+                screen.SetMeta(InspectSourcePathMeta, string.Empty);
+                screen.SetMeta(InspectCardIdMeta, string.Empty);
+                screen.SetMeta(InspectBaseGameModelMeta, false);
+                screen.SetMeta(InspectModelOwnerMeta, string.Empty);
                 return;
             }
+
+            screen.SetMeta(InspectCardNodePathMeta, screen.GetPathTo(card).ToString());
 
             if (!TryGetCardModel(card, out var model) || model is null)
             {
                 ClearCachedPortraitPath(card);
                 card.SetMeta(InspectSourcePathMeta, string.Empty);
                 card.SetMeta(InspectCardIdMeta, string.Empty);
+                card.SetMeta(InspectBaseGameModelMeta, false);
+                card.SetMeta(InspectModelOwnerMeta, string.Empty);
+                screen.SetMeta(InspectSourcePathMeta, string.Empty);
+                screen.SetMeta(InspectCardIdMeta, string.Empty);
+                screen.SetMeta(InspectBaseGameModelMeta, false);
+                screen.SetMeta(InspectModelOwnerMeta, string.Empty);
                 return;
             }
 
             var cardId = GetCardId(model);
-            card.SetMeta(InspectSourcePathMeta, GetCachedPortraitPath(card, model, cardId));
+            ClearCachedPortraitPath(card);
+            var sourcePath = GetCachedPortraitPath(card, model, cardId);
+            card.SetMeta(InspectSourcePathMeta, sourcePath);
             card.SetMeta(InspectCardIdMeta, cardId);
+            StampCardModelOwnership(card, model);
+            RegisterCardProviderSource(model, sourcePath, cardId);
+            screen.SetMeta(InspectSourcePathMeta, sourcePath);
+            screen.SetMeta(InspectCardIdMeta, cardId);
+            screen.SetMeta(InspectBaseGameModelMeta, card.GetMeta(InspectBaseGameModelMeta));
+            screen.SetMeta(InspectModelOwnerMeta, card.GetMeta(InspectModelOwnerMeta));
+
+            var diagnostic = $"{card.GetInstanceId()}|{cardId}|{sourcePath}|{model.GetType().AssemblyQualifiedName}";
+            if (!string.Equals(_lastInspectMetadataDiagnostic, diagnostic, StringComparison.Ordinal))
+            {
+                _lastInspectMetadataDiagnostic = diagnostic;
+                Log($"Inspect metadata: card_path='{screen.GetPathTo(card)}', card_id='{cardId}', source='{sourcePath}', model='{model.GetType().FullName}', base_game={card.GetMeta(InspectBaseGameModelMeta)}");
+            }
         }
         catch (Exception ex)
         {
@@ -369,6 +402,7 @@ public static class Bootstrap
 
     internal static void RefreshCardOverrides(NCard card)
     {
+        UpdateInspectCardMetadataFromCard(card);
         QueueCardOverrideRefresh(card);
     }
 
@@ -518,6 +552,28 @@ public static class Bootstrap
         }
     }
 
+    private static void StampCardModelOwnership(NCard card, CardModel model)
+    {
+        var modelType = model.GetType();
+        var isBaseGameModel = modelType.Assembly == typeof(CardModel).Assembly;
+        var assemblyName = modelType.Assembly.GetName().Name ?? string.Empty;
+        var modelOwner = $"{assemblyName}:{modelType.FullName ?? modelType.Name}";
+        card.SetMeta(InspectBaseGameModelMeta, isBaseGameModel);
+        card.SetMeta(InspectModelOwnerMeta, modelOwner);
+    }
+
+    private static void RegisterCardProviderSource(CardModel model, string sourcePath, string cardId)
+    {
+        var manager = TryEnsureManager();
+        if (manager is null)
+        {
+            return;
+        }
+
+        var isBaseGameModel = model.GetType().Assembly == typeof(CardModel).Assembly;
+        manager.Call("register_runtime_provider_source", sourcePath, cardId, isBaseGameModel);
+    }
+
     private static void UpdateInspectCardMetadataFromCard(NCard card)
     {
         try
@@ -532,12 +588,17 @@ public static class Bootstrap
                 ClearCachedPortraitPath(card);
                 card.SetMeta(InspectSourcePathMeta, string.Empty);
                 card.SetMeta(InspectCardIdMeta, string.Empty);
+                card.SetMeta(InspectBaseGameModelMeta, false);
+                card.SetMeta(InspectModelOwnerMeta, string.Empty);
                 return;
             }
 
             var cardId = GetCardId(model);
-            card.SetMeta(InspectSourcePathMeta, GetCachedPortraitPath(card, model, cardId));
+            var sourcePath = GetCachedPortraitPath(card, model, cardId);
+            card.SetMeta(InspectSourcePathMeta, sourcePath);
             card.SetMeta(InspectCardIdMeta, cardId);
+            StampCardModelOwnership(card, model);
+            RegisterCardProviderSource(model, sourcePath, cardId);
         }
         catch (Exception ex)
         {
@@ -790,23 +851,27 @@ public static class Bootstrap
         }
     }
 
-    private static void RefreshCardOwner(object? source)
+    private static void RefreshCardOwner(object? source, bool updateMetadata)
     {
         var cardNode = TryFindCardNode(source);
         if (cardNode is not null)
         {
+            if (updateMetadata)
+            {
+                UpdateInspectCardMetadataFromCard(cardNode);
+            }
             RefreshCardOverridesAfterGameVisualUpdate(cardNode);
         }
     }
 
     private static void RefreshCardOwnerPostfix(object __instance)
     {
-        RefreshCardOwner(__instance);
+        RefreshCardOwner(__instance, true);
     }
 
     private static void RefreshCardVisualPostfix(object __instance)
     {
-        RefreshCardOwner(__instance);
+        RefreshCardOwner(__instance, true);
     }
 
     private static string DescribeNodePath(Node node)
