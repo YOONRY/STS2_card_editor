@@ -16,7 +16,8 @@ namespace CardArtEditorBootstrap;
 [ModInitializer("Init")]
 public static class Bootstrap
 {
-    private static readonly Harmony Harmony = new("ysg05.card_art_editor");
+    private const string HarmonyId = "ysg05.card_art_editor";
+    private static readonly Harmony Harmony = new(HarmonyId);
     private static bool _loggedManagerLoadFailure;
     private static bool _loggedManagerInstantiateFailure;
     private static bool _loggedOverlayLoadFailure;
@@ -38,6 +39,10 @@ public static class Bootstrap
     private const string InfectionEffectOriginalVisibleMeta = "_card_art_infection_effect_original_visible";
     private static Node? _pendingManager;
     private static bool _eventDrivenPortraitRefreshEnabled;
+    private static MethodBase? _nCardUpdateVisualsMethod;
+    private static bool _externalUpdateVisualsPatchDetected;
+    private static long _nextExternalPatchProbeTicks;
+    private const long ExternalPatchProbeIntervalMs = 1000;
     private static readonly Dictionary<Type, MemberInfo?> CardNodeMemberCache = new();
     private static readonly Dictionary<Type, PropertyInfo?> CustomPortraitPathPropertyCache = new();
     private static string _lastInspectMetadataDiagnostic = string.Empty;
@@ -50,7 +55,16 @@ public static class Bootstrap
             Harmony.PatchAll(typeof(Bootstrap).Assembly);
             PatchOptionalCardVisualHooks();
             _eventDrivenPortraitRefreshEnabled = true;
-            TryEnsureManager();
+            var manager = TryEnsureManager();
+            if (manager is not null && HasExternalUpdateVisualsPatch())
+            {
+                manager.Call("set_external_provider_capture_enabled", true);
+            }
+            else
+            {
+                // Probe again on the first card update in case the other mod initializes later.
+                _nextExternalPatchProbeTicks = 0;
+            }
             TryAttachToOpenInspectScreens();
             Log("Init complete.");
         }
@@ -63,7 +77,8 @@ public static class Bootstrap
 
     private static void PatchOptionalCardVisualHooks()
     {
-        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.NCard", "UpdatePortrait", nameof(RefreshCardVisualPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.NCard", "UpdateVisuals", nameof(CaptureCardProviderPostfix), Priority.Last);
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.NCard", "_EnterTree", nameof(CaptureCardProviderPostfix), Priority.Last);
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "ReassignToCard", nameof(RefreshCardOwnerPostfix));
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "SetCard", nameof(RefreshCardOwnerPostfix));
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "OnCardReassigned", nameof(RefreshCardOwnerPostfix));
@@ -79,7 +94,7 @@ public static class Bootstrap
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardEnchantVfx", "_Ready", nameof(RefreshCardOwnerPostfix));
     }
 
-    private static void TryPatchOptionalPostfix(string typeName, string methodName, string postfixName)
+    private static void TryPatchOptionalPostfix(string typeName, string methodName, string postfixName, int priority = Priority.Normal)
     {
         try
         {
@@ -127,6 +142,12 @@ public static class Bootstrap
                 return;
             }
 
+            if (string.Equals(typeName, "MegaCrit.Sts2.Core.Nodes.Cards.NCard", StringComparison.Ordinal) &&
+                string.Equals(methodName, "UpdateVisuals", StringComparison.Ordinal))
+            {
+                _nCardUpdateVisualsMethod = target;
+            }
+
             var postfix = typeof(Bootstrap).GetMethod(postfixName, BindingFlags.NonPublic | BindingFlags.Static);
             if (postfix is null)
             {
@@ -134,13 +155,60 @@ public static class Bootstrap
                 return;
             }
 
-            Harmony.Patch(target, postfix: new HarmonyMethod(postfix));
+            Harmony.Patch(target, postfix: new HarmonyMethod(postfix) { priority = priority });
             Log($"Optional patch applied: {typeName}.{methodName}.");
         }
         catch (Exception ex)
         {
             Log($"Optional patch failed for {typeName}.{methodName}: {ex}");
         }
+    }
+
+    private static bool HasExternalUpdateVisualsPatch()
+    {
+        if (_externalUpdateVisualsPatchDetected)
+        {
+            return true;
+        }
+
+        var target = _nCardUpdateVisualsMethod;
+        if (target is null)
+        {
+            return false;
+        }
+
+        var now = System.Environment.TickCount64;
+        if (now < _nextExternalPatchProbeTicks)
+        {
+            return false;
+        }
+        _nextExternalPatchProbeTicks = now + ExternalPatchProbeIntervalMs;
+
+        var patchInfo = HarmonyLib.Harmony.GetPatchInfo(target);
+        if (patchInfo is null ||
+            (!ContainsExternalPatch(patchInfo.Prefixes) &&
+             !ContainsExternalPatch(patchInfo.Postfixes) &&
+             !ContainsExternalPatch(patchInfo.Transpilers) &&
+             !ContainsExternalPatch(patchInfo.Finalizers)))
+        {
+            return false;
+        }
+
+        _externalUpdateVisualsPatchDetected = true;
+        Log("External NCard.UpdateVisuals patch detected; provider capture enabled.");
+        return true;
+    }
+
+    private static bool ContainsExternalPatch(IEnumerable<Patch> patches)
+    {
+        foreach (var patch in patches)
+        {
+            if (!string.Equals(patch.owner, HarmonyId, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     internal static void OnInspectCardScreenReady(NInspectCardScreen screen)
@@ -160,7 +228,7 @@ public static class Bootstrap
                 return;
             }
 
-            UpdateInspectCardMetadata(screen);
+            RefreshInspectCardProvider(screen);
             AttachOverlay(screen);
         }
         catch (Exception ex)
@@ -404,6 +472,51 @@ public static class Bootstrap
     {
         UpdateInspectCardMetadataFromCard(card);
         QueueCardOverrideRefresh(card);
+    }
+
+    internal static void RefreshInspectCardProvider(NInspectCardScreen screen)
+    {
+        UpdateInspectCardMetadata(screen);
+        if (!HasExternalUpdateVisualsPatch())
+        {
+            return;
+        }
+
+        try
+        {
+            var card = Traverse.Create(screen).Field("_card").GetValue<NCard>();
+            if (card is null || !GodotObject.IsInstanceValid(card))
+            {
+                return;
+            }
+
+            CaptureCardProviderPostfix(card);
+            var manager = TryEnsureManager();
+            manager?.Call("register_inspect_card_provider_pin", card);
+        }
+        catch (Exception ex)
+        {
+            Log("RefreshInspectCardProvider failed: " + ex);
+        }
+    }
+
+    internal static void UnregisterInspectCardProvider(NInspectCardScreen screen)
+    {
+        try
+        {
+            var card = Traverse.Create(screen).Field("_card").GetValue<NCard>();
+            if (card is null || !GodotObject.IsInstanceValid(card))
+            {
+                return;
+            }
+
+            var manager = TryEnsureManager();
+            manager?.Call("unregister_inspect_card_provider_pin", card);
+        }
+        catch (Exception ex)
+        {
+            Log("UnregisterInspectCardProvider failed: " + ex);
+        }
     }
 
     private static void TrySuppressSpecialCardEffects(NCard card)
@@ -869,9 +982,30 @@ public static class Bootstrap
         RefreshCardOwner(__instance, true);
     }
 
-    private static void RefreshCardVisualPostfix(object __instance)
+    private static void CaptureCardProviderPostfix(object __instance)
     {
-        RefreshCardOwner(__instance, true);
+        if (!HasExternalUpdateVisualsPatch())
+        {
+            return;
+        }
+
+        var cardNode = TryFindCardNode(__instance);
+        if (cardNode is null)
+        {
+            return;
+        }
+
+        UpdateInspectCardMetadataFromCard(cardNode);
+        var manager = TryEnsureManager();
+        if (manager is null)
+        {
+            return;
+        }
+
+        manager.Call("set_external_provider_capture_enabled", true);
+        // Capture now and once deferred so load-order ties cannot hide the final provider texture.
+        manager.Call("capture_card_provider_after_visual_update", cardNode);
+        manager.Call("queue_card_provider_capture", cardNode);
     }
 
     private static string DescribeNodePath(Node node)
@@ -919,9 +1053,10 @@ internal static class InspectCardScreenReadyPatch
 [HarmonyPatch(typeof(NInspectCardScreen), "UpdateCardDisplay")]
 internal static class InspectCardScreenUpdateCardDisplayPatch
 {
+    [HarmonyPriority(Priority.Last)]
     private static void Postfix(NInspectCardScreen __instance)
     {
-        Bootstrap.UpdateInspectCardMetadata(__instance);
+        Bootstrap.RefreshInspectCardProvider(__instance);
     }
 }
 
@@ -930,6 +1065,7 @@ internal static class InspectCardScreenClosePatch
 {
     private static void Prefix(NInspectCardScreen __instance)
     {
+        Bootstrap.UnregisterInspectCardProvider(__instance);
         Bootstrap.UpdateInspectCardMetadata(__instance);
     }
 }

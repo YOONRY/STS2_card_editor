@@ -64,7 +64,11 @@ const META_FULL_ART_LAYER_INSET := "_card_art_full_art_layer_inset"
 const META_SKIP_BACKGROUND_REFRESH := "_card_art_skip_background_refresh"
 const META_DEFERRED_CARD_REFRESH_PENDING := "_card_art_deferred_card_refresh_pending"
 const META_DEFERRED_CARD_REFRESH_INVALIDATE_MODEL := "_card_art_deferred_card_refresh_invalidate_model"
+const META_PROVIDER_CAPTURE_PENDING := "_card_art_provider_capture_pending"
+const META_INSPECT_PROVIDER_STABILIZATION_PENDING := "_card_art_inspect_provider_stabilization_pending"
 const META_PROVIDER_RELOAD_PENDING := "_card_art_provider_reload_pending"
+const META_MANAGED_OVERRIDE_TEXTURE := "_card_art_managed_override_texture"
+const META_MANAGED_OVERRIDE_SOURCE := "_card_art_managed_override_source"
 const FULL_ART_LAYER_NAME := "CardArtFullArtLayer"
 const MULTIPLAYER_EXPANDED_STATE_SCRIPT_PATH := "res://src/Core/Nodes/Multiplayer/NMultiplayerPlayerExpandedState.cs"
 const STATIC_OVERRIDE_CACHE_SUFFIX := "::static"
@@ -86,6 +90,8 @@ const PORTRAIT_VISIBLE_REFRESH_BUDGET := 18
 const PORTRAIT_EVENT_FALLBACK_REFRESH_INTERVAL := 0.5
 const PORTRAIT_EVENT_FALLBACK_REFRESH_BUDGET := 6
 const MODEL_PORTRAIT_PATH_CACHE_LIMIT := 2048
+const INSPECT_PROVIDER_STABILIZATION_FRAMES := 8
+const INSPECT_PROVIDER_PIN_INTERVAL := 0.016
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
 const ANCIENT_TEXT_HOVER_HITBOX_INSET := 12.0
@@ -142,6 +148,10 @@ var _stock_reskin_source_alias_cache: Dictionary = {}
 var _provider_source_alias_cache: Dictionary = {}
 var _registered_provider_source_paths: Dictionary = {}
 var _provider_source_registration_cache: Dictionary = {}
+var _external_provider_capture_enabled := false
+var _external_provider_texture_cache: Dictionary = {}
+var _inspect_provider_card_refs: Dictionary = {}
+var _inspect_provider_pin_accumulator := 0.0
 var _managed_source_by_card_id_cache: Dictionary = {}
 var _art_pack_variants_cache: Dictionary = {}
 var _ancient_text_hover_tip: Control
@@ -299,6 +309,7 @@ func _is_last_gif_active_root_stale() -> bool:
 
 
 func _process(delta: float) -> void:
+	_refresh_inspect_provider_pins(delta)
 	if _startup_rescan_frames_remaining > 0:
 		_startup_rescan_tick += 1
 		if _startup_rescan_tick >= STARTUP_RESCAN_STEP_INTERVAL:
@@ -4576,6 +4587,8 @@ func _refresh_visible_tracked_portraits(max_items: int = PORTRAIT_NAVIGATION_REF
 			continue
 		if _is_multiplayer_expanded_deck_card_root(card_root):
 			continue
+		if !_should_refresh_tracked_card_root(card_root):
+			continue
 		if texture_rect is CanvasItem and !(texture_rect as CanvasItem).is_visible_in_tree():
 			continue
 		_refresh_portrait_node(texture_rect)
@@ -4607,6 +4620,8 @@ func _refresh_visible_tracked_portraits_from_cursor(max_items: int) -> void:
 			continue
 		if _is_multiplayer_expanded_deck_card_root(card_root):
 			continue
+		if !_should_refresh_tracked_card_root(card_root):
+			continue
 		if texture_rect is CanvasItem and !(texture_rect as CanvasItem).is_visible_in_tree():
 			continue
 		_refresh_portrait_node(texture_rect)
@@ -4630,6 +4645,117 @@ func queue_card_override_refresh(card_node, invalidate_model_cache := false) -> 
 	_apply_queued_card_override_refresh.call_deferred(card_node)
 
 
+func set_external_provider_capture_enabled(enabled: bool) -> void:
+	_external_provider_capture_enabled = enabled
+
+
+func capture_card_provider_after_visual_update(card_node, cache_external_provider := false) -> bool:
+	set_external_provider_capture_enabled(true)
+	var card_root = _get_card_refresh_root(card_node)
+	if card_root == null:
+		return false
+	var source_path = _canonicalize_source_key(_get_model_or_inspect_source_path(card_root))
+	if source_path == "":
+		source_path = _canonicalize_source_key(_get_card_root_source_path(card_root))
+	if source_path == "":
+		return false
+	var captured := false
+	for portrait_path in ["PortraitCanvasGroup/Portrait", "PortraitCanvasGroup/AncientPortrait"]:
+		var portrait = card_root.get_node_or_null(portrait_path)
+		if !(portrait is TextureRect) or !(portrait.texture is Texture2D):
+			continue
+		var provider_texture = portrait.texture as Texture2D
+		if _is_managed_override_texture(provider_texture):
+			continue
+		_register_current_provider_source_if_verified(card_root, provider_texture)
+		if cache_external_provider:
+			_remember_external_provider_texture(card_root, portrait, provider_texture, source_path)
+		_remember_original_texture(portrait, provider_texture, source_path)
+		portrait.set_meta(META_SOURCE_PATH, source_path)
+		portrait.set_meta(META_OVERRIDE_ACTIVE, false)
+		portrait.set_meta(META_REFRESH_SIGNATURE, "")
+		captured = true
+	return captured
+
+
+func queue_card_provider_capture(card_node) -> void:
+	if card_node == null or !is_instance_valid(card_node):
+		return
+	if bool(card_node.get_meta(META_PROVIDER_CAPTURE_PENDING, false)):
+		return
+	card_node.set_meta(META_PROVIDER_CAPTURE_PENDING, true)
+	_apply_queued_card_provider_capture.call_deferred(card_node)
+
+
+func queue_inspect_card_provider_stabilization(card_node) -> void:
+	if card_node == null or !is_instance_valid(card_node):
+		return
+	if bool(card_node.get_meta(META_INSPECT_PROVIDER_STABILIZATION_PENDING, false)):
+		return
+	card_node.set_meta(META_INSPECT_PROVIDER_STABILIZATION_PENDING, true)
+	_stabilize_inspect_card_provider(card_node)
+
+
+func register_inspect_card_provider_pin(card_node) -> void:
+	if card_node == null or !is_instance_valid(card_node):
+		return
+	_inspect_provider_card_refs[int(card_node.get_instance_id())] = weakref(card_node)
+	queue_inspect_card_provider_stabilization(card_node)
+
+
+func unregister_inspect_card_provider_pin(card_node) -> void:
+	if card_node == null:
+		return
+	_inspect_provider_card_refs.erase(int(card_node.get_instance_id()))
+	if _inspect_provider_card_refs.is_empty():
+		_inspect_provider_pin_accumulator = 0.0
+
+
+func _refresh_inspect_provider_pins(delta: float) -> void:
+	if _inspect_provider_card_refs.is_empty():
+		_inspect_provider_pin_accumulator = 0.0
+		return
+	_inspect_provider_pin_accumulator += delta
+	if _inspect_provider_pin_accumulator < INSPECT_PROVIDER_PIN_INTERVAL:
+		return
+	_inspect_provider_pin_accumulator = 0.0
+	for instance_id in _inspect_provider_card_refs.keys():
+		var card_ref = _inspect_provider_card_refs.get(instance_id, null)
+		var card_node = card_ref.get_ref() if card_ref is WeakRef else null
+		if card_node == null or !is_instance_valid(card_node):
+			_inspect_provider_card_refs.erase(instance_id)
+			continue
+		if !card_needs_override_refresh(card_node):
+			_restore_external_provider_texture(card_node)
+
+
+func _stabilize_inspect_card_provider(card_node) -> void:
+	for _frame_index in range(INSPECT_PROVIDER_STABILIZATION_FRAMES):
+		await get_tree().process_frame
+		if card_node == null or !is_instance_valid(card_node):
+			return
+		capture_card_provider_after_visual_update(card_node, true)
+		if card_needs_override_refresh(card_node):
+			queue_card_override_refresh(card_node)
+		elif _external_provider_capture_enabled:
+			_restore_external_provider_texture(card_node)
+	if card_node != null and is_instance_valid(card_node):
+		card_node.remove_meta(META_INSPECT_PROVIDER_STABILIZATION_PENDING)
+
+
+func _apply_queued_card_provider_capture(card_node) -> void:
+	if card_node == null or !is_instance_valid(card_node):
+		return
+	card_node.remove_meta(META_PROVIDER_CAPTURE_PENDING)
+	capture_card_provider_after_visual_update(card_node, true)
+	if card_needs_override_refresh(card_node):
+		queue_card_override_refresh(card_node)
+	elif _external_provider_capture_enabled:
+		# Some card views reset the portrait to the base-game texture without
+		# emitting another holder reassignment event.
+		_restore_external_provider_texture(card_node)
+
+
 func _apply_queued_card_override_refresh(card_node) -> void:
 	if card_node == null or !is_instance_valid(card_node):
 		return
@@ -4639,6 +4765,8 @@ func _apply_queued_card_override_refresh(card_node) -> void:
 	if invalidate_model_cache:
 		invalidate_card_model_portrait_path_cache(card_node)
 	if !card_needs_override_refresh(card_node):
+		if _external_provider_capture_enabled:
+			_restore_external_provider_texture(card_node)
 		return
 	var card_root = _get_card_refresh_root(card_node)
 	if card_root == null:
@@ -4688,6 +4816,10 @@ func card_needs_override_refresh(card_node) -> bool:
 		if stored_source_key != "" and _manifest.has(stored_source_key):
 			return true
 	return false
+
+
+func _should_refresh_tracked_card_root(card_root) -> bool:
+	return !_external_provider_capture_enabled or card_needs_override_refresh(card_root)
 
 
 func _clear_source_overrides_from_tracked_portraits(source_path: String) -> void:
@@ -6465,7 +6597,8 @@ func _refresh_tracked_portraits(max_items: int = PORTRAIT_REFRESH_FRAME_BUDGET) 
 				completed_cycle = true
 			continue
 		var card_root = _find_card_root(texture_rect)
-		if !_is_multiplayer_expanded_deck_card_root(card_root):
+		var should_refresh = _should_refresh_tracked_card_root(card_root)
+		if !_is_multiplayer_expanded_deck_card_root(card_root) and should_refresh:
 			_refresh_portrait_node(texture_rect)
 		processed += 1
 		_portrait_refresh_cursor += 1
@@ -6639,7 +6772,7 @@ func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
 
 	var card_root_source_path = _get_card_root_source_path(card_root)
 	var current_path = card_root_source_path if card_root_source_path != "" else _resolve_texture_source_path(texture_rect, current_texture)
-	var can_register_provider = (node_name == "Portrait" or node_name == "AncientPortrait") and !bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false))
+	var can_register_provider = node_name == "Portrait" or node_name == "AncientPortrait"
 	if can_register_provider and card_root != null and current_texture is Texture2D:
 		_register_current_provider_source_if_verified(card_root, current_texture)
 	var stored_source_path = String(texture_rect.get_meta(META_SOURCE_PATH, ""))
@@ -6746,6 +6879,87 @@ func _remember_original_texture(texture_rect, texture, source_path: String) -> v
 	texture_rect.set_meta(META_ORIGINAL_OWNER_KEY, _get_card_visual_owner_key(_find_card_root(texture_rect)))
 
 
+func _get_external_provider_texture_cache_key(card_root, portrait: TextureRect) -> String:
+	var owner_key = _get_card_visual_owner_key(card_root)
+	if owner_key == "" or portrait == null:
+		return ""
+	return "%s::%s" % [owner_key, String(portrait.name)]
+
+
+func _is_external_provider_texture_candidate(texture: Texture2D) -> bool:
+	if !(texture is Texture2D) or _is_managed_override_texture(texture):
+		return false
+	var texture_path = _get_texture_resource_source_path(texture).replace("\\", "/").to_lower()
+	if texture_path == "":
+		return true
+	# Base-game resources can be reloaded from their source path and must not replace
+	# a previously captured runtime texture from another mod.
+	if texture_path.begins_with("res://images/"):
+		return false
+	return texture_path.begins_with("res://") or texture_path.begins_with("user://")
+
+
+func _remember_external_provider_texture(card_root, portrait: TextureRect, texture: Texture2D, source_path: String) -> void:
+	if !_is_external_provider_texture_candidate(texture):
+		return
+	var cache_key = _get_external_provider_texture_cache_key(card_root, portrait)
+	var source_key = _canonicalize_source_key(source_path)
+	if cache_key == "" or source_key == "":
+		return
+	var texture_path = _get_texture_resource_source_path(texture)
+	var existing_entry = _external_provider_texture_cache.get(cache_key, null)
+	if texture_path == "" and existing_entry is Dictionary and String(existing_entry.get("source_key", "")) == source_key:
+		var existing_texture = existing_entry.get("texture", null)
+		if existing_texture is Texture2D and is_instance_valid(existing_texture) and existing_texture != texture:
+			# Runtime ImageTextures have no path. Keep the first stable provider so
+			# a transient pathless stock texture cannot replace it during recycling.
+			return
+	if _external_provider_texture_cache.size() >= MODEL_PORTRAIT_PATH_CACHE_LIMIT and !_external_provider_texture_cache.has(cache_key):
+		_external_provider_texture_cache.clear()
+	_external_provider_texture_cache[cache_key] = {
+		"source_key": source_key,
+		"texture": texture
+	}
+
+
+func _restore_external_provider_texture(card_node) -> bool:
+	var card_root = _get_card_refresh_root(card_node)
+	if card_root == null:
+		return false
+	var source_key = _canonicalize_source_key(_get_model_or_inspect_source_path(card_root))
+	if source_key == "":
+		source_key = _canonicalize_source_key(_get_card_root_source_path(card_root))
+	if source_key == "":
+		return false
+	var restored := false
+	for portrait_path in ["PortraitCanvasGroup/Portrait", "PortraitCanvasGroup/AncientPortrait"]:
+		var portrait = card_root.get_node_or_null(portrait_path)
+		if !(portrait is TextureRect):
+			continue
+		var cache_key = _get_external_provider_texture_cache_key(card_root, portrait)
+		var entry = _external_provider_texture_cache.get(cache_key, null)
+		if !(entry is Dictionary) or String(entry.get("source_key", "")) != source_key:
+			continue
+		var provider_texture = entry.get("texture", null)
+		if !(provider_texture is Texture2D) or !is_instance_valid(provider_texture):
+			_external_provider_texture_cache.erase(cache_key)
+			continue
+		var original_texture = portrait.get_meta(META_ORIGINAL_TEXTURE, null)
+		var already_restored = portrait.texture == provider_texture \
+			and original_texture == provider_texture \
+			and String(portrait.get_meta(META_SOURCE_PATH, "")) == source_key \
+			and !bool(portrait.get_meta(META_OVERRIDE_ACTIVE, false))
+		if already_restored:
+			continue
+		portrait.texture = provider_texture
+		_remember_original_texture(portrait, provider_texture, source_key)
+		portrait.set_meta(META_SOURCE_PATH, source_key)
+		portrait.set_meta(META_OVERRIDE_ACTIVE, false)
+		portrait.set_meta(META_REFRESH_SIGNATURE, "")
+		restored = true
+	return restored
+
+
 func _get_original_texture_for_source(texture_rect, source_path: String):
 	if !(texture_rect is TextureRect) or !texture_rect.has_meta(META_ORIGINAL_TEXTURE):
 		return null
@@ -6776,6 +6990,47 @@ func _register_current_provider_source_if_verified(card_root, current_texture: T
 	var current_source_key = _canonicalize_source_key(current_provider_path)
 	if declared_source_key != "" and current_source_key == declared_source_key:
 		_register_model_provider_source(model, card_root, current_provider_path)
+		return
+	_try_register_direct_texture_provider_source(card_root, model, declared_provider_path, current_provider_path)
+
+
+func _try_register_direct_texture_provider_source(card_root, model, declared_provider_path: String, current_provider_path: String) -> bool:
+	var base_game_state = _get_base_game_model_state(model, card_root)
+	var is_base_game_model = base_game_state == 1
+	if base_game_state < 0:
+		is_base_game_model = declared_provider_path.begins_with(MANAGED_TEXTURE_PREFIX) or declared_provider_path.begins_with(CARD_ATLAS_PREFIX)
+	if !is_base_game_model or !current_provider_path.begins_with("res://"):
+		return false
+	if current_provider_path.begins_with(MANAGED_TEXTURE_PREFIX) or current_provider_path.begins_with(CARD_ATLAS_PREFIX):
+		return false
+	if !_provider_resource_path_matches_card_identity(card_root, current_provider_path):
+		return false
+	_register_model_provider_source(model, card_root, current_provider_path)
+	return true
+
+
+func _provider_resource_path_matches_card_identity(card_root, provider_path: String) -> bool:
+	var provider_name = _camel_to_snake_case_match_key(provider_path.get_file().get_basename())
+	if provider_name == "":
+		return false
+	var owner_key = _get_card_visual_owner_key(card_root)
+	var model_owner = owner_key.get_slice("::", 0)
+	var owner_separator = model_owner.find(":")
+	if owner_separator >= 0:
+		model_owner = model_owner.substr(owner_separator + 1)
+	var model_type_name = _camel_to_snake_case_match_key(model_owner)
+	if model_type_name != "" and _snake_key_contains_identity(provider_name, model_type_name):
+		return true
+	var card_id = _camel_to_snake_case_match_key(_get_card_root_card_id(card_root))
+	return card_id != "" and _snake_key_contains_identity(provider_name, card_id)
+
+
+func _snake_key_contains_identity(provider_name: String, identity: String) -> bool:
+	if provider_name == identity:
+		return true
+	var padded_provider = "_%s_" % provider_name.trim_prefix("_").trim_suffix("_")
+	var padded_identity = "_%s_" % identity.trim_prefix("_").trim_suffix("_")
+	return padded_provider.contains(padded_identity)
 
 
 func _is_current_provider_texture_for_source(current_texture, current_path: String, previous_source_path: String) -> bool:
@@ -6789,6 +7044,17 @@ func _is_current_provider_texture_for_source(current_texture, current_path: Stri
 	if texture_source_path == "":
 		return false
 	return _canonicalize_source_key(texture_source_path).to_lower() == _canonicalize_source_key(current_path).to_lower()
+
+
+func _mark_managed_override_texture(texture, source_path: String):
+	if texture is Texture2D:
+		texture.set_meta(META_MANAGED_OVERRIDE_TEXTURE, true)
+		texture.set_meta(META_MANAGED_OVERRIDE_SOURCE, _canonicalize_source_key(source_path))
+	return texture
+
+
+func _is_managed_override_texture(texture) -> bool:
+	return texture is Texture2D and bool(texture.get_meta(META_MANAGED_OVERRIDE_TEXTURE, false))
 
 
 func _get_override_texture_cache_key(source_path: String, animate: bool = true) -> String:
@@ -6813,7 +7079,7 @@ func _get_override_texture(source_path: String, animate: bool = true):
 	if _is_animated_entry(entry):
 		var animated_cache_key = _get_override_texture_cache_key(source_path, animate)
 		if _override_texture_cache.has(animated_cache_key):
-			return _override_texture_cache[animated_cache_key]
+			return _mark_managed_override_texture(_override_texture_cache[animated_cache_key], source_path)
 		var frame_paths = entry.get("source_frame_paths", entry.get("frame_paths", [])) if display_mode == DISPLAY_MODE_FULL_ART else entry.get("frame_paths", [])
 		var frame_delays = entry.get("frame_delays", [])
 		if !(frame_paths is Array) or frame_paths.is_empty():
@@ -6846,10 +7112,12 @@ func _get_override_texture(source_path: String, animate: bool = true):
 
 		if !animate:
 			var static_texture = loaded_frames[0]["texture"]
+			_mark_managed_override_texture(static_texture, source_path)
 			_override_texture_cache[animated_cache_key] = static_texture
 			return static_texture
 
 		var animated_texture := AnimatedTexture.new()
+		_mark_managed_override_texture(animated_texture, source_path)
 		animated_texture.frames = loaded_frames.size()
 		animated_texture.speed_scale = 1.0
 		for index in range(loaded_frames.size()):
@@ -6861,7 +7129,7 @@ func _get_override_texture(source_path: String, animate: bool = true):
 		return animated_texture
 
 	if _override_texture_cache.has(source_path):
-		return _override_texture_cache[source_path]
+		return _mark_managed_override_texture(_override_texture_cache[source_path], source_path)
 
 	if !entry.has("override_path"):
 		return null
@@ -6879,6 +7147,7 @@ func _get_override_texture(source_path: String, animate: bool = true):
 			return null
 
 	var override_texture = ImageTexture.create_from_image(image)
+	_mark_managed_override_texture(override_texture, source_path)
 	_override_texture_cache[source_path] = override_texture
 	return override_texture
 
