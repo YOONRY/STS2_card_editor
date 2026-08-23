@@ -19,6 +19,11 @@ const BUNDLE_VERSION := 1
 const MANAGED_TEXTURE_PREFIX := "res://images/packed/card_portraits/"
 const CARD_ATLAS_PREFIX := "res://images/atlases/card_atlas.sprites/"
 const MODDED_CARD_ATLAS_SEGMENT := "/images/atlases/card_atlas.sprites/"
+const TARGET_RESKIN_ATLAS_PREFIXES := [
+	"res://ata_ironclad/images/atlases/lance_cards.sprites/",
+	"res://ata_silent/images/atlases/lance_cards.sprites/",
+	"res://lierentvmod/images/atlases/card_atlas.sprites/"
+]
 const MODDED_CARD_IMAGE_SEGMENTS := ["/images/card_portraits/", "/images/cards/"]
 const DEFAULT_LANDSCAPE_SIZE := Vector2i(1000, 760)
 const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
@@ -41,6 +46,7 @@ const PCK_HEADER_RESERVED_FIELDS := 16
 const META_SOURCE_PATH := "_card_art_source_path"
 const META_SOURCE_SIZE := "_card_art_source_size"
 const META_ORIGINAL_TEXTURE := "_card_art_original_texture"
+const META_ORIGINAL_SOURCE_KEY := "_card_art_original_source_key"
 const META_OVERRIDE_ACTIVE := "_card_art_override_active"
 const META_FULL_ART_ACTIVE := "_card_art_full_art_active"
 const META_FULL_ART_OWNER_PATH := "_card_art_full_art_owner_path"
@@ -2030,6 +2036,11 @@ func _resolve_stock_reskin_source_alias(source_path: String) -> String:
 		return ""
 	if _stock_reskin_source_alias_cache.has(lower_path):
 		return String(_stock_reskin_source_alias_cache[lower_path])
+	var target_atlas_key = _get_target_reskin_atlas_relative_key(lower_path)
+	if target_atlas_key != "":
+		var target_atlas_alias = _resolve_source_path_from_relative_card_key(target_atlas_key)
+		_remember_stock_reskin_source_alias(lower_path, target_atlas_alias)
+		return target_atlas_alias
 
 	var marker := "/card_portraits/"
 	var marker_index = lower_path.find(marker)
@@ -2065,6 +2076,16 @@ func _resolve_stock_reskin_source_alias(source_path: String) -> String:
 		_remember_stock_reskin_source_alias(lower_path, unique_basename_alias)
 		return unique_basename_alias
 	_remember_stock_reskin_source_alias(lower_path, "")
+	return ""
+
+
+func _get_target_reskin_atlas_relative_key(lower_path: String) -> String:
+	if !lower_path.ends_with(".tres"):
+		return ""
+	for atlas_prefix in TARGET_RESKIN_ATLAS_PREFIXES:
+		var lower_prefix = String(atlas_prefix).to_lower()
+		if lower_path.begins_with(lower_prefix):
+			return lower_path.trim_prefix(lower_prefix).trim_suffix(".tres")
 	return ""
 
 
@@ -4587,13 +4608,12 @@ func _restore_texture_rect_to_provider(texture_rect, source_path: String = "") -
 	var provider_source = _as_valid_card_art_source(source_path)
 	if provider_source == "":
 		provider_source = _as_valid_card_art_source(String(texture_rect.get_meta(META_SOURCE_PATH, "")))
-	var restore_texture = _load_source_texture(provider_source) if provider_source != "" else null
-	if !(restore_texture is Texture2D):
-		restore_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null) if texture_rect.has_meta(META_ORIGINAL_TEXTURE) else null
+	var restore_texture = _get_original_texture_for_source(texture_rect, provider_source)
+	if !(restore_texture is Texture2D) and provider_source != "":
+		restore_texture = _load_source_texture(provider_source)
 	if restore_texture is Texture2D:
 		texture_rect.texture = restore_texture
-		texture_rect.set_meta(META_ORIGINAL_TEXTURE, restore_texture)
-		texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(restore_texture.get_width(), restore_texture.get_height()))
+		_remember_original_texture(texture_rect, restore_texture, provider_source)
 	if provider_source != "":
 		texture_rect.set_meta(META_SOURCE_PATH, provider_source)
 	texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
@@ -6443,7 +6463,7 @@ func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
 		if ancient_visible and !portrait_visible:
 			_ensure_ancient_portrait_mask(card_root)
 		if node_name == "Portrait" and !portrait_visible and ancient_visible:
-			var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null) if texture_rect.has_meta(META_ORIGINAL_TEXTURE) else null
+			var original_texture = _get_original_texture_for_source(texture_rect, _get_card_root_source_path(card_root))
 			if original_texture is Texture2D:
 				texture_rect.texture = original_texture
 			texture_rect.set_meta(META_SOURCE_PATH, "")
@@ -6451,7 +6471,7 @@ func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
 			texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
 			return
 		if node_name == "AncientPortrait" and !ancient_visible:
-			var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null) if texture_rect.has_meta(META_ORIGINAL_TEXTURE) else null
+			var original_texture = _get_original_texture_for_source(texture_rect, _get_card_root_source_path(card_root))
 			if original_texture is Texture2D:
 				texture_rect.texture = original_texture
 			texture_rect.set_meta(META_SOURCE_PATH, "")
@@ -6512,18 +6532,15 @@ func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
 			if source_texture is Texture2D:
 				texture_rect.texture = source_texture
 				current_texture = source_texture
-				texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(source_texture.get_width(), source_texture.get_height()))
-				texture_rect.set_meta(META_ORIGINAL_TEXTURE, source_texture)
+				_remember_original_texture(texture_rect, source_texture, current_path)
 			elif current_texture is Texture2D and !bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false)):
-				texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
-				texture_rect.set_meta(META_ORIGINAL_TEXTURE, current_texture)
+				_remember_original_texture(texture_rect, current_texture, current_path)
 			texture_rect.set_meta(META_SOURCE_PATH, current_path)
 			texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
 			texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
 			stored_source_path = current_path
 		elif current_texture is Texture2D and !texture_rect.has_meta(META_ORIGINAL_TEXTURE) and !bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false)):
-			texture_rect.set_meta(META_ORIGINAL_TEXTURE, current_texture)
-			texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(current_texture.get_width(), current_texture.get_height()))
+			_remember_original_texture(texture_rect, current_texture, current_path)
 			texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
 	elif stored_source_path == "":
 		_apply_ancient_text_outside_layout(card_root)
@@ -6575,11 +6592,29 @@ func _synchronize_provider_original_texture(texture_rect, current_texture, overr
 		return
 	if !bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false)) or current_texture == override_texture:
 		return
-	var provider_texture = _load_source_texture(source_path)
+	var provider_texture = current_texture if _is_current_provider_texture_for_source(current_texture, source_path, source_path) else _load_source_texture(source_path)
 	if !(provider_texture is Texture2D):
 		provider_texture = current_texture
-	texture_rect.set_meta(META_ORIGINAL_TEXTURE, provider_texture)
-	texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(provider_texture.get_width(), provider_texture.get_height()))
+	_remember_original_texture(texture_rect, provider_texture, source_path)
+
+
+func _remember_original_texture(texture_rect, texture, source_path: String) -> void:
+	if !(texture_rect is TextureRect) or !(texture is Texture2D):
+		return
+	texture_rect.set_meta(META_ORIGINAL_TEXTURE, texture)
+	texture_rect.set_meta(META_SOURCE_SIZE, Vector2i(texture.get_width(), texture.get_height()))
+	texture_rect.set_meta(META_ORIGINAL_SOURCE_KEY, _canonicalize_source_key(source_path))
+
+
+func _get_original_texture_for_source(texture_rect, source_path: String):
+	if !(texture_rect is TextureRect) or !texture_rect.has_meta(META_ORIGINAL_TEXTURE):
+		return null
+	var expected_source_key = _canonicalize_source_key(source_path)
+	var original_source_key = String(texture_rect.get_meta(META_ORIGINAL_SOURCE_KEY, ""))
+	if expected_source_key == "" or original_source_key != expected_source_key:
+		return null
+	var original_texture = texture_rect.get_meta(META_ORIGINAL_TEXTURE, null)
+	return original_texture if original_texture is Texture2D else null
 
 
 func _is_current_provider_texture_for_source(current_texture, current_path: String, previous_source_path: String) -> bool:
@@ -6592,7 +6627,7 @@ func _is_current_provider_texture_for_source(current_texture, current_path: Stri
 	var texture_source_path = _get_texture_resource_source_path(current_texture)
 	if texture_source_path == "":
 		return false
-	return texture_source_path.to_lower() == _normalize_source_path(current_path).to_lower()
+	return _canonicalize_source_key(texture_source_path).to_lower() == _canonicalize_source_key(current_path).to_lower()
 
 
 func _get_override_texture_cache_key(source_path: String, animate: bool = true) -> String:
@@ -6709,7 +6744,11 @@ func _is_portrait_node(node) -> bool:
 
 func _looks_like_modded_card_atlas_source(path: String) -> bool:
 	var normalized = path.replace("\\", "/").to_lower()
-	return normalized.begins_with("res://") and normalized.contains(MODDED_CARD_ATLAS_SEGMENT) and normalized.ends_with(".tres")
+	if !normalized.begins_with("res://") or !normalized.ends_with(".tres"):
+		return false
+	if normalized.contains(MODDED_CARD_ATLAS_SEGMENT):
+		return true
+	return _get_target_reskin_atlas_relative_key(normalized) != ""
 
 
 func _looks_like_modded_card_portrait_image_source(path: String) -> bool:
@@ -6752,7 +6791,11 @@ func _get_texture_resource_source_path(texture) -> String:
 	if texture_path != "":
 		return texture_path
 	if texture is AtlasTexture and texture.atlas is Texture2D:
-		return _normalize_source_path(String(texture.atlas.resource_path))
+		var atlas_path = _normalize_source_path(String(texture.atlas.resource_path))
+		var lower_atlas_path = atlas_path.to_lower()
+		if lower_atlas_path.begins_with("res://ata_ironclad/images/atlases/lance_cards_") or lower_atlas_path.begins_with("res://ata_silent/images/atlases/lance_cards_"):
+			return ""
+		return atlas_path
 	return ""
 
 
