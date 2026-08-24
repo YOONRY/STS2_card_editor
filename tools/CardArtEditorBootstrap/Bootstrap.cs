@@ -984,11 +984,6 @@ public static class Bootstrap
 
     private static void CaptureCardProviderPostfix(object __instance)
     {
-        if (!HasExternalUpdateVisualsPatch())
-        {
-            return;
-        }
-
         var cardNode = TryFindCardNode(__instance);
         if (cardNode is null)
         {
@@ -1002,10 +997,22 @@ public static class Bootstrap
             return;
         }
 
-        manager.Call("set_external_provider_capture_enabled", true);
-        // Capture now and once deferred so load-order ties cannot hide the final provider texture.
-        manager.Call("capture_card_provider_after_visual_update", cardNode);
-        manager.Call("queue_card_provider_capture", cardNode);
+        if (HasExternalUpdateVisualsPatch())
+        {
+            manager.Call("set_external_provider_capture_enabled", true);
+            manager.Call("capture_card_provider_after_visual_update", cardNode, true);
+        }
+
+        // UpdateVisuals can replace the portrait immediately before drawing it. Reapply
+        // our override in the same callback so the stock/provider texture never flashes.
+        manager.Call("apply_card_override_after_visual_update", cardNode);
+        QueueCardOverrideRefresh(cardNode);
+
+        if (_externalUpdateVisualsPatchDetected)
+        {
+            // Capture once deferred as well in case another last-priority postfix ran after us.
+            manager.Call("queue_card_provider_capture", cardNode);
+        }
     }
 
     private static string DescribeNodePath(Node node)
