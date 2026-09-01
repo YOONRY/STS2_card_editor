@@ -3,6 +3,7 @@
 const GEMINI_API_URL_TEMPLATE := "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 const DEFAULT_MODEL := "gemini-2.0-flash-preview-image-generation"
 const UI_SETTINGS_PATH := "user://card_art_editor/ui_settings.json"
+const GIF_PRELOAD_PROGRESS = preload("res://mods/card_art_editor/gif_preload_progress.gd")
 const FILE_DIALOG_MODE_UPLOAD := "upload"
 const FILE_DIALOG_MODE_IMPORT_PACK := "import_pack"
 const FILE_DIALOG_MODE_IMPORT_MOD := "import_mod"
@@ -89,7 +90,7 @@ const TRANSLATIONS := {
 		"infection_show": "감염 이펙트 켜기",
 		"infection_hide": "감염 이펙트 끄기",
 		"gif_settings": "GIF 설정",
-		"gif_settings_hint": "이 옵션은 GIF를 불러오거나 다시 적용할 때만 성능에 영향을 줍니다.",
+		"gif_settings_hint": "처리 옵션은 GIF를 불러오거나 다시 적용할 때 사용됩니다. 재생 및 프리로딩 옵션은 별도로 적용됩니다.",
 		"gif_presets": "GIF 프리셋",
 		"gif_preset_fast": "고속",
 		"gif_preset_balanced": "균형",
@@ -226,7 +227,7 @@ const TRANSLATIONS := {
 		"infection_show": "Show Infection Effect",
 		"infection_hide": "Hide Infection Effect",
 		"gif_settings": "GIF Settings",
-		"gif_settings_hint": "These options only affect performance when importing or reapplying GIFs.",
+		"gif_settings_hint": "Processing options affect GIF imports and reapplication. Playback and preloading options apply separately.",
 		"gif_presets": "GIF Presets",
 		"gif_preset_fast": "Fast",
 		"gif_preset_balanced": "Balanced",
@@ -363,7 +364,7 @@ const TRANSLATIONS := {
 		"infection_show": "显示感染效果",
 		"infection_hide": "隐藏感染效果",
 		"gif_settings": "GIF 设置",
-		"gif_settings_hint": "这些选项只会在导入或重新应用 GIF 时影响性能。",
+		"gif_settings_hint": "处理选项适用于 GIF 的导入和重新应用。播放和预加载选项单独生效。",
 		"gif_presets": "GIF 预设",
 		"gif_preset_fast": "快速",
 		"gif_preset_balanced": "平衡",
@@ -500,7 +501,7 @@ const TRANSLATIONS := {
 		"infection_show": "感染エフェクトを表示",
 		"infection_hide": "感染エフェクトを非表示",
 		"gif_settings": "GIF 設定",
-		"gif_settings_hint": "これらのオプションは GIF の読み込みまたは再適用時のみ性能に影響します。",
+		"gif_settings_hint": "処理オプションは GIF の読み込み・再適用時に使用します。再生とプリロードの設定は個別に適用されます。",
 		"gif_presets": "GIF プリセット",
 		"gif_preset_fast": "高速",
 		"gif_preset_balanced": "バランス",
@@ -632,6 +633,7 @@ var _language_title_label: Label
 var _language_option_buttons := {}
 var _settings_button: Button
 var _settings_panel: PanelContainer
+var _settings_content: VBoxContainer
 var _settings_title_label: Label
 var _settings_hint_label: Label
 var _settings_general_label: Label
@@ -687,12 +689,16 @@ var _adjust_source_image = null
 var _adjust_source_path := ""
 var _adjust_drag_active := false
 var _gif_settings_popup: PanelContainer
+var _gif_settings_content: VBoxContainer
 var _gif_settings_hint_label: Label
 var _gif_preset_label: Label
 var _gif_preset_fast_button: Button
 var _gif_preset_balanced_button: Button
 var _gif_preset_quality_button: Button
 var _gif_cache_check: CheckBox
+var _gif_preload_check: CheckBox
+var _gif_preload_hint_label: Label
+var _gif_preload_estimate_label: Label
 var _gif_dedupe_check: CheckBox
 var _gif_limit_check: CheckBox
 var _gif_hover_playback_all_button: Button
@@ -706,6 +712,7 @@ var _gif_processing_settings := {
 	"skip_duplicate_frames": true,
 	"use_frame_limit": false,
 	"max_frames": 36,
+	"preload_enabled": false,
 	"play_on_hover_only": false
 }
 var _gif_processing_settings_draft := {}
@@ -843,6 +850,7 @@ func _load_ui_settings() -> void:
 			_gif_processing_settings["skip_duplicate_frames"] = bool(parsed_gif_settings.get("skip_duplicate_frames", true))
 			_gif_processing_settings["use_frame_limit"] = bool(parsed_gif_settings.get("use_frame_limit", false))
 			_gif_processing_settings["max_frames"] = clamp(int(parsed_gif_settings.get("max_frames", 36)), 1, 300)
+			_gif_processing_settings["preload_enabled"] = bool(parsed_gif_settings.get("preload_enabled", false))
 			_gif_processing_settings["play_on_hover_only"] = bool(parsed_gif_settings.get("play_on_hover_only", false))
 		_infection_effect_hidden_enabled = bool(parsed.get("infection_effect_hidden_enabled", true))
 		_full_art_rarity_fire_enabled = bool(parsed.get("full_art_rarity_fire_enabled", false))
@@ -1174,6 +1182,7 @@ func _normalize_gif_processing_settings(settings: Dictionary) -> Dictionary:
 		"skip_duplicate_frames": bool(settings.get("skip_duplicate_frames", true)),
 		"use_frame_limit": bool(settings.get("use_frame_limit", false)),
 		"max_frames": clamp(int(settings.get("max_frames", 36)), 1, 300),
+		"preload_enabled": bool(settings.get("preload_enabled", false)),
 		"play_on_hover_only": bool(settings.get("play_on_hover_only", false))
 	}
 
@@ -1191,6 +1200,7 @@ func _sync_gif_settings_draft_from_ui() -> void:
 	var previous_card_enabled = _get_current_gif_hover_playback_enabled()
 	_gif_processing_settings_draft = _normalize_gif_processing_settings({
 		"use_cache": _gif_cache_check.button_pressed,
+		"preload_enabled": _gif_preload_check.button_pressed,
 		"skip_duplicate_frames": _gif_dedupe_check.button_pressed,
 		"use_frame_limit": _gif_limit_check.button_pressed,
 		"max_frames": int(_gif_limit_spinbox.value),
@@ -1241,6 +1251,10 @@ func _refresh_gif_settings_ui() -> void:
 	if _gif_preset_quality_button != null:
 		_gif_preset_quality_button.text = _tr("gif_preset_quality")
 	_gif_cache_check.text = _tr("gif_use_cache")
+	_gif_preload_check.text = GIF_PRELOAD_PROGRESS.translated(_locale, "option")
+	_gif_preload_hint_label.text = GIF_PRELOAD_PROGRESS.translated(_locale, "hint")
+	var manager = _manager()
+	_gif_preload_estimate_label.text = GIF_PRELOAD_PROGRESS.estimate_text(_locale, manager.get_gif_preload_estimate() if manager != null else {})
 	_gif_dedupe_check.text = _tr("gif_skip_duplicates")
 	_gif_limit_check.text = _tr("gif_use_frame_limit")
 	if _gif_hover_playback_all_button != null:
@@ -1254,6 +1268,7 @@ func _refresh_gif_settings_ui() -> void:
 	var ui_settings = _get_gif_settings_ui_values()
 	_gif_settings_ui_syncing = true
 	_gif_cache_check.button_pressed = bool(ui_settings.get("use_cache", true))
+	_gif_preload_check.button_pressed = bool(ui_settings.get("preload_enabled", false))
 	_gif_dedupe_check.button_pressed = bool(ui_settings.get("skip_duplicate_frames", true))
 	_gif_limit_check.button_pressed = bool(ui_settings.get("use_frame_limit", false))
 	_refresh_gif_hover_card_check()
@@ -1399,7 +1414,8 @@ func _build_settings_shell() -> void:
 	_settings_panel.z_as_relative = false
 	_settings_panel.z_index = 1208
 	_settings_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	_settings_panel.custom_minimum_size = Vector2(280, 0)
+	_settings_panel.custom_minimum_size = Vector2(0, 0)
+	_settings_panel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	var panel_style = StyleBoxFlat.new()
 	panel_style.bg_color = Color(0.09, 0.09, 0.11, 0.96)
 	panel_style.border_color = Color(0.72, 0.72, 0.76, 1.0)
@@ -1421,9 +1437,18 @@ func _build_settings_shell() -> void:
 	margin.add_theme_constant_override("margin_bottom", 14)
 	_settings_panel.add_child(margin)
 
+	var settings_scroll = ScrollContainer.new()
+	settings_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	settings_scroll.follow_focus = true
+	settings_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	settings_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	margin.add_child(settings_scroll)
+
 	var root = VBoxContainer.new()
+	_settings_content = root
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root.add_theme_constant_override("separation", 10)
-	margin.add_child(root)
+	settings_scroll.add_child(root)
 
 	_settings_title_label = Label.new()
 	_settings_title_label.text = _tr("settings")
@@ -1605,11 +1630,8 @@ func _build_adjust_ui() -> void:
 	_gif_settings_popup.z_as_relative = false
 	_gif_settings_popup.z_index = 1210
 	_gif_settings_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_gif_settings_popup.set_anchors_preset(Control.PRESET_CENTER)
-	_gif_settings_popup.offset_left = -220
-	_gif_settings_popup.offset_top = -145
-	_gif_settings_popup.offset_right = 220
-	_gif_settings_popup.offset_bottom = 145
+	_gif_settings_popup.custom_minimum_size = Vector2(0, 0)
+	_gif_settings_popup.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	var gif_popup_style = StyleBoxFlat.new()
 	gif_popup_style.bg_color = Color(0.10, 0.10, 0.12, 1.0)
 	gif_popup_style.border_color = Color(0.72, 0.72, 0.76, 1.0)
@@ -1631,9 +1653,18 @@ func _build_adjust_ui() -> void:
 	gif_margin.add_theme_constant_override("margin_bottom", 16)
 	_gif_settings_popup.add_child(gif_margin)
 
+	var gif_scroll = ScrollContainer.new()
+	gif_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	gif_scroll.follow_focus = true
+	gif_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gif_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	gif_margin.add_child(gif_scroll)
+
 	var gif_root = VBoxContainer.new()
+	_gif_settings_content = gif_root
+	gif_root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	gif_root.add_theme_constant_override("separation", 10)
-	gif_margin.add_child(gif_root)
+	gif_scroll.add_child(gif_root)
 
 	var gif_title = Label.new()
 	gif_title.text = "GIF Settings"
@@ -1694,6 +1725,17 @@ func _build_adjust_ui() -> void:
 	_gif_limit_spinbox.value = 36
 	_gif_limit_spinbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	limit_row.add_child(_gif_limit_spinbox)
+
+	_gif_preload_check = CheckBox.new()
+	gif_root.add_child(_gif_preload_check)
+	_gif_preload_hint_label = Label.new()
+	_gif_preload_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_gif_preload_hint_label.add_theme_font_size_override("font_size", 13)
+	gif_root.add_child(_gif_preload_hint_label)
+	_gif_preload_estimate_label = Label.new()
+	_gif_preload_estimate_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_gif_preload_estimate_label.add_theme_font_size_override("font_size", 13)
+	gif_root.add_child(_gif_preload_estimate_label)
 
 	var gif_button_row = HBoxContainer.new()
 	gif_button_row.add_theme_constant_override("separation", 8)
@@ -2161,16 +2203,17 @@ func _process(delta: float) -> void:
 
 
 func _position_settings_panel() -> void:
-	if _settings_panel == null or _editor_popup == null:
+	if _settings_panel == null or _settings_content == null or _editor_popup == null:
 		return
 	var popup_rect = _editor_popup.get_global_rect()
 	var viewport_rect = get_viewport_rect()
-	# Runtime-created panels can retain a previous parent-sized height. Shrink the
-	# drawer back to its content before placing it beside the editor.
-	_settings_panel.reset_size()
-	var panel_size = _settings_panel.get_combined_minimum_size()
-	if panel_size.x <= 1.0 or panel_size.y <= 1.0:
-		panel_size = Vector2(280, 360)
+	var available = viewport_rect.size - Vector2(24, 24)
+	var panel_width = minf(320, available.x)
+	var content_width = maxf(1, panel_width - 28)
+	_settings_content.custom_minimum_size.x = content_width
+	_settings_content.size.x = content_width
+	var content_height = _settings_content.get_combined_minimum_size().y + 28
+	var panel_size = Vector2(panel_width, maxf(120, minf(content_height, minf(500, available.y))))
 	_settings_panel.size = panel_size
 	var margin := 12.0
 	var target_x = popup_rect.position.x + popup_rect.size.x + margin
@@ -2180,6 +2223,14 @@ func _position_settings_panel() -> void:
 	target_x = clamp(target_x, viewport_rect.position.x + margin, max(viewport_rect.position.x + margin, viewport_rect.position.x + viewport_rect.size.x - panel_size.x - margin))
 	target_y = clamp(target_y, viewport_rect.position.y + margin, max(viewport_rect.position.y + margin, viewport_rect.position.y + viewport_rect.size.y - panel_size.y - margin))
 	_settings_panel.position = Vector2(target_x, target_y)
+
+
+func _settle_settings_panel_layout() -> void:
+	# Autowrapped labels update their minimum height after the drawer receives its
+	# final width. Fit once more on the following frame to remove cached blank space.
+	await get_tree().process_frame
+	if _settings_panel != null and _settings_panel.visible:
+		_position_settings_panel()
 
 
 func _refresh_settings_panel_visibility() -> void:
@@ -2210,6 +2261,7 @@ func _on_settings_pressed() -> void:
 	_position_settings_panel()
 	_settings_panel.show()
 	_settings_panel.move_to_front()
+	_settle_settings_panel_layout.call_deferred()
 
 
 func _on_edit_art_pressed() -> void:
@@ -2251,13 +2303,24 @@ func _on_gif_settings_pressed() -> void:
 	_gif_hover_playback_card_draft_enabled = false
 	_gif_settings_source_path = _get_effective_source_path()
 	_refresh_gif_settings_ui()
-	var popup_rect = _editor_popup.get_global_rect()
-	_gif_settings_popup.position = Vector2(
-		popup_rect.position.x + popup_rect.size.x - _gif_settings_popup.size.x - 16.0,
-		popup_rect.position.y + 54.0
-	)
+	_layout_gif_settings_popup()
 	_gif_settings_popup.show()
 	_gif_settings_popup.move_to_front()
+	_layout_gif_settings_popup.call_deferred()
+
+
+func _layout_gif_settings_popup() -> void:
+	var viewport_rect = get_viewport_rect()
+	var available = viewport_rect.size - Vector2(48, 48)
+	var panel_width = minf(560, available.x)
+	var content_width = maxf(1, panel_width - 32)
+	_gif_settings_content.custom_minimum_size.x = content_width
+	_gif_settings_content.size.x = content_width
+	var content_height = _gif_settings_content.get_combined_minimum_size().y + 34
+	_gif_settings_popup.size = Vector2(panel_width, maxf(160, minf(content_height, minf(520, available.y))))
+	var popup_rect = _editor_popup.get_global_rect()
+	var desired = Vector2(popup_rect.end.x - _gif_settings_popup.size.x - 16, popup_rect.position.y + 54)
+	_gif_settings_popup.position = desired.clamp(viewport_rect.position + Vector2(24, 24), viewport_rect.end - _gif_settings_popup.size - Vector2(24, 24))
 
 
 func _on_gif_settings_close_pressed() -> void:
@@ -2292,6 +2355,8 @@ func _on_gif_settings_apply_pressed() -> void:
 		await _reapply_gif_settings_globally()
 	else:
 		_set_status(_tr("gif_settings_applied"), false)
+	if is_instance_valid(manager) and bool(_gif_processing_settings.get("preload_enabled", false)):
+		manager.request_gif_preload(true, true)
 
 
 func _on_gif_hover_all_pressed() -> void:
@@ -2868,6 +2933,7 @@ func _on_reset_settings_pressed() -> void:
 		"skip_duplicate_frames": true,
 		"use_frame_limit": false,
 		"max_frames": 36,
+		"preload_enabled": false,
 		"play_on_hover_only": false
 	}
 	_gif_processing_settings_draft.clear()
@@ -3372,6 +3438,7 @@ func _bind_signals() -> void:
 	_adjust_reset_button.pressed.connect(_on_adjust_reset_pressed)
 	_adjust_cancel_button.pressed.connect(_on_adjust_cancel_pressed)
 	_gif_cache_check.toggled.connect(_on_gif_settings_changed)
+	_gif_preload_check.toggled.connect(_on_gif_settings_changed)
 	_gif_dedupe_check.toggled.connect(_on_gif_settings_changed)
 	_gif_limit_check.toggled.connect(_on_gif_settings_changed)
 	_gif_hover_playback_all_button.pressed.connect(_on_gif_hover_all_pressed)

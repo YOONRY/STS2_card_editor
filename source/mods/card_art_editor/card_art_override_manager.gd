@@ -12,6 +12,7 @@ const STORAGE_ART_PACK_REGISTRY_PATH := STORAGE_ROOT + "/art_pack_registry.json"
 const STORAGE_UI_SETTINGS_PATH := STORAGE_ROOT + "/ui_settings.json"
 const STEAM_WORKSHOP_APP_ID := "2868840"
 const WORKSHOP_ART_PACK_SUFFIX := ".cardartpack.json"
+const GIF_PRELOAD_PROGRESS = preload("res://mods/card_art_editor/gif_preload_progress.gd")
 const GIF_TOOL_RES_PATH := "res://mods/card_art_editor/extract_gif_frames.ps1"
 const GIF_TOOL_USER_PATH := STORAGE_ROOT + "/tools/extract_gif_frames.ps1"
 const PICTURES_EXTRACT_SUBDIR := "card_art_editor_extracted"
@@ -138,8 +139,21 @@ var _gif_processing_settings := {
 	"skip_duplicate_frames": true,
 	"use_frame_limit": false,
 	"max_frames": 36,
+	"preload_enabled": false,
 	"play_on_hover_only": false
 }
+var _gif_preload_requested := false
+var _gif_preload_active := false
+var _gif_preload_session_cancelled := false
+var _gif_preload_sources: Array = []
+var _gif_preload_job: Dictionary = {}
+var _gif_preload_failed_sources: Dictionary = {}
+var _gif_preload_total_frames := 0
+var _gif_preload_processed_frames := 0
+var _gif_preload_completed_cards := 0
+var _gif_preload_total_cards := 0
+var _gif_preload_show_progress := false
+var _gif_preload_popup = null
 var _gif_hover_playback_by_source := {}
 var _batch_update_depth := 0
 var _batch_manifest_dirty := false
@@ -197,6 +211,7 @@ func _ready() -> void:
 	_load_art_pack_registry()
 	get_tree().node_added.connect(_on_node_added)
 	_register_existing(get_tree().root, true)
+	request_gif_preload()
 
 
 func _is_ancient_text_hover_tip_visible() -> bool:
@@ -315,6 +330,8 @@ func _is_last_gif_active_root_stale() -> bool:
 
 
 func _process(delta: float) -> void:
+	if _gif_preload_requested or _gif_preload_active:
+		_process_gif_preload()
 	_refresh_inspect_provider_pins(delta)
 	if _startup_rescan_frames_remaining > 0:
 		_startup_rescan_tick += 1
@@ -533,12 +550,20 @@ func get_gif_processing_settings() -> Dictionary:
 func set_gif_processing_settings(settings: Dictionary) -> void:
 	if !(settings is Dictionary):
 		return
+	var previous_preload = bool(_gif_processing_settings.get("preload_enabled", false))
 	var previous_hover_rules = _has_gif_hover_playback_rules()
 	_gif_processing_settings["use_cache"] = bool(settings.get("use_cache", true))
 	_gif_processing_settings["skip_duplicate_frames"] = bool(settings.get("skip_duplicate_frames", true))
 	_gif_processing_settings["use_frame_limit"] = bool(settings.get("use_frame_limit", false))
 	_gif_processing_settings["max_frames"] = clamp(int(settings.get("max_frames", 36)), 1, 300)
+	_gif_processing_settings["preload_enabled"] = bool(settings.get("preload_enabled", false))
 	_gif_processing_settings["play_on_hover_only"] = bool(settings.get("play_on_hover_only", false))
+	if previous_preload != bool(_gif_processing_settings["preload_enabled"]):
+		_save_persistent_preferences()
+		if bool(_gif_processing_settings["preload_enabled"]):
+			request_gif_preload(true)
+		else:
+			cancel_gif_preload()
 	if previous_hover_rules != _has_gif_hover_playback_rules():
 		_refresh_gif_playback_state()
 		_needs_full_refresh = true
@@ -551,6 +576,7 @@ func _load_gif_processing_settings_from_dictionary(settings: Dictionary) -> void
 	_gif_processing_settings["skip_duplicate_frames"] = bool(settings.get("skip_duplicate_frames", true))
 	_gif_processing_settings["use_frame_limit"] = bool(settings.get("use_frame_limit", false))
 	_gif_processing_settings["max_frames"] = clamp(int(settings.get("max_frames", 36)), 1, 300)
+	_gif_processing_settings["preload_enabled"] = bool(settings.get("preload_enabled", false))
 	_gif_processing_settings["play_on_hover_only"] = bool(settings.get("play_on_hover_only", false))
 
 
@@ -911,6 +937,7 @@ func set_full_art_rarity_fire_enabled_for_source(source_path: String, enabled: b
 
 
 func reset_card_art_editor_settings() -> void:
+	cancel_gif_preload()
 	_infection_effect_hidden_enabled = true
 	_full_art_rarity_fire_enabled = false
 	_full_art_rarity_fire_by_source.clear()
@@ -921,6 +948,7 @@ func reset_card_art_editor_settings() -> void:
 		"skip_duplicate_frames": true,
 		"use_frame_limit": false,
 		"max_frames": 36,
+		"preload_enabled": false,
 		"play_on_hover_only": false
 	}
 	_save_persistent_preferences()
@@ -4112,6 +4140,9 @@ func remove_all_overrides() -> Dictionary:
 			"message": "All cards are already using their original art."
 		}
 
+	var was_preload_cancelled = _gif_preload_session_cancelled
+	cancel_gif_preload()
+	_gif_preload_session_cancelled = was_preload_cancelled
 	var source_paths := _manifest.keys()
 	for source_path in _manifest.keys():
 		_remove_entry_files(_manifest[source_path])
@@ -7285,6 +7316,212 @@ func _is_managed_override_texture(texture) -> bool:
 	return texture is Texture2D and bool(texture.get_meta(META_MANAGED_OVERRIDE_TEXTURE, false))
 
 
+func _get_gif_frame_plan(entry: Dictionary) -> Array:
+	var paths = entry.get("source_frame_paths", entry.get("frame_paths", [])) if String(entry.get("display_mode", DISPLAY_MODE_DEFAULT)) == DISPLAY_MODE_FULL_ART else entry.get("frame_paths", [])
+	if !(paths is Array) or paths.is_empty():
+		return []
+	var delays = entry.get("frame_delays", [])
+	if !(delays is Array):
+		delays = []
+	var count = mini(paths.size(), AnimatedTexture.MAX_FRAMES)
+	var plan: Array = []
+	# Sample the entire sequence while preserving duration when the engine's
+	# AnimatedTexture frame limit is lower than the source GIF frame count.
+	for index in range(count):
+		var start = int(index * paths.size() / count)
+		var end = int((index + 1) * paths.size() / count)
+		var duration := 0.0
+		for frame_index in range(start, end):
+			duration += maxf(0.02, float(delays[frame_index]) if frame_index < delays.size() else 0.1)
+		plan.append({"path": String(paths[start]), "delay": duration})
+	return plan
+
+
+func _load_gif_frame_texture(source_path: String, entry: Dictionary, frame: Dictionary):
+	var frame_image = load_image_from_file(ProjectSettings.globalize_path(String(frame["path"])))
+	if frame_image == null:
+		return null
+	if String(entry.get("display_mode", DISPLAY_MODE_DEFAULT)) == DISPLAY_MODE_FULL_ART:
+		frame_image = trim_transparent_margins(frame_image)
+		frame_image = build_full_art_preview(source_path, frame_image, Vector2i.ZERO, FULL_ART_ANIMATED_ZOOM_BOOST)
+		if frame_image == null:
+			return null
+	return _mark_managed_override_texture(ImageTexture.create_from_image(frame_image), source_path)
+
+
+func _cache_gif_animation(source_path: String, loaded_frames: Array, paused: bool = false):
+	if loaded_frames.is_empty():
+		return null
+	var animated_texture := AnimatedTexture.new()
+	animated_texture.pause = paused
+	_mark_managed_override_texture(animated_texture, source_path)
+	animated_texture.frames = loaded_frames.size()
+	for index in range(loaded_frames.size()):
+		animated_texture.set_frame_texture(index, loaded_frames[index]["texture"])
+		animated_texture.set_frame_duration(index, loaded_frames[index]["delay"])
+	_override_texture_cache[source_path] = animated_texture
+	_override_texture_cache[_get_override_texture_cache_key(source_path, false)] = loaded_frames[0]["texture"]
+	return animated_texture
+
+
+func get_gif_preload_estimate() -> Dictionary:
+	var result := {"cards": 0, "frames": 0, "bytes": 0}
+	for source_path in _manifest:
+		var entry = _manifest[source_path]
+		if !(entry is Dictionary) or !_is_animated_entry(entry):
+			continue
+		var frame_count = _get_gif_frame_plan(entry).size()
+		if frame_count == 0:
+			continue
+		var target_size = FULL_ART_TARGET_SIZE if String(entry.get("display_mode", DISPLAY_MODE_DEFAULT)) == DISPLAY_MODE_FULL_ART else Vector2i(int(entry.get("width", DEFAULT_LANDSCAPE_SIZE.x)), int(entry.get("height", DEFAULT_LANDSCAPE_SIZE.y)))
+		result["cards"] += 1
+		result["frames"] += frame_count
+		result["bytes"] += maxi(1, target_size.x) * maxi(1, target_size.y) * 4 * frame_count
+	return result
+
+
+func request_gif_preload(retry: bool = false, show_progress: bool = false) -> void:
+	if !bool(_gif_processing_settings.get("preload_enabled", false)):
+		return
+	if show_progress:
+		_gif_preload_show_progress = true
+	if retry:
+		_gif_preload_session_cancelled = false
+		for source_path in _gif_preload_failed_sources:
+			_override_texture_cache.erase(source_path)
+		_gif_preload_failed_sources.clear()
+	if _gif_preload_active:
+		if _gif_preload_show_progress and !is_instance_valid(_gif_preload_popup):
+			_show_gif_preload_progress()
+		# Art replaced during an active job must be picked up by a follow-up pass.
+		# Merely revealing progress for the current pass does not require a restart.
+		if retry or !show_progress:
+			_gif_preload_requested = true
+		return
+	if !_gif_preload_session_cancelled:
+		_gif_preload_requested = true
+
+
+func cancel_gif_preload() -> void:
+	_gif_preload_session_cancelled = true
+	_gif_preload_requested = false
+	_gif_preload_active = false
+	_gif_preload_show_progress = false
+	_gif_preload_sources.clear()
+	_gif_preload_job.clear()
+	if is_instance_valid(_gif_preload_popup):
+		_gif_preload_popup.queue_free()
+	_gif_preload_popup = null
+	_refresh_portraits_after_gif_preload()
+
+
+func _refresh_portraits_after_gif_preload() -> void:
+	# Invalidate only applied GIF cards. A global refresh can catch pooled native
+	# Ancient cards while their layout is being assigned and disturb the frame.
+	for index in range(_portrait_ref_ids.size()):
+		var portrait = _get_tracked_portrait_at(index)
+		if portrait == null:
+			continue
+		var source_path = _canonicalize_source_key(String(portrait.get_meta(META_SOURCE_PATH, "")))
+		if source_path == "":
+			source_path = _canonicalize_source_key(_get_card_root_source_path(_find_card_root(portrait)))
+		if !_is_animated_entry(_manifest.get(source_path, null)):
+			continue
+		portrait.set_meta(META_REFRESH_SIGNATURE, "")
+		queue_card_override_refresh(_find_card_root(portrait))
+
+
+func _start_gif_preload() -> void:
+	_gif_preload_requested = false
+	_gif_preload_total_frames = 0
+	_gif_preload_processed_frames = 0
+	_gif_preload_completed_cards = 0
+	_gif_preload_sources.clear()
+	for source_path in _manifest:
+		var entry = _manifest[source_path]
+		if !(entry is Dictionary) or !_is_animated_entry(entry) or _override_texture_cache.has(source_path):
+			continue
+		if _gif_preload_failed_sources.get(source_path, null) == entry:
+			continue
+		var plan = _get_gif_frame_plan(entry)
+		if plan.is_empty():
+			continue
+		_gif_preload_total_frames += plan.size()
+		_gif_preload_sources.append({"source": source_path, "entry": entry.duplicate(true), "plan": plan, "index": 0, "loaded": [], "failed": false})
+	_gif_preload_total_cards = _gif_preload_sources.size()
+	if _gif_preload_sources.is_empty():
+		_gif_preload_show_progress = false
+		return
+	_gif_preload_active = true
+	if _gif_preload_show_progress:
+		_show_gif_preload_progress()
+
+
+func _show_gif_preload_progress() -> void:
+	if is_instance_valid(_gif_preload_popup):
+		return
+	_gif_preload_popup = GIF_PRELOAD_PROGRESS.new()
+	_gif_preload_popup.cancelled.connect(cancel_gif_preload)
+	add_child(_gif_preload_popup)
+	_gif_preload_popup.show_estimate(get_gif_preload_estimate())
+	_update_gif_preload_progress("")
+
+
+func _update_gif_preload_progress(source_path: String) -> void:
+	if is_instance_valid(_gif_preload_popup):
+		_gif_preload_popup.update_progress(_gif_preload_processed_frames, _gif_preload_total_frames, _gif_preload_completed_cards, _gif_preload_total_cards, source_path.get_file().get_basename())
+
+
+func _process_gif_preload() -> void:
+	if _batch_update_depth > 0:
+		return
+	if !bool(_gif_processing_settings.get("preload_enabled", false)):
+		cancel_gif_preload()
+		return
+	if !_gif_preload_active:
+		_start_gif_preload()
+		return
+	if _gif_preload_job.is_empty():
+		if _gif_preload_sources.is_empty():
+			_gif_preload_active = false
+			if is_instance_valid(_gif_preload_popup):
+				_gif_preload_popup.finish(_gif_preload_failed_sources.size())
+			elif !_gif_preload_failed_sources.is_empty():
+				# Startup preload stays silent unless the user needs a failure report.
+				_show_gif_preload_progress()
+				_gif_preload_popup.finish(_gif_preload_failed_sources.size())
+			_gif_preload_show_progress = false
+			_refresh_portraits_after_gif_preload()
+			return
+		_gif_preload_job = _gif_preload_sources.pop_front()
+	var job = _gif_preload_job
+	var source_path = String(job["source"])
+	var entry = job["entry"]
+	var plan: Array = job["plan"]
+	var index = int(job["index"])
+	# Overrides can be restored or replaced while the frame queue is running.
+	if _manifest.get(source_path, null) != entry or _override_texture_cache.has(source_path):
+		_gif_preload_processed_frames += plan.size() - index
+		_gif_preload_completed_cards += 1
+		_gif_preload_job = {}
+		_update_gif_preload_progress(source_path)
+		return
+	var texture = _load_gif_frame_texture(source_path, entry, plan[index])
+	if texture is Texture2D:
+		job["loaded"].append({"texture": texture, "delay": plan[index]["delay"]})
+	else:
+		job["failed"] = true
+	job["index"] = index + 1
+	_gif_preload_processed_frames += 1
+	if index + 1 == plan.size():
+		_cache_gif_animation(source_path, job["loaded"], true)
+		if bool(job["failed"]):
+			_gif_preload_failed_sources[source_path] = entry
+		_gif_preload_completed_cards += 1
+		_gif_preload_job = {}
+	_update_gif_preload_progress(source_path)
+
+
 func _get_override_texture_cache_key(source_path: String, animate: bool = true) -> String:
 	return source_path if animate else "%s%s" % [source_path, STATIC_OVERRIDE_CACHE_SUFFIX]
 
@@ -7292,6 +7529,9 @@ func _get_override_texture_cache_key(source_path: String, animate: bool = true) 
 func _erase_override_texture_cache(source_path: String) -> void:
 	_override_texture_cache.erase(source_path)
 	_override_texture_cache.erase(_get_override_texture_cache_key(source_path, false))
+	_gif_preload_failed_sources.erase(source_path)
+	if _is_animated_entry(_manifest.get(source_path, null)):
+		request_gif_preload()
 
 
 func _get_override_texture(source_path: String, animate: bool = true):
@@ -7307,26 +7547,25 @@ func _get_override_texture(source_path: String, animate: bool = true):
 	if _is_animated_entry(entry):
 		var animated_cache_key = _get_override_texture_cache_key(source_path, animate)
 		if _override_texture_cache.has(animated_cache_key):
-			return _mark_managed_override_texture(_override_texture_cache[animated_cache_key], source_path)
-		var frame_paths = entry.get("source_frame_paths", entry.get("frame_paths", [])) if display_mode == DISPLAY_MODE_FULL_ART else entry.get("frame_paths", [])
-		var frame_delays = entry.get("frame_delays", [])
-		if !(frame_paths is Array) or frame_paths.is_empty():
+			var cached_texture = _override_texture_cache[animated_cache_key]
+			if animate and cached_texture is AnimatedTexture and cached_texture.pause:
+				cached_texture.pause = false
+			return _mark_managed_override_texture(cached_texture, source_path)
+		# Avoid a synchronous duplicate decode while this GIF is queued.
+		if _gif_preload_requested or _gif_preload_active or _gif_preload_failed_sources.get(source_path, null) == entry:
+			return _override_texture_cache.get(_get_override_texture_cache_key(source_path, false), null)
+		var frame_plan = _get_gif_frame_plan(entry)
+		if frame_plan.is_empty():
 			return null
 
 		var loaded_frames: Array = []
-		for index in range(frame_paths.size()):
-			var frame_path = String(frame_paths[index])
-			var frame_image = load_image_from_file(ProjectSettings.globalize_path(frame_path))
-			if frame_image == null:
+		for frame in frame_plan:
+			var frame_texture = _load_gif_frame_texture(source_path, entry, frame)
+			if frame_texture == null:
 				continue
-			if display_mode == DISPLAY_MODE_FULL_ART:
-				frame_image = trim_transparent_margins(frame_image)
-				frame_image = build_full_art_preview(source_path, frame_image, Vector2i.ZERO, FULL_ART_ANIMATED_ZOOM_BOOST)
-				if frame_image == null:
-					continue
 			loaded_frames.append({
-				"texture": ImageTexture.create_from_image(frame_image),
-				"delay": max(0.02, float(frame_delays[index]) if index < frame_delays.size() else 0.1)
+				"texture": frame_texture,
+				"delay": frame["delay"]
 			})
 			if !animate:
 				break
@@ -7344,17 +7583,7 @@ func _get_override_texture(source_path: String, animate: bool = true):
 			_override_texture_cache[animated_cache_key] = static_texture
 			return static_texture
 
-		var animated_texture := AnimatedTexture.new()
-		_mark_managed_override_texture(animated_texture, source_path)
-		animated_texture.frames = loaded_frames.size()
-		animated_texture.speed_scale = 1.0
-		for index in range(loaded_frames.size()):
-			var frame_entry = loaded_frames[index]
-			animated_texture.set_frame_texture(index, frame_entry["texture"])
-			animated_texture.set_frame_duration(index, frame_entry["delay"])
-
-		_override_texture_cache[animated_cache_key] = animated_texture
-		return animated_texture
+		return _cache_gif_animation(source_path, loaded_frames)
 
 	if _override_texture_cache.has(source_path):
 		return _mark_managed_override_texture(_override_texture_cache[source_path], source_path)

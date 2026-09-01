@@ -2,6 +2,7 @@ extends SceneTree
 
 const FILES := {
 	"mods/card_art_editor/card_art_override_manager.gd": "card_art_override_manager.gd",
+	"mods/card_art_editor/gif_preload_progress.gd": "gif_preload_progress.gd",
 	"mods/card_art_editor/inspect_card_art_editor.gd": "inspect_card_art_editor.gd",
 	"mods/card_art_editor/inspect_card_art_editor.tscn": "inspect_card_art_editor.tscn",
 	"mods/card_art_editor/extract_gif_frames.ps1": "extract_gif_frames.ps1",
