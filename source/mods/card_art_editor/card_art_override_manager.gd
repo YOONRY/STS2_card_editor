@@ -27,6 +27,7 @@ const MOD_IMPORT_IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
 const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "defect", "colorless", "status", "token", "curse", "event", "necrobinder"]
 const MODDED_CARD_PORTRAIT_FOLDERS := ["guardian", "hermit", "champ", "snecko", "automaton", "awakened", "collector", "slimeboss", "gremlins", "hexaghost", "downfall"]
 const ART_PACK_CATEGORY_SORT_ORDER := ["ironclad", "silent", "regent", "necrobinder", "defect", "colorless", "curse", "status", "token", "event", "seeker", "guardian", "hermit", "champ", "snecko", "automaton", "awakened", "collector", "slimeboss", "gremlins", "hexaghost", "downfall", "other"]
+const CARD_RARITY_ANCIENT := 5
 const REFRESH_INTERVAL := 0.15
 const DISPLAY_MODE_DEFAULT := "default"
 const DISPLAY_MODE_FULL_ART := "full_art"
@@ -51,6 +52,7 @@ const META_INSPECT_SOURCE_PATH := "_card_art_inspect_source_path"
 const META_INSPECT_CARD_ID := "_card_art_inspect_card_id"
 const META_MODEL_IS_BASE_GAME := "_card_art_model_is_base_game"
 const META_MODEL_OWNER := "_card_art_model_owner"
+const META_MODEL_RARITY := "_card_art_model_rarity"
 const META_PORTRAIT_GROUP_ORIGINAL_MATERIAL := "_card_art_portrait_group_original_material"
 const META_FULL_ART_ORIGINAL_VISIBLE := "_card_art_full_art_original_visible"
 const META_FULL_ART_ORIGINAL_SELF_MODULATE := "_card_art_full_art_original_self_modulate"
@@ -68,6 +70,7 @@ const META_DEFERRED_CARD_REFRESH_PENDING := "_card_art_deferred_card_refresh_pen
 const META_DEFERRED_CARD_REFRESH_INVALIDATE_MODEL := "_card_art_deferred_card_refresh_invalidate_model"
 const META_PROVIDER_CAPTURE_PENDING := "_card_art_provider_capture_pending"
 const META_INSPECT_PROVIDER_STABILIZATION_PENDING := "_card_art_inspect_provider_stabilization_pending"
+const META_NATIVE_ANCIENT_LAYOUT_STABILIZATION_PENDING := "_card_art_native_ancient_layout_stabilization_pending"
 const META_PROVIDER_RELOAD_PENDING := "_card_art_provider_reload_pending"
 const META_MANAGED_OVERRIDE_TEXTURE := "_card_art_managed_override_texture"
 const META_MANAGED_OVERRIDE_SOURCE := "_card_art_managed_override_source"
@@ -93,6 +96,7 @@ const PORTRAIT_EVENT_FALLBACK_REFRESH_INTERVAL := 0.5
 const PORTRAIT_EVENT_FALLBACK_REFRESH_BUDGET := 6
 const MODEL_PORTRAIT_PATH_CACHE_LIMIT := 2048
 const INSPECT_PROVIDER_STABILIZATION_FRAMES := 8
+const NATIVE_ANCIENT_LAYOUT_STABILIZATION_FRAMES := 8
 const INSPECT_PROVIDER_PIN_INTERVAL := 0.016
 const ANCIENT_TEXT_HOVER_REFRESH_INTERVAL := 0.08
 const ANCIENT_TEXT_CLICK_PENDING_FRAMES := 8
@@ -4572,6 +4576,15 @@ func set_event_driven_portrait_refresh_enabled(enabled: bool) -> void:
 	_visible_portrait_refresh_accumulator = 0.0
 
 
+func _repair_hidden_native_ancient_portrait_for_grid(texture_rect, card_root) -> void:
+	if !(texture_rect is CanvasItem) or String(texture_rect.name) != "AncientPortrait":
+		return
+	if (texture_rect as CanvasItem).is_visible_in_tree():
+		return
+	if _get_current_model_ancient_layout(card_root) == 1:
+		_synchronize_native_ancient_layout(card_root)
+
+
 func _refresh_visible_tracked_portraits(max_items: int = PORTRAIT_NAVIGATION_REFRESH_BUDGET, use_cursor: bool = false) -> void:
 	if max_items <= 0 or _portrait_ref_ids.is_empty():
 		return
@@ -4589,6 +4602,7 @@ func _refresh_visible_tracked_portraits(max_items: int = PORTRAIT_NAVIGATION_REF
 			continue
 		if _is_multiplayer_expanded_deck_card_root(card_root):
 			continue
+		_repair_hidden_native_ancient_portrait_for_grid(texture_rect, card_root)
 		if texture_rect is CanvasItem and !(texture_rect as CanvasItem).is_visible_in_tree():
 			continue
 		_refresh_portrait_node(texture_rect)
@@ -4620,6 +4634,7 @@ func _refresh_visible_tracked_portraits_from_cursor(max_items: int) -> void:
 			continue
 		if _is_multiplayer_expanded_deck_card_root(card_root):
 			continue
+		_repair_hidden_native_ancient_portrait_for_grid(texture_rect, card_root)
 		if texture_rect is CanvasItem and !(texture_rect as CanvasItem).is_visible_in_tree():
 			continue
 		_refresh_portrait_node(texture_rect)
@@ -4635,12 +4650,36 @@ func apply_override_to_texture_rect(texture_rect) -> void:
 func queue_card_override_refresh(card_node, invalidate_model_cache := false) -> void:
 	if card_node == null or !is_instance_valid(card_node):
 		return
+	_queue_native_ancient_layout_stabilization(card_node)
 	if invalidate_model_cache:
 		card_node.set_meta(META_DEFERRED_CARD_REFRESH_INVALIDATE_MODEL, true)
 	if bool(card_node.get_meta(META_DEFERRED_CARD_REFRESH_PENDING, false)):
 		return
 	card_node.set_meta(META_DEFERRED_CARD_REFRESH_PENDING, true)
 	_apply_queued_card_override_refresh.call_deferred(card_node)
+
+
+func _queue_native_ancient_layout_stabilization(card_node) -> void:
+	var card_root = _get_card_refresh_root(card_node)
+	if card_root == null or _get_current_model_ancient_layout(card_root) != 1:
+		return
+	if bool(card_node.get_meta(META_NATIVE_ANCIENT_LAYOUT_STABILIZATION_PENDING, false)):
+		return
+	card_node.set_meta(META_NATIVE_ANCIENT_LAYOUT_STABILIZATION_PENDING, true)
+	_stabilize_native_ancient_layout(card_node)
+
+
+func _stabilize_native_ancient_layout(card_node) -> void:
+	for _frame_index in range(NATIVE_ANCIENT_LAYOUT_STABILIZATION_FRAMES):
+		await get_tree().process_frame
+		if card_node == null or !is_instance_valid(card_node):
+			return
+		var card_root = _get_card_refresh_root(card_node)
+		if card_root == null:
+			break
+		_synchronize_native_ancient_layout(card_root)
+	if card_node != null and is_instance_valid(card_node):
+		card_node.remove_meta(META_NATIVE_ANCIENT_LAYOUT_STABILIZATION_PENDING)
 
 
 func set_external_provider_capture_enabled(enabled: bool) -> void:
@@ -4665,6 +4704,8 @@ func capture_card_provider_after_visual_update(card_node, cache_external_provide
 		var provider_texture = portrait.texture as Texture2D
 		if _is_managed_override_texture(provider_texture):
 			continue
+		if !_is_provider_capture_current_for_source(card_root, portrait, provider_texture, source_path):
+			continue
 		_register_current_provider_source_if_verified(card_root, provider_texture)
 		if cache_external_provider:
 			_remember_external_provider_texture(card_root, portrait, provider_texture, source_path)
@@ -4677,12 +4718,12 @@ func capture_card_provider_after_visual_update(card_node, cache_external_provide
 
 
 func apply_card_override_after_visual_update(card_node) -> bool:
-	if !card_needs_override_refresh(card_node):
-		return false
 	var card_root = _get_card_refresh_root(card_node)
 	if card_root == null:
 		return false
-	var applied := false
+	var applied := _synchronize_native_ancient_layout(card_root)
+	if !card_needs_override_refresh(card_node):
+		return applied
 	for portrait_path in ["PortraitCanvasGroup/Portrait", "PortraitCanvasGroup/AncientPortrait"]:
 		var portrait = card_root.get_node_or_null(portrait_path)
 		if !(portrait is TextureRect):
@@ -4778,12 +4819,13 @@ func _apply_queued_card_override_refresh(card_node) -> void:
 	card_node.remove_meta(META_DEFERRED_CARD_REFRESH_INVALIDATE_MODEL)
 	if invalidate_model_cache:
 		invalidate_card_model_portrait_path_cache(card_node)
+	var card_root = _get_card_refresh_root(card_node)
+	if card_root == null:
+		return
+	_synchronize_native_ancient_layout(card_root)
 	if !card_needs_override_refresh(card_node):
 		if _external_provider_capture_enabled:
 			_restore_external_provider_texture(card_node)
-		return
-	var card_root = _get_card_refresh_root(card_node)
-	if card_root == null:
 		return
 	for portrait_path in [
 		"PortraitCanvasGroup/Portrait",
@@ -4820,9 +4862,13 @@ func card_needs_override_refresh(card_node) -> bool:
 		portraits.append(portrait)
 		if bool(portrait.get_meta(META_OVERRIDE_ACTIVE, false)) or bool(portrait.get_meta(META_FULL_ART_ACTIVE, false)):
 			return true
+	var source_key = _canonicalize_source_key(_get_card_root_source_path(card_root))
+	for portrait in portraits:
+		var stored_source_key = _canonicalize_source_key(String(portrait.get_meta(META_SOURCE_PATH, "")))
+		if source_key != "" and (portrait as CanvasItem).visible and stored_source_key != source_key:
+			return true
 	if _manifest.is_empty():
 		return false
-	var source_key = _canonicalize_source_key(_get_card_root_source_path(card_root))
 	if source_key != "" and _manifest.has(source_key):
 		return true
 	for portrait in portraits:
@@ -5193,6 +5239,71 @@ func _is_card_root_ancient_layout(card_root) -> bool:
 	var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
 	var portrait = _find_named_descendant(card_root, "Portrait")
 	return ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible and !(portrait is CanvasItem and (portrait as CanvasItem).visible)
+
+
+func _get_current_model_ancient_layout(card_root) -> int:
+	var model = _get_card_model_from_root(card_root)
+	if model == null:
+		return -1
+	var model_card_id = _get_card_id_from_model(model).strip_edges().to_upper()
+	var current = card_root
+	while current != null:
+		if current.has_meta(META_MODEL_RARITY):
+			var stamped_card_id = String(current.get_meta(META_INSPECT_CARD_ID, "")).strip_edges().to_upper()
+			# A pooled card can expose the new Model before the bootstrap metadata is
+			# refreshed. Never use the previous card's rarity for the new model.
+			if model_card_id == "" or model_card_id == stamped_card_id:
+				var stamped_rarity = int(current.get_meta(META_MODEL_RARITY, -1))
+				if stamped_rarity == CARD_RARITY_ANCIENT:
+					return 1
+				return 0 if stamped_rarity >= 0 else -1
+		current = current.get_parent()
+	var rarity = model.get("Rarity")
+	if rarity == null:
+		return -1
+	if typeof(rarity) == TYPE_INT or typeof(rarity) == TYPE_FLOAT:
+		var rarity_value = int(rarity)
+		if rarity_value == CARD_RARITY_ANCIENT:
+			return 1
+		return 0 if rarity_value >= 0 else -1
+	var rarity_name = String(rarity).strip_edges().to_lower()
+	if rarity_name.contains("ancient") or rarity_name == str(CARD_RARITY_ANCIENT):
+		return 1
+	return 0 if rarity_name != "" else -1
+
+
+func _synchronize_native_ancient_layout(card_root) -> bool:
+	if card_root == null or _get_current_model_ancient_layout(card_root) != 1:
+		return false
+	# Native Ancient cards already own the Ancient layout. A custom full-art
+	# layer can be left behind while a pooled grid slot changes cards, but it
+	# must never prevent the new native Ancient model from restoring its frame.
+	var changed := false
+	var expected_visibility := {
+		"PortraitBorder": false,
+		"Portrait": false,
+		"Frame": false,
+		"AncientPortrait": true,
+		"AncientBorderGlassOverlay": true,
+		"AncientBorder": true,
+		"AncientTextBg": true,
+		"AncientBanner": true,
+		"TitleBanner": false
+	}
+	for node_name in expected_visibility:
+		var visual = _find_named_descendant(card_root, String(node_name))
+		if !(visual is CanvasItem):
+			continue
+		var should_be_visible = bool(expected_visibility[node_name])
+		if (visual as CanvasItem).visible != should_be_visible:
+			(visual as CanvasItem).visible = should_be_visible
+			changed = true
+	var portrait_canvas_group = _find_named_descendant(card_root, "PortraitCanvasGroup")
+	if portrait_canvas_group is CanvasItem and !(portrait_canvas_group as CanvasItem).visible:
+		(portrait_canvas_group as CanvasItem).visible = true
+		changed = true
+	_ensure_ancient_portrait_mask(card_root)
+	return changed
 
 
 func _get_texture_rect_known_source_path(texture_rect) -> String:
@@ -6494,12 +6605,14 @@ func _clear_custom_full_art_layer(card_root) -> void:
 	var frame = _find_named_descendant(card_root, "Frame")
 	var title_banner = _find_named_descendant(card_root, "TitleBanner")
 	var ancient_highlight = _find_named_descendant(card_root, "AncientHighlight")
+	var ancient_border_glass_overlay = _find_named_descendant(card_root, "AncientBorderGlassOverlay")
 	var ancient_border = _find_named_descendant(card_root, "AncientBorder")
 	var ancient_text_bg = _find_named_descendant(card_root, "AncientTextBg")
 	var ancient_banner = _find_named_descendant(card_root, "AncientBanner")
 	var portrait_was_visible = _get_base_portrait_visible_before_custom_full_art(portrait, true)
 	var ancient_portrait_was_visible = _get_base_portrait_visible_before_custom_full_art(ancient_portrait, false)
-	var is_ancient_layout = ancient_portrait_was_visible and !portrait_was_visible
+	var current_model_layout = _get_current_model_ancient_layout(card_root)
+	var is_ancient_layout = current_model_layout == 1 if current_model_layout >= 0 else ancient_portrait_was_visible and !portrait_was_visible
 
 	if full_art_layer is TextureRect:
 		full_art_layer.visible = false
@@ -6510,16 +6623,20 @@ func _clear_custom_full_art_layer(card_root) -> void:
 	if portrait_canvas_group is CanvasItem:
 		portrait_canvas_group.visible = true
 	_restore_full_art_portrait_mask(portrait_canvas_group)
-	if is_ancient_layout:
-		_ensure_ancient_portrait_mask(card_root)
 	if portrait is CanvasItem:
 		_restore_base_portrait_state_after_custom_full_art(portrait, !is_ancient_layout)
+		if current_model_layout >= 0:
+			(portrait as CanvasItem).visible = !is_ancient_layout
 	if portrait is TextureRect:
 		portrait.remove_meta(META_FULL_ART_ACTIVE)
 	if ancient_portrait is CanvasItem:
 		_restore_base_portrait_state_after_custom_full_art(ancient_portrait, is_ancient_layout)
+		if current_model_layout >= 0:
+			(ancient_portrait as CanvasItem).visible = is_ancient_layout
 	if ancient_portrait is TextureRect:
 		ancient_portrait.remove_meta(META_FULL_ART_ACTIVE)
+	if is_ancient_layout:
+		_ensure_ancient_portrait_mask(card_root)
 	_restore_full_art_fire_rarity_color(card_root)
 	if is_ancient_layout:
 		if portrait_border is CanvasItem:
@@ -6530,6 +6647,8 @@ func _clear_custom_full_art_layer(card_root) -> void:
 			title_banner.visible = false
 		if ancient_highlight is CanvasItem:
 			ancient_highlight.visible = true
+		if ancient_border_glass_overlay is CanvasItem:
+			ancient_border_glass_overlay.visible = true
 		if ancient_border is CanvasItem:
 			ancient_border.visible = true
 		if ancient_text_bg is CanvasItem:
@@ -6545,6 +6664,8 @@ func _clear_custom_full_art_layer(card_root) -> void:
 			title_banner.visible = true
 		if ancient_highlight is CanvasItem:
 			ancient_highlight.visible = false
+		if ancient_border_glass_overlay is CanvasItem:
+			ancient_border_glass_overlay.visible = false
 		if ancient_border is CanvasItem:
 			ancient_border.visible = false
 		if ancient_text_bg is CanvasItem:
@@ -6777,6 +6898,7 @@ func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
 	var portrait_visible := false
 	var ancient_visible := false
 	if card_root != null:
+		_synchronize_native_ancient_layout(card_root)
 		var portrait = _find_named_descendant(card_root, "Portrait")
 		var ancient_portrait = _find_named_descendant(card_root, "AncientPortrait")
 		portrait_visible = portrait is CanvasItem and (portrait as CanvasItem).visible
@@ -6813,6 +6935,9 @@ func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
 				var owner_source_mismatch = current_source_key != "" and current_source_key != owner_source_key
 				if owner_path == "" or owner_card_mismatch or owner_source_mismatch:
 					_clear_custom_full_art_layer(card_root)
+					portrait_visible = portrait is CanvasItem and (portrait as CanvasItem).visible
+					ancient_visible = ancient_portrait is CanvasItem and (ancient_portrait as CanvasItem).visible
+					current_texture = texture_rect.texture
 
 	if node_name == FULL_ART_LAYER_NAME and bool(texture_rect.get_meta(META_FULL_ART_ACTIVE, false)):
 		var owner_path = String(texture_rect.get_meta(META_FULL_ART_OWNER_PATH, ""))
@@ -6959,6 +7084,25 @@ func _is_external_provider_texture_candidate(texture: Texture2D) -> bool:
 	if texture_path.begins_with("res://images/"):
 		return false
 	return texture_path.begins_with("res://") or texture_path.begins_with("user://")
+
+
+func _is_provider_capture_current_for_source(card_root, portrait: TextureRect, texture: Texture2D, source_path: String) -> bool:
+	var source_key = _canonicalize_source_key(source_path)
+	if source_key == "":
+		return false
+	var texture_path = _get_texture_resource_source_path(texture)
+	if texture_path != "":
+		if _canonicalize_source_key(texture_path) == source_key:
+			return true
+		return _is_external_provider_texture_candidate(texture) and _provider_resource_path_matches_card_identity(card_root, texture_path)
+	var stored_source_key = _canonicalize_source_key(String(portrait.get_meta(META_SOURCE_PATH, "")))
+	if stored_source_key == "" or stored_source_key == source_key:
+		return true
+	var original_source_key = String(portrait.get_meta(META_ORIGINAL_SOURCE_KEY, ""))
+	var original_texture = portrait.get_meta(META_ORIGINAL_TEXTURE, null)
+	if original_source_key == stored_source_key and original_texture == texture:
+		return false
+	return !bool(portrait.get_meta(META_OVERRIDE_ACTIVE, false))
 
 
 func _remember_external_provider_texture(card_root, portrait: TextureRect, texture: Texture2D, source_path: String) -> void:

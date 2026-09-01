@@ -29,6 +29,7 @@ public static class Bootstrap
     internal const string InspectCardNodePathMeta = "_card_art_inspect_card_node_path";
     internal const string InspectBaseGameModelMeta = "_card_art_model_is_base_game";
     internal const string InspectModelOwnerMeta = "_card_art_model_owner";
+    internal const string InspectModelRarityMeta = "_card_art_model_rarity";
     private const string CachedPortraitPathMeta = "_card_art_cached_portrait_path";
     private const string CachedPortraitCardIdMeta = "_card_art_cached_portrait_card_id";
     private const string CachedPortraitModelKeyMeta = "_card_art_cached_portrait_model_key";
@@ -37,6 +38,9 @@ public static class Bootstrap
     private const string ManagerRefreshModeMeta = "_card_art_event_refresh_configured";
     private const string InfectionEffectSuppressedMeta = "_card_art_infection_effect_suppressed";
     private const string InfectionEffectOriginalVisibleMeta = "_card_art_infection_effect_original_visible";
+    private const string NativeAncientLayoutReloadingMeta = "_card_art_native_ancient_layout_reloading";
+    private const int AncientCardRarityValue = 5;
+    private static readonly MethodInfo? NCardReloadMethod = AccessTools.Method(typeof(NCard), "Reload");
     private static Node? _pendingManager;
     private static bool _eventDrivenPortraitRefreshEnabled;
     private static MethodBase? _nCardUpdateVisualsMethod;
@@ -79,9 +83,13 @@ public static class Bootstrap
     {
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.NCard", "UpdateVisuals", nameof(CaptureCardProviderPostfix), Priority.Last);
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.NCard", "_EnterTree", nameof(CaptureCardProviderPostfix), Priority.Last);
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.NCard", "set_Model", nameof(RefreshCardOwnerPostfix), Priority.Last);
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "ReassignToCard", nameof(RefreshCardOwnerPostfix));
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "SetCard", nameof(RefreshCardOwnerPostfix));
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder", "OnCardReassigned", nameof(RefreshCardOwnerPostfix));
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NGridCardHolder", "OnCardReassigned", nameof(RefreshCardOwnerPostfix), Priority.Last);
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NGridCardHolder", "OnReturnedFromPool", nameof(RefreshCardOwnerPostfix), Priority.Last);
+        TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NGridCardHolder", "SetIsPreviewingUpgrade", nameof(RefreshCardOwnerPostfix), Priority.Last);
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Multiplayer.NMultiplayerCardIntent", "_Ready", nameof(RefreshCardOwnerPostfix));
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyPowerVfx", "Create", nameof(RefreshCardOwnerPostfix));
         TryPatchOptionalPostfix("MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyPowerVfx", "_Ready", nameof(RefreshCardOwnerPostfix));
@@ -470,6 +478,7 @@ public static class Bootstrap
 
     internal static void RefreshCardOverrides(NCard card)
     {
+        TryReloadBrokenNativeAncientLayout(card);
         UpdateInspectCardMetadataFromCard(card);
         QueueCardOverrideRefresh(card);
     }
@@ -665,6 +674,90 @@ public static class Bootstrap
         }
     }
 
+    private static CanvasItem? FindCanvasItemByName(Node root, string nodeName, ref int visited)
+    {
+        if (!GodotObject.IsInstanceValid(root) || visited >= 128)
+        {
+            return null;
+        }
+
+        visited++;
+        if (root is CanvasItem canvasItem && string.Equals(root.Name.ToString(), nodeName, StringComparison.Ordinal))
+        {
+            return canvasItem;
+        }
+
+        foreach (var child in root.GetChildren())
+        {
+            if (child is not Node childNode)
+            {
+                continue;
+            }
+
+            var match = FindCanvasItemByName(childNode, nodeName, ref visited);
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private static CanvasItem? FindCanvasItemByName(Node root, string nodeName)
+    {
+        var visited = 0;
+        return FindCanvasItemByName(root, nodeName, ref visited);
+    }
+
+    private static bool TryReloadBrokenNativeAncientLayout(NCard card)
+    {
+        try
+        {
+            if (card is null || !GodotObject.IsInstanceValid(card) ||
+                card.HasMeta(NativeAncientLayoutReloadingMeta) ||
+                !TryGetCardModel(card, out var model, logFailures: false) || model is null ||
+                (int)model.Rarity != AncientCardRarityValue)
+            {
+                return false;
+            }
+
+            var portrait = FindCanvasItemByName(card, "Portrait");
+            var frame = FindCanvasItemByName(card, "Frame");
+            var ancientPortrait = FindCanvasItemByName(card, "AncientPortrait");
+            var ancientBorder = FindCanvasItemByName(card, "AncientBorder");
+            var layoutIsBroken =
+                ancientPortrait is null || !ancientPortrait.Visible ||
+                ancientBorder is null || !ancientBorder.Visible ||
+                portrait?.Visible == true || frame?.Visible == true;
+            if (!layoutIsBroken || NCardReloadMethod is null)
+            {
+                return false;
+            }
+
+            card.SetMeta(NativeAncientLayoutReloadingMeta, true);
+            try
+            {
+                Log($"Reloading broken native Ancient layout: card_id='{GetCardId(model)}', card_path='{DescribeNodePath(card)}'.");
+                NCardReloadMethod.Invoke(card, null);
+            }
+            finally
+            {
+                if (GodotObject.IsInstanceValid(card) && card.HasMeta(NativeAncientLayoutReloadingMeta))
+                {
+                    card.RemoveMeta(NativeAncientLayoutReloadingMeta);
+                }
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("TryReloadBrokenNativeAncientLayout failed: " + ex);
+            return false;
+        }
+    }
+
     private static void StampCardModelOwnership(NCard card, CardModel model)
     {
         var modelType = model.GetType();
@@ -703,6 +796,7 @@ public static class Bootstrap
                 card.SetMeta(InspectCardIdMeta, string.Empty);
                 card.SetMeta(InspectBaseGameModelMeta, false);
                 card.SetMeta(InspectModelOwnerMeta, string.Empty);
+                card.RemoveMeta(InspectModelRarityMeta);
                 return;
             }
 
@@ -710,6 +804,7 @@ public static class Bootstrap
             var sourcePath = GetCachedPortraitPath(card, model, cardId);
             card.SetMeta(InspectSourcePathMeta, sourcePath);
             card.SetMeta(InspectCardIdMeta, cardId);
+            card.SetMeta(InspectModelRarityMeta, (int)model.Rarity);
             StampCardModelOwnership(card, model);
             RegisterCardProviderSource(model, sourcePath, cardId);
         }
@@ -969,6 +1064,7 @@ public static class Bootstrap
         var cardNode = TryFindCardNode(source);
         if (cardNode is not null)
         {
+            TryReloadBrokenNativeAncientLayout(cardNode);
             if (updateMetadata)
             {
                 UpdateInspectCardMetadataFromCard(cardNode);
@@ -990,6 +1086,7 @@ public static class Bootstrap
             return;
         }
 
+        TryReloadBrokenNativeAncientLayout(cardNode);
         UpdateInspectCardMetadataFromCard(cardNode);
         var manager = TryEnsureManager();
         if (manager is null)
