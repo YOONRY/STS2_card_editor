@@ -75,7 +75,7 @@ $entries[2] = [Activator]::CreateInstance($entryType, [object[]]@('Corruption', 
 $entries[3] = [Activator]::CreateInstance($entryType, [object[]]@('TheSmith', 'res://images/packed/card_portraits/regent/the_smith.png', 'regent', 'regent', 'ancients'))
 $policy = $sc.GetType('STS2SkinChanger.Catalog.CardArtPackScanPolicy', $true)
 $packType = $sc.GetType('STS2SkinChanger.Catalog.CardArtPack', $true)
-function Attach-TestPack([string]$Id, [string]$CardStem, [int]$Width, [int]$Height, [string]$Mode = 'default', [string]$Root = 'C:/test') {
+function Attach-TestPack([string]$Id, [string]$CardStem, [int]$Width, [int]$Height, [string]$Mode = 'default', [string]$Root = 'C:/test', [switch]$StartupHook) {
     $png = [byte[]]::new(24)
     ([byte[]]@(137,80,78,71,13,10,26,10)).CopyTo($png, 0)
     $w = [BitConverter]::GetBytes([Net.IPAddress]::HostToNetworkOrder($Width))
@@ -89,7 +89,11 @@ function Attach-TestPack([string]$Id, [string]$CardStem, [int]$Width, [int]$Heig
     $packs = [Array]::CreateInstance($packType, 1)
     $packs[0] = $pack
     [void]$catalogType.GetMethod('AttachCardArtPacks', $instance).Invoke($catalog, [object[]]@($packs, $entries))
-    $adapter.GetMethod('ConfigurePresentations', $static).Invoke($null, [object[]]@($catalog, $entries, $packs))
+    if ($StartupHook) {
+        $startup.GetMethod('ConfigureAttachedPack', $static).Invoke($null, [object[]]@($catalog, $packs, $entries))
+    } else {
+        $adapter.GetMethod('ConfigurePresentations', $static).Invoke($null, [object[]]@($catalog, $entries, $packs))
+    }
     $catalogType.GetMethod('FinalizeCardGroups', $instance).Invoke($catalog, [object[]](,$entries))
 }
 function Get-TestOption([string]$Id, [string]$Group = 'ironclad') {
@@ -139,3 +143,43 @@ Assert-True ($null -ne (Get-TestOption 'unimported_pack') -and $null -ne (Get-Te
 $catalogType.GetMethod('FinalizeCardGroups', $instance).Invoke($catalog, [object[]](,$entries))
 Assert-True ($null -ne (Get-TestOption 'card_art_pack')) 'Unregistering an import did not restore its independent provider.'
 Write-Output 'Real Skin Changer API regression passed: ownership policy, aliases, full-art flags, Ancient groups, pack filtering, restoration.'
+
+# Startup filtering occurs on paths, before the scanner decodes any pack bytes.
+$startup = $cae.GetType('CardArtEditorBootstrap.SkinChangerStartupBridge', $true)
+$registryPath = Join-Path $fixture 'art_pack_registry.json'
+[IO.File]::WriteAllText($registryPath, (@{
+    packs = @{ registered = @{} }
+    workshop_sources = @{
+        first = @{ pack_id = 'registered'; path = $importPath }
+        removed = @{ pack_id = ''; path = (Join-Path $fixture 'removed.cardartpack.json') }
+    }
+} | ConvertTo-Json -Depth 6))
+$imports = $startup.GetMethod('ReadImportedPaths', $static).Invoke($null, [object[]]@([string]$registryPath))
+Assert-True ($imports.Count -eq 1) 'Startup filter included removed/unregistered packs.'
+[void]$startup.GetMethod('UpdateImportedPaths', $static).Invoke($null, [object[]](,[string[]]@($importPath)))
+$unrelated = Join-Path $fixture 'unimported.cardartpack.json'
+$filterArgs = [object[]](,[string[]]@($importPath, $unrelated))
+$startup.GetMethod('FilterPackFiles', $static).Invoke($null, $filterArgs)
+$filtered = @($filterArgs[0])
+Assert-True ($filtered.Count -eq 1 -and $filtered[0] -eq $unrelated) 'Initial enumeration exposed a registered imported pack or hid another pack.'
+$released = $startup.GetMethod('UpdateImportedPaths', $static).Invoke($null, [object[]](,[string[]]@()))
+Assert-True (@($released).Count -eq 1) 'Unregistering did not schedule restoration of the skipped pack.'
+$startup.GetMethod('MarkPublished', $static).Invoke($null, [object[]]@($catalog, [string]$fixture))
+Assert-True ($startup.GetMethod('IsPublished', $static).Invoke($null, [object[]]@($catalog, [string]$fixture, [string[]]@()))) 'An unchanged initial catalog would be scanned twice.'
+Assert-True (!$startup.GetMethod('IsPublished', $static).Invoke($null, [object[]]@($catalog, [string]$fixture, [string[]]@($importPath)))) 'Import registration changes were skipped as unchanged.'
+$generatedPath = Join-Path $fixture 'cae_saved_art.cardartpack.json'
+[IO.File]::WriteAllText($generatedPath, '{"format":"card_art_bundle","overrides":[]}')
+$startup.GetMethod('MarkPublished', $static).Invoke($null, [object[]]@($catalog, [string]$fixture))
+[IO.File]::AppendAllText($generatedPath, ' ')
+Assert-True (!$startup.GetMethod('IsPublished', $static).Invoke($null, [object[]]@($catalog, [string]$fixture, [string[]]@()))) 'An updated unified file was mistaken for an already loaded pack.'
+$startup.GetField('_packDirectory', $static).SetValue($null, [string]$fixture)
+$rootArgs = [object[]](,[string[]]@('C:/unrelated'))
+$startup.GetMethod('AddUnifiedRoot', $static).Invoke($null, $rootArgs)
+Assert-True (@($rootArgs[0]).Count -eq 2 -and @($rootArgs[0]) -contains $fixture) 'Initial scan did not include the unified pack directory.'
+Attach-TestPack 'cae_saved_art' 'strike_ironclad' 24 18 'full_art' -StartupHook
+Assert-True ((Get-TestOption 'cae_saved_art').CardPresentations['StrikeIronclad'].UseAncientLayout) 'Initial attach did not retain full-art presentation.'
+Attach-TestPack 'cae_saved_art' 'corruption' 18 24 -StartupHook
+Assert-True ((Get-TestOption 'cae_saved_art' 'ancients').NormalPortraits.ContainsKey('Corruption')) 'Initial attach omitted the Ancient group.'
+Attach-TestPack 'other_mod' 'defend_ironclad' 24 18 -StartupHook
+Assert-True ((Get-TestOption 'cae_saved_art').CardPresentations['StrikeIronclad'].UseAncientLayout) 'An unrelated attach disabled CAE full art.'
+Write-Output 'Startup regression passed: early path filtering, unrelated packs, unregister restoration, duplicate refresh detection.'

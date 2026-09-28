@@ -78,6 +78,11 @@ public static class Bootstrap
         {
             Log("Init start.");
             Harmony.PatchAll(typeof(Bootstrap).Assembly);
+            var essential = AccessTools.Method("MegaCrit.Sts2.Core.Helpers.OneTimeInitialization:ExecuteEssential");
+            if (essential is not null)
+            {
+                Harmony.Patch(essential, prefix: new HarmonyMethod(typeof(Bootstrap), nameof(PrepareSkinChangerStartup)) { priority = Priority.First });
+            }
             PatchOptionalCardVisualHooks();
             _eventDrivenPortraitRefreshEnabled = true;
             var manager = TryEnsureManager();
@@ -372,6 +377,32 @@ public static class Bootstrap
         TryRefreshSkinChangerCatalog(manager);
     }
 
+    private static void PrepareSkinChangerStartup()
+    {
+        try
+        {
+            // All mod assemblies are loaded here, before Skin Changer scans packs.
+            var manager = TryEnsureManager();
+            if (manager is null)
+            {
+                return;
+            }
+            ConfigureSkinChangerBridge(manager, true);
+            if (!_skinChangerOwnsVisuals)
+            {
+                return;
+            }
+            var assembly = AppDomain.CurrentDomain.GetAssemblies().First(candidate =>
+                candidate.GetName().Name == SkinChangerAssemblyName);
+            SkinChangerStartupBridge.Install(Harmony, assembly, ProjectSettings.GlobalizePath("user://card_art_editor"));
+            Log("Skin Changer startup pack filtering installed before asset initialization.");
+        }
+        catch (Exception ex)
+        {
+            Log("Skin Changer startup optimization unavailable; keeping normal bridge refresh: " + ex);
+        }
+    }
+
     private static void ConnectSkinChangerBridgeSignal(Node manager)
     {
         if (manager.GetMeta(SkinBridgeSignalConnectedMeta, false).AsBool() || !manager.HasSignal(SkinBridgePackPublishedSignal))
@@ -439,6 +470,21 @@ public static class Bootstrap
         _skinChangerCatalogRefreshActive = true;
         try
         {
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+            var service = skinChangerAssembly.GetType("STS2SkinChanger.Core.SkinService", true)!;
+            if (service.GetField("_cardGroupsInitialized", flags)?.GetValue(null) is not true)
+            {
+                return;
+            }
+            var catalog = service.GetProperty("Catalog", flags)?.GetValue(null);
+            var imports = GetSkinChangerImportedPaths();
+            if (catalog is not null && PendingSkinChangerChangedSources.Count == 0 &&
+                SkinChangerStartupBridge.IsPublished(catalog, _pendingSkinChangerPackDirectory, imports))
+            {
+                _pendingSkinChangerPackDirectory = string.Empty;
+                Log("Skin Changer unified pack already loaded; skipped duplicate startup refresh.");
+                return;
+            }
             RefreshSkinChangerCardArtPack(
                 skinChangerAssembly,
                 _pendingSkinChangerPackDirectory,
@@ -486,15 +532,16 @@ public static class Bootstrap
             ?? throw new InvalidOperationException("Skin Changer did not build card catalog entries.");
 
         var affectedGroups = RemoveSkinChangerPackOptions(catalog, catalogType, SkinBridgePackId);
-        var importedPaths = _pendingManager is not null && GodotObject.IsInstanceValid(_pendingManager)
-            ? _pendingManager.Call("get_skin_changer_bridge_imported_pack_paths").AsStringArray()
-            : Array.Empty<string>();
+        var importedPaths = GetSkinChangerImportedPaths();
+        var releasedPaths = SkinChangerStartupBridge.UpdateImportedPaths(importedPaths);
         affectedGroups.UnionWith(SkinChangerCatalogBridge.FilterImportedPacks(catalog, importedPaths));
         object? attachResult = null;
         var scannerType = skinChangerAssembly.GetType("STS2SkinChanger.Catalog.CardArtPackScanner", throwOnError: true)!;
         var scan = scannerType.GetMethod("Scan", BindingFlags.Public | BindingFlags.Static)
             ?? throw new MissingMethodException(scannerType.FullName, "Scan");
-        var scanResult = scan.Invoke(null, new object?[] { new[] { packDirectory } })
+        // A pack skipped at startup may become independent again when unregistered.
+        var roots = releasedPaths.Select(Path.GetDirectoryName).OfType<string>().Append(packDirectory).Distinct().ToArray();
+        var scanResult = scan.Invoke(null, new object?[] { roots })
             ?? throw new InvalidOperationException("Skin Changer did not return an art pack scan result.");
         var packs = scanResult.GetType().GetProperty("Packs", allInstance)?.GetValue(scanResult)
             ?? throw new InvalidOperationException("Skin Changer art pack scan did not expose packs.");
@@ -511,6 +558,13 @@ public static class Bootstrap
         finalize.Invoke(catalog, new[] { cardEntries });
         var currentGroups = FindSkinChangerPackGroups(catalog, SkinBridgePackId);
         affectedGroups.UnionWith(currentGroups);
+        foreach (var pack in (IEnumerable)packs)
+        {
+            if (pack.GetType().GetProperty("Id")?.GetValue(pack) is string id)
+            {
+                affectedGroups.UnionWith(FindSkinChangerPackGroups(catalog, id));
+            }
+        }
         SanitizeSkinChangerSelections(skinService);
         ClearSkinChangerRuntimeCaches(skinService, affectedGroups);
         InvalidateSkinChangerPackResources(skinService);
@@ -519,8 +573,14 @@ public static class Bootstrap
 
         var changedCards = ResolveSkinChangerCards(changedSources);
         ApplySkinChangerPackSelections(skinService, currentGroups, changedCards);
+        SkinChangerStartupBridge.MarkPublished(catalog, packDirectory);
         Log($"Skin Changer bridge groups={string.Join(",", currentGroups)}; imported pack sources={importedPaths.Length}; full-art and filter groups configured.");
     }
+
+    private static string[] GetSkinChangerImportedPaths() =>
+        _pendingManager is not null && GodotObject.IsInstanceValid(_pendingManager)
+            ? _pendingManager.Call("get_skin_changer_bridge_imported_pack_paths").AsStringArray()
+            : Array.Empty<string>();
 
 
     private static HashSet<string> RemoveSkinChangerPackOptions(object catalog, Type catalogType, string packId)

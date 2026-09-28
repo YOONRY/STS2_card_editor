@@ -183,6 +183,7 @@ func _run() -> void:
 	restarted_bridge.flush_for_test()
 	_expect(restart_publications.size() == 1, "A restarted bridge did not register its existing pack with Skin Changer.")
 	_expect(restarted_bridge.get_last_changed_sources_csv() == "", "Startup registration incorrectly reset user card selections.")
+	_expect(restarted_bridge._entry_cache.is_empty() and restarted_bridge._build_entries.is_empty(), "An unchanged startup decoded or rendered the entire pack instead of reusing the disk index.")
 	manager._skin_changer_bridge.schedule_sync(manager._manifest)
 	manager._skin_changer_bridge.flush_for_test()
 	_expect(published_directories.size() == 1, "An unchanged Skin Changer pack triggered an unnecessary catalog refresh.")
@@ -204,6 +205,35 @@ func _run() -> void:
 	manager._skin_changer_bridge.schedule_sync({})
 	manager._skin_changer_bridge.flush_for_test()
 	_expect(published_directories.size() == 5 and !FileAccess.file_exists(pack_path), "Removing every override did not announce removal of the unified Skin Changer pack.")
+
+	# Missing or invalid cache data must rebuild rather than suppress current art.
+	var cold_bridge = load("res://mods/card_art_editor/skin_changer_bridge.gd").new()
+	cold_bridge.configure(skin_root, cae_root, Callable(manager, "build_skin_changer_full_art_image"))
+	cold_bridge.schedule_sync(manager._manifest)
+	cold_bridge.flush_for_test()
+	_expect(FileAccess.file_exists(pack_path) and !cold_bridge._entry_cache.is_empty(), "A missing generated pack incorrectly hit the startup cache.")
+	var edited_bridge = load("res://mods/card_art_editor/skin_changer_bridge.gd").new()
+	edited_bridge.configure(skin_root, cae_root, Callable(manager, "build_skin_changer_full_art_image"))
+	edited_bridge.schedule_sync(manager._manifest)
+	edited_bridge.flush_for_test()
+	_expect(edited_bridge._entry_cache.is_empty(), "Restart unnecessarily loaded image payloads.")
+	var edited_manifest = manager._manifest.duplicate(true)
+	edited_manifest[SOURCE]["display_mode"] = "full_art"
+	edited_bridge.schedule_sync(edited_manifest)
+	edited_bridge.flush_for_test()
+	_expect(edited_bridge.get_last_changed_sources_csv() == SOURCE, "An edit after a cache-only startup was lost.")
+	parsed = JSON.parse_string(FileAccess.get_file_as_string(pack_path))
+	_expect(parsed["overrides"][0]["display_mode"] == "full_art", "Cached normal art survived a full-art edit.")
+	var corrupt_index = FileAccess.open(edited_bridge.get_pack_directory().path_join(edited_bridge.CACHE_INDEX_FILENAME), FileAccess.WRITE)
+	corrupt_index.store_string("not-json")
+	corrupt_index = null
+	var recovery_bridge = load("res://mods/card_art_editor/skin_changer_bridge.gd").new()
+	recovery_bridge.configure(skin_root, cae_root, Callable(manager, "build_skin_changer_full_art_image"))
+	recovery_bridge.schedule_sync(edited_manifest)
+	recovery_bridge.flush_for_test()
+	_expect(!recovery_bridge._entry_cache.is_empty(), "An invalid cache index prevented rebuilding the current pack.")
+	recovery_bridge.schedule_sync({})
+	recovery_bridge.flush_for_test()
 
 	# Skin Changer is allowed to choose a non-native presentation. CAE must not
 	# replace that layout or restore stale provider pixels after selection/reuse.

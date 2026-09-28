@@ -58,6 +58,9 @@
     <Reference Include="System.Memory">
       <HintPath>$(Sts2DataDir)\System.Memory.dll</HintPath>
     </Reference>
+    <Reference Include="System.Text.Json">
+      <HintPath>$(Sts2DataDir)\System.Text.Json.dll</HintPath>
+    </Reference>
     <Reference Include="System.Threading">
       <HintPath>$(Sts2DataDir)\System.Threading.dll</HintPath>
     </Reference>

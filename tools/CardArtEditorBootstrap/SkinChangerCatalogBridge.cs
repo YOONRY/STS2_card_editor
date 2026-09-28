@@ -47,9 +47,11 @@ internal static class SkinChangerCatalogBridge
                         continue;
                     }
                     var filter = Text(entry, "FilterGroupId");
-                    var ancient = filter.Equals("ancients", StringComparison.OrdinalIgnoreCase) ||
-                        modes.GetValueOrDefault((string)portrait.Value!) == "full_art";
-                    presentations[typeName] = CreatePresentation(catalog.GetType().Assembly, ancient);
+                    var nativeAncient = filter.Equals("ancients", StringComparison.OrdinalIgnoreCase);
+                    if (modes.TryGetValue((string)portrait.Value!, out var mode) || nativeAncient)
+                    {
+                        presentations[typeName] = CreatePresentation(catalog.GetType().Assembly, nativeAncient || mode == "full_art");
+                    }
                     if (!string.IsNullOrEmpty(filter) && !filter.Equals((string)pair.Key, StringComparison.OrdinalIgnoreCase))
                     {
                         if (!filterTypes.TryGetValue(filter, out var types))

@@ -5,6 +5,8 @@ signal pack_published(pack_directory: String)
 const PACK_ID := "cae_saved_art"
 const PACK_FILENAME := "cae_saved_art.cardartpack.json"
 const PACK_INFO_FILENAME := "cae_pack_info.json"
+const CACHE_INDEX_FILENAME := "cae_cache_index.json"
+const CACHE_VERSION := 1
 const GENERATED_PACK_DIRECTORY := "user://card_art_editor/skin_changer/CAE_Saved_Art"
 const SYNC_DELAY_SECONDS := 0.35
 const ENTRIES_PER_TICK := 6
@@ -25,6 +27,10 @@ var _last_changed_sources := PackedStringArray()
 var _published_this_session := false
 var _full_art_renderer := Callable()
 var _catalog_refresh_pending := false
+var _published_fingerprints: Dictionary = {}
+var _published_pack_stamp := ""
+var _current_fingerprints: Dictionary = {}
+var _cache_index_loaded := false
 
 
 func configure(skin_changer_root: String, card_art_editor_root: String, full_art_renderer := Callable()) -> bool:
@@ -121,15 +127,87 @@ func flush_for_test() -> void:
 
 
 func _start_build() -> void:
+	_load_cache_index()
+	_current_fingerprints.clear()
+	for source in _scheduled_manifest:
+		var entry = _scheduled_manifest[source]
+		if entry is Dictionary:
+			_current_fingerprints[source] = _entry_fingerprint(entry)
+	_last_changed_sources.clear()
+	_sync_pending = false
+	_sync_delay = 0.0
+	if _published_pack_stamp != "" and _published_pack_stamp == _file_fingerprint(get_pack_path()):
+		if _current_fingerprints == _published_fingerprints:
+			_write_pack_info()
+			if !_published_this_session or _catalog_refresh_pending:
+				_published_this_session = true
+				_catalog_refresh_pending = false
+				pack_published.emit(_pack_directory)
+			return
+		# Only hydrate image data if an edit actually needs a new export. Launches
+		# compare the small index and file metadata, not the large base64 bundle.
+		if _entry_cache.is_empty():
+			_load_cached_entries()
 	_build_sources = _scheduled_manifest.keys()
 	_build_sources.sort()
 	_build_cursor = 0
 	_build_entries.clear()
 	_next_entry_cache.clear()
-	_last_changed_sources.clear()
 	_building = true
-	_sync_pending = false
-	_sync_delay = 0.0
+
+
+func _entry_fingerprint(entry: Dictionary) -> String:
+	var override_path = _get_entry_override_path(entry)
+	var edit_source_path = _get_entry_edit_source_path(entry, override_path)
+	return "%s|%s|%s" % [
+		_file_fingerprint(override_path), _file_fingerprint(edit_source_path), JSON.stringify(entry)
+	]
+
+
+func _load_cache_index() -> void:
+	if _cache_index_loaded:
+		return
+	_cache_index_loaded = true
+	var path = _pack_directory.path_join(CACHE_INDEX_FILENAME)
+	if !FileAccess.file_exists(path):
+		return
+	var parser = JSON.new()
+	if parser.parse(FileAccess.get_file_as_string(path)) != OK:
+		return
+	var index = parser.data
+	if !(index is Dictionary) or int(index.get("version", 0)) != CACHE_VERSION:
+		return
+	var fingerprints = index.get("fingerprints", null)
+	if fingerprints is Dictionary:
+		_published_fingerprints = fingerprints
+		_published_pack_stamp = String(index.get("pack_stamp", ""))
+
+
+func _load_cached_entries() -> void:
+	var parser = JSON.new()
+	if parser.parse(FileAccess.get_file_as_string(get_pack_path())) != OK or !(parser.data is Dictionary):
+		return
+	var entries = parser.data.get("overrides", [])
+	if !(entries is Array):
+		return
+	for entry in entries:
+		if !(entry is Dictionary):
+			continue
+		var source = String(entry.get("source_path", ""))
+		if _published_fingerprints.has(source):
+			_entry_cache[source] = {"fingerprint": _published_fingerprints[source], "entry": entry}
+
+
+func _save_cache_index() -> void:
+	# Incomplete exports must be retried, never blessed as a valid disk cache.
+	if _entry_cache.size() != _current_fingerprints.size():
+		_published_pack_stamp = ""
+		return
+	_published_fingerprints = _current_fingerprints.duplicate()
+	_published_pack_stamp = _file_fingerprint(get_pack_path())
+	var file = FileAccess.open(_pack_directory.path_join(CACHE_INDEX_FILENAME), FileAccess.WRITE)
+	if file != null:
+		file.store_string(JSON.stringify({"version": CACHE_VERSION, "pack_stamp": _published_pack_stamp, "fingerprints": _published_fingerprints}))
 
 
 func _build_source(source_path: String) -> void:
@@ -141,19 +219,7 @@ func _build_source(source_path: String) -> void:
 	var edit_source_path = _get_entry_edit_source_path(entry, override_path)
 	if override_path == "" and edit_source_path == "":
 		return
-	var fingerprint = "%s|%s|%s" % [
-		_file_fingerprint(override_path),
-		_file_fingerprint(edit_source_path),
-		JSON.stringify({
-			"display_mode": display_mode,
-			"width": int(entry.get("width", 0)),
-			"height": int(entry.get("height", 0)),
-			"adjust_zoom": float(entry.get("adjust_zoom", 1.0)),
-			"adjust_offset_x": float(entry.get("adjust_offset_x", 0.0)),
-			"adjust_offset_y": float(entry.get("adjust_offset_y", 0.0)),
-			"ancient_text_outside": bool(entry.get("ancient_text_outside", false))
-		})
-	]
+	var fingerprint = String(_current_fingerprints.get(source_path, ""))
 	var cached = _entry_cache.get(source_path, null)
 	if cached is Dictionary and String(cached.get("fingerprint", "")) == fingerprint:
 		var cached_entry = cached.get("entry", null)
@@ -277,6 +343,7 @@ func _finish_build() -> void:
 		return
 	var content = JSON.stringify({"format": "card_art_bundle", "version": 1, "count": _build_entries.size(), "overrides": _build_entries})
 	if FileAccess.file_exists(destination) and FileAccess.get_file_as_string(destination) == content:
+		_save_cache_index()
 		if !_published_this_session or _catalog_refresh_pending:
 			# Startup catalog registration is not an art change. Preserve the
 			# user's per-card Skin Changer selections across game launches.
@@ -302,6 +369,7 @@ func _finish_build() -> void:
 	if !_published_this_session:
 		# Rebuilding an old bridge format at startup must not reset skin choices.
 		_last_changed_sources.clear()
+	_save_cache_index()
 	_published_this_session = true
 	_catalog_refresh_pending = false
 	pack_published.emit(_pack_directory)
