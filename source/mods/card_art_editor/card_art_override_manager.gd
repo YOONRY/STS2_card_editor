@@ -29,7 +29,7 @@ const DEFAULT_LANDSCAPE_SIZE := Vector2i(1000, 760)
 const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
 const FULL_ART_TARGET_SIZE := Vector2i(600, 847)
 const MOD_IMPORT_IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
-const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "defect", "colorless", "status", "token", "curse", "event", "necrobinder"]
+const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "defect", "colorless", "status", "token", "curse", "event", "necrobinder", "quest"]
 const MODDED_CARD_PORTRAIT_FOLDERS := ["guardian", "hermit", "champ", "snecko", "automaton", "awakened", "collector", "slimeboss", "gremlins", "hexaghost", "downfall"]
 const ART_PACK_CATEGORY_SORT_ORDER := ["ironclad", "silent", "regent", "necrobinder", "defect", "colorless", "curse", "status", "token", "event", "seeker", "guardian", "hermit", "champ", "snecko", "automaton", "awakened", "collector", "slimeboss", "gremlins", "hexaghost", "downfall", "other"]
 const CARD_RARITY_ANCIENT := 5
@@ -1843,7 +1843,7 @@ func register_runtime_provider_source(source_path: String, card_id: String, is_b
 	var provider_path = _normalize_provider_resource_path(source_path)
 	var managed_source := ""
 	if is_base_game_model:
-		managed_source = _resolve_managed_source_from_card_id(card_id)
+		managed_source = _resolve_base_game_provider_source(provider_path, card_id)
 	if provider_path == "":
 		return managed_source
 	var lower_path = provider_path.to_lower()
@@ -1851,6 +1851,14 @@ func register_runtime_provider_source(source_path: String, card_id: String, is_b
 	_provider_source_alias_cache[lower_path] = managed_source if managed_source != "" else provider_path
 	_provider_source_registration_cache[lower_path] = "runtime::%s::%s" % [str(is_base_game_model), card_id.strip_edges().to_upper()]
 	return provider_path
+
+
+func _resolve_base_game_provider_source(provider_path: String, card_id: String) -> String:
+	# Keep native atlas/PNG keys identical before and after manifest loading.
+	# A model's exact path also disambiguates names present in multiple pools.
+	if provider_path.begins_with(MANAGED_TEXTURE_PREFIX) or provider_path.begins_with(CARD_ATLAS_PREFIX):
+		return _normalize_source_path(provider_path)
+	return _resolve_managed_source_from_card_id(card_id)
 
 
 func _get_model_or_inspect_source_path(node) -> String:
@@ -2191,7 +2199,7 @@ func _register_model_provider_source(model, owner_node, source_path: String) -> 
 		return normalized_path
 	var alias_path: String = normalized_path
 	if is_base_game_model:
-		var managed_source = _resolve_managed_source_from_card_id(_get_model_provider_card_id(model, owner_node))
+		var managed_source = _resolve_base_game_provider_source(normalized_path, _get_model_provider_card_id(model, owner_node))
 		if managed_source != "":
 			alias_path = managed_source
 	_provider_source_alias_cache[lower_path] = alias_path
@@ -2324,6 +2332,7 @@ func _collect_card_source_paths(dir_path: String, output: Array) -> void:
 	var dir = DirAccess.open(dir_path)
 	if dir == null:
 		return
+	var seen_files := {}
 	dir.list_dir_begin()
 	while true:
 		var entry_name = dir.get_next()
@@ -2334,8 +2343,15 @@ func _collect_card_source_paths(dir_path: String, output: Array) -> void:
 		var full_path = dir_path.path_join(entry_name)
 		if dir.current_is_dir():
 			_collect_card_source_paths(full_path, output)
-		elif entry_name.get_extension().to_lower() == "png":
-			output.append(full_path)
+		else:
+			# Exported PCKs may list only the import/remap sidecar, not the PNG.
+			var source_name = entry_name.trim_suffix(".import").trim_suffix(".remap")
+			if source_name.get_extension().to_lower() != "png" or seen_files.has(source_name):
+				continue
+			var source_path = dir_path.path_join(source_name)
+			if ResourceLoader.exists(source_path):
+				seen_files[source_name] = true
+				output.append(source_path)
 	dir.list_dir_end()
 
 
@@ -8048,7 +8064,10 @@ func _sanitize_manifest_for_missing_sources() -> void:
 		var entry = _manifest.get(source_path, null)
 		_manifest.erase(source_path)
 		_erase_override_texture_cache(source_path)
-		if !_manifest.has(normalized_source):
+		var existing_entry = _manifest.get(normalized_source, null)
+		# Reapplying an affected card could leave both its old PNG key and a
+		# newer atlas key. Keep the latest edit without deleting either image.
+		if existing_entry == null or (entry is Dictionary and existing_entry is Dictionary and String(entry.get("updated_at", "")) > String(existing_entry.get("updated_at", ""))):
 			_manifest[normalized_source] = entry
 		_erase_override_texture_cache(normalized_source)
 		rekeyed_any = true
