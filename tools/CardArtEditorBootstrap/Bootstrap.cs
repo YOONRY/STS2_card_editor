@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.IO;
 using System.Collections.Generic;
 using System.Reflection;
@@ -36,6 +37,13 @@ public static class Bootstrap
     private const string DeferredCardRefreshPendingMeta = "_card_art_deferred_card_refresh_pending";
     private const string DeferredCardRefreshInvalidateModelMeta = "_card_art_deferred_card_refresh_invalidate_model";
     private const string ManagerRefreshModeMeta = "_card_art_event_refresh_configured";
+    private const string SkinBridgeRuntimeCheckMeta = "_card_art_bridge_runtime_checked";
+    private const string SkinBridgeSkinRootMeta = "_card_art_bridge_skin_root";
+    private const string SkinBridgeCaeRootMeta = "_card_art_bridge_cae_root";
+    private const string SkinBridgeSignalConnectedMeta = "_card_art_bridge_signal_connected";
+    private const string SkinBridgePackPublishedSignal = "skin_changer_pack_published";
+    private const string SkinBridgePackId = "cae_saved_art";
+    private const string SkinChangerAssemblyName = "Gurio.SkinChanger";
     private const string InfectionEffectSuppressedMeta = "_card_art_infection_effect_suppressed";
     private const string InfectionEffectOriginalVisibleMeta = "_card_art_infection_effect_original_visible";
     private const string NativeAncientLayoutReloadingMeta = "_card_art_native_ancient_layout_reloading";
@@ -50,6 +58,19 @@ public static class Bootstrap
     private static readonly Dictionary<Type, MemberInfo?> CardNodeMemberCache = new();
     private static readonly Dictionary<Type, PropertyInfo?> CustomPortraitPathPropertyCache = new();
     private static string _lastInspectMetadataDiagnostic = string.Empty;
+    private static string _skinChangerRoot = string.Empty;
+    private static string _cardArtEditorRoot = string.Empty;
+    private static long _nextSkinChangerProbeTicks;
+    private const long SkinChangerProbeIntervalMs = 2000;
+    private static Callable _skinChangerPackPublishedCallable;
+    private static bool _skinChangerPackPublishedCallableReady;
+    private static string _pendingSkinChangerPackDirectory = string.Empty;
+    private static readonly HashSet<string> PendingSkinChangerChangedSources = new(StringComparer.OrdinalIgnoreCase);
+    private static bool _skinChangerCatalogRefreshActive;
+    private static bool _skinChangerOwnershipHooksInstalled;
+    private static bool _skinChangerOwnsVisuals;
+    private static long _nextSkinChangerCatalogRefreshTicks;
+    private static string _lastSkinChangerCatalogRefreshError = string.Empty;
 
     public static void Init()
     {
@@ -260,12 +281,14 @@ public static class Bootstrap
         {
             _pendingManager = existing;
             ConfigureManagerRefreshMode(existing);
+            ConfigureSkinChangerBridge(existing);
             return existing;
         }
 
         if (_pendingManager is not null && GodotObject.IsInstanceValid(_pendingManager))
         {
             ConfigureManagerRefreshMode(_pendingManager);
+            ConfigureSkinChangerBridge(_pendingManager);
             return _pendingManager;
         }
 
@@ -296,6 +319,7 @@ public static class Bootstrap
         manager.Name = ManagerNodeName;
         _pendingManager = manager;
         ConfigureManagerRefreshMode(manager);
+        ConfigureSkinChangerBridge(manager, true);
         root.CallDeferred(Node.MethodName.AddChild, manager);
         Log("Manager node queued for add to /root.");
         return manager;
@@ -311,6 +335,569 @@ public static class Bootstrap
 
         manager.Call("set_event_driven_portrait_refresh_enabled", _eventDrivenPortraitRefreshEnabled);
         manager.SetMeta(ManagerRefreshModeMeta, _eventDrivenPortraitRefreshEnabled);
+    }
+
+    private static void ConfigureSkinChangerBridge(Node manager, bool forceProbe = false)
+    {
+        if (manager is null || !GodotObject.IsInstanceValid(manager))
+        {
+            return;
+        }
+
+        if (string.IsNullOrEmpty(_skinChangerRoot))
+        {
+            var now = System.Environment.TickCount64;
+            if (!forceProbe && now < _nextSkinChangerProbeTicks)
+            {
+                return;
+            }
+            _nextSkinChangerProbeTicks = now + SkinChangerProbeIntervalMs;
+            _skinChangerRoot = ResolveLoadedModRoot(SkinChangerAssemblyName, "Gurio.SkinChanger.dll");
+            _cardArtEditorRoot = ResolveLoadedModRoot(typeof(Bootstrap).Assembly.GetName().Name ?? string.Empty, "card_art_editor.dll");
+        }
+
+        manager.SetMeta(SkinBridgeRuntimeCheckMeta, true);
+        manager.SetMeta(SkinBridgeCaeRootMeta, _cardArtEditorRoot);
+        if (string.IsNullOrEmpty(_skinChangerRoot) || !manager.HasMethod("configure_skin_changer_bridge"))
+        {
+            return;
+        }
+        if (!InstallSkinChangerOwnershipHooks())
+        {
+            return;
+        }
+        manager.SetMeta(SkinBridgeSkinRootMeta, _skinChangerRoot);
+        _skinChangerOwnsVisuals = manager.Call("configure_skin_changer_bridge", _skinChangerRoot, _cardArtEditorRoot).AsBool();
+        ConnectSkinChangerBridgeSignal(manager);
+        TryRefreshSkinChangerCatalog(manager);
+    }
+
+    private static void ConnectSkinChangerBridgeSignal(Node manager)
+    {
+        if (manager.GetMeta(SkinBridgeSignalConnectedMeta, false).AsBool() || !manager.HasSignal(SkinBridgePackPublishedSignal))
+        {
+            return;
+        }
+
+        if (!_skinChangerPackPublishedCallableReady)
+        {
+            _skinChangerPackPublishedCallable = Callable.From<string>(OnSkinChangerPackPublished);
+            _skinChangerPackPublishedCallableReady = true;
+        }
+
+        var error = manager.Connect(SkinBridgePackPublishedSignal, _skinChangerPackPublishedCallable);
+        if (error == Error.Ok || error == Error.AlreadyExists)
+        {
+            manager.SetMeta(SkinBridgeSignalConnectedMeta, true);
+        }
+        else
+        {
+            Log($"Skin Changer bridge signal connection failed: {error}.");
+        }
+    }
+
+    private static void OnSkinChangerPackPublished(string packDirectory)
+    {
+        _pendingSkinChangerPackDirectory = packDirectory;
+        if (_pendingManager is not null && GodotObject.IsInstanceValid(_pendingManager))
+        {
+            if (_pendingManager.HasMethod("get_skin_changer_bridge_changed_sources_csv"))
+            {
+                var changedSources = _pendingManager.Call("get_skin_changer_bridge_changed_sources_csv").AsString();
+                foreach (var source in changedSources.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    PendingSkinChangerChangedSources.Add(source);
+                }
+            }
+
+        }
+        _nextSkinChangerCatalogRefreshTicks = 0;
+        TryRefreshSkinChangerCatalog(_pendingManager);
+    }
+
+    private static void TryRefreshSkinChangerCatalog(Node? manager)
+    {
+        if (_skinChangerCatalogRefreshActive || string.IsNullOrWhiteSpace(_pendingSkinChangerPackDirectory))
+        {
+            return;
+        }
+
+        var now = System.Environment.TickCount64;
+        if (now < _nextSkinChangerCatalogRefreshTicks)
+        {
+            return;
+        }
+        _nextSkinChangerCatalogRefreshTicks = now + SkinChangerProbeIntervalMs;
+
+        var skinChangerAssembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(assembly =>
+            string.Equals(assembly.GetName().Name, SkinChangerAssemblyName, StringComparison.OrdinalIgnoreCase));
+        if (skinChangerAssembly is null)
+        {
+            return;
+        }
+
+        _skinChangerCatalogRefreshActive = true;
+        try
+        {
+            RefreshSkinChangerCardArtPack(
+                skinChangerAssembly,
+                _pendingSkinChangerPackDirectory,
+                PendingSkinChangerChangedSources);
+            var refreshedDirectory = _pendingSkinChangerPackDirectory;
+            _pendingSkinChangerPackDirectory = string.Empty;
+            PendingSkinChangerChangedSources.Clear();
+            _lastSkinChangerCatalogRefreshError = string.Empty;
+            Log($"Skin Changer catalog refreshed for unified Card Art Editor pack: {refreshedDirectory}");
+            if (manager is not null && GodotObject.IsInstanceValid(manager))
+            {
+                manager.Call("refresh_all_portraits");
+            }
+            RefreshVisibleCardsAfterSkinChangerCatalogUpdate();
+        }
+        catch (Exception ex)
+        {
+            var message = ex.GetBaseException().Message;
+            if (!string.Equals(_lastSkinChangerCatalogRefreshError, message, StringComparison.Ordinal))
+            {
+                _lastSkinChangerCatalogRefreshError = message;
+                Log("Skin Changer catalog refresh deferred: " + ex);
+            }
+        }
+        finally
+        {
+            _skinChangerCatalogRefreshActive = false;
+        }
+    }
+
+    private static void RefreshSkinChangerCardArtPack(
+        Assembly skinChangerAssembly,
+        string packDirectory,
+        IEnumerable<string> changedSources)
+    {
+        const BindingFlags allStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+        const BindingFlags allInstance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var skinService = skinChangerAssembly.GetType("STS2SkinChanger.Core.SkinService", throwOnError: true)!;
+        var catalog = skinService.GetProperty("Catalog", allStatic)?.GetValue(null)
+            ?? throw new InvalidOperationException("Skin Changer card catalog is not initialized yet.");
+        var catalogType = catalog.GetType();
+        var buildEntries = skinService.GetMethod("BuildCardCatalogEntries", allStatic)
+            ?? throw new MissingMethodException(skinService.FullName, "BuildCardCatalogEntries");
+        var cardEntries = buildEntries.Invoke(null, new object?[] { ModelDb.AllCards })
+            ?? throw new InvalidOperationException("Skin Changer did not build card catalog entries.");
+
+        var affectedGroups = RemoveSkinChangerPackOptions(catalog, catalogType, SkinBridgePackId);
+        var importedPaths = _pendingManager is not null && GodotObject.IsInstanceValid(_pendingManager)
+            ? _pendingManager.Call("get_skin_changer_bridge_imported_pack_paths").AsStringArray()
+            : Array.Empty<string>();
+        affectedGroups.UnionWith(SkinChangerCatalogBridge.FilterImportedPacks(catalog, importedPaths));
+        object? attachResult = null;
+        var scannerType = skinChangerAssembly.GetType("STS2SkinChanger.Catalog.CardArtPackScanner", throwOnError: true)!;
+        var scan = scannerType.GetMethod("Scan", BindingFlags.Public | BindingFlags.Static)
+            ?? throw new MissingMethodException(scannerType.FullName, "Scan");
+        var scanResult = scan.Invoke(null, new object?[] { new[] { packDirectory } })
+            ?? throw new InvalidOperationException("Skin Changer did not return an art pack scan result.");
+        var packs = scanResult.GetType().GetProperty("Packs", allInstance)?.GetValue(scanResult)
+            ?? throw new InvalidOperationException("Skin Changer art pack scan did not expose packs.");
+        if (EnumerableHasItems(packs))
+        {
+            var attach = catalogType.GetMethod("AttachCardArtPacks", allInstance)
+                ?? throw new MissingMethodException(catalogType.FullName, "AttachCardArtPacks");
+            attachResult = attach.Invoke(catalog, new[] { packs, cardEntries });
+        }
+        SkinChangerCatalogBridge.ConfigurePresentations(catalog, (IEnumerable)cardEntries, (IEnumerable)packs);
+
+        var finalize = catalogType.GetMethod("FinalizeCardGroups", allInstance)
+            ?? throw new MissingMethodException(catalogType.FullName, "FinalizeCardGroups");
+        finalize.Invoke(catalog, new[] { cardEntries });
+        var currentGroups = FindSkinChangerPackGroups(catalog, SkinBridgePackId);
+        affectedGroups.UnionWith(currentGroups);
+        SanitizeSkinChangerSelections(skinService);
+        ClearSkinChangerRuntimeCaches(skinService, affectedGroups);
+        InvalidateSkinChangerPackResources(skinService);
+        ResetSkinChangerCardCaches(skinService);
+        RegisterSkinChangerPackCoverage(skinChangerAssembly, attachResult);
+
+        var changedCards = ResolveSkinChangerCards(changedSources);
+        ApplySkinChangerPackSelections(skinService, currentGroups, changedCards);
+        Log($"Skin Changer bridge groups={string.Join(",", currentGroups)}; imported pack sources={importedPaths.Length}; full-art and filter groups configured.");
+    }
+
+
+    private static HashSet<string> RemoveSkinChangerPackOptions(object catalog, Type catalogType, string packId)
+    {
+        const BindingFlags allInstance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var field = catalogType.GetField("_artPackCardGroups", allInstance);
+        if (field?.GetValue(catalog) is not IDictionary groups)
+        {
+            throw new InvalidOperationException("Skin Changer art pack groups are unavailable.");
+        }
+
+        foreach (DictionaryEntry pair in groups)
+        {
+            var group = pair.Value;
+            if (group is null)
+            {
+                continue;
+            }
+            var options = group.GetType().GetProperty("Options", allInstance)?.GetValue(group) as IList;
+            if (options is null)
+            {
+                continue;
+            }
+            var removed = false;
+            for (var index = options.Count - 1; index >= 0; index--)
+            {
+                var option = options[index];
+                var optionId = option?.GetType().GetProperty("Id", allInstance)?.GetValue(option) as string;
+                if (!string.Equals(optionId, packId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                options.RemoveAt(index);
+                removed = true;
+            }
+            if (removed && pair.Key is string groupId)
+            {
+                result.Add(groupId);
+            }
+        }
+        return result;
+    }
+
+    private static HashSet<string> FindSkinChangerPackGroups(object catalog, string packId)
+    {
+        const BindingFlags allInstance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var groups = catalog.GetType().GetProperty("CardGroups", allInstance)?.GetValue(catalog) as IEnumerable;
+        if (groups is null)
+        {
+            return result;
+        }
+        foreach (var group in groups)
+        {
+            if (group is null)
+            {
+                continue;
+            }
+            var groupType = group.GetType();
+            var groupId = groupType.GetProperty("Id", allInstance)?.GetValue(group) as string;
+            var options = groupType.GetProperty("Options", allInstance)?.GetValue(group) as IEnumerable;
+            if (string.IsNullOrWhiteSpace(groupId) || options is null)
+            {
+                continue;
+            }
+            foreach (var option in options)
+            {
+                var optionId = option?.GetType().GetProperty("Id", allInstance)?.GetValue(option) as string;
+                if (string.Equals(optionId, packId, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(groupId);
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    private static List<CardModel> ResolveSkinChangerCards(IEnumerable<string> sourcePaths)
+    {
+        var normalizedSources = sourcePaths
+            .Select(NormalizeCardSourcePath)
+            .Where(path => !string.IsNullOrEmpty(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedSources.Length == 0)
+        {
+            return new List<CardModel>();
+        }
+
+        var candidates = ModelDb.AllCards
+            .Select(card => (Card: card, Path: NormalizeCardSourcePath(GetPreferredPortraitPath(card))))
+            .ToArray();
+        var matches = new HashSet<CardModel>();
+        foreach (var source in normalizedSources)
+        {
+            var exactMatches = candidates.Where(candidate =>
+                string.Equals(candidate.Path, source, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (exactMatches.Length > 0)
+            {
+                foreach (var match in exactMatches)
+                {
+                    matches.Add(match.Card);
+                }
+                continue;
+            }
+
+            // Modded portrait paths are not always canonical. A filename fallback is
+            // safe only when it identifies exactly one model.
+            var stem = GetCardSourceStem(source);
+            var stemMatches = candidates.Where(candidate =>
+                string.Equals(GetCardSourceStem(candidate.Path), stem, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (stemMatches.Length == 1)
+            {
+                matches.Add(stemMatches[0].Card);
+            }
+        }
+        return matches.ToList();
+    }
+
+    private static string NormalizeCardSourcePath(string path)
+    {
+        var normalized = (path ?? string.Empty).Trim().Replace('\\', '/').ToLowerInvariant();
+        const string atlasPrefix = "res://images/atlases/card_atlas.sprites/";
+        if (normalized.StartsWith(atlasPrefix, StringComparison.Ordinal))
+        {
+            normalized = "res://images/packed/card_portraits/" + normalized[atlasPrefix.Length..];
+        }
+        var extensionIndex = normalized.LastIndexOf('.');
+        if (extensionIndex > normalized.LastIndexOf('/'))
+        {
+            normalized = normalized[..extensionIndex] + ".png";
+        }
+        return normalized;
+    }
+
+    private static string GetCardSourceStem(string path)
+    {
+        return Path.GetFileNameWithoutExtension(path ?? string.Empty).ToLowerInvariant();
+    }
+
+    private static void ApplySkinChangerPackSelections(
+        Type skinService,
+        HashSet<string> currentGroups,
+        IEnumerable<CardModel> changedCards)
+    {
+        const BindingFlags allStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+        var setEnabled = skinService.GetMethod("SetCardPriorityEnabled", allStatic);
+        var getGroupId = skinService.GetMethod("GetCardCatalogGroupId", allStatic);
+        var getFilterGroupId = skinService.GetMethod("GetCardFilterGroupId", allStatic);
+        var movePriority = skinService.GetMethod("MoveCardPriority", allStatic);
+        var applyCardSelection = skinService.GetMethods(allStatic).FirstOrDefault(method =>
+            method.Name == "ApplyCardSelection" &&
+            method.GetParameters().Length == 2 &&
+            typeof(CardModel).IsAssignableFrom(method.GetParameters()[0].ParameterType));
+        if (setEnabled is null || applyCardSelection is null)
+        {
+            throw new MissingMethodException("Skin Changer card selection API is unavailable.");
+        }
+
+        // A stale per-card choice wins over its category in Skin Changer. Only cards
+        // whose CAE entry changed are returned to category inheritance here.
+        var editedGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var card in changedCards)
+        {
+            // Restoring a card only removes CAE's entry. Do not erase a user's
+            // explicit choice of a different provider or re-enable CAE on restore.
+            var source = GetPreferredPortraitPath(card);
+            if (_pendingManager is not null && GodotObject.IsInstanceValid(_pendingManager) &&
+                _pendingManager.Call("has_override", source).AsBool())
+            {
+                if (applyCardSelection.Invoke(null, new object?[] { card, "__inherit__" }) is not true)
+                {
+                    throw new InvalidOperationException($"Skin Changer could not select edited card {card.Id}: " +
+                        skinService.GetProperty("LastError", allStatic)?.GetValue(null));
+                }
+                if (getGroupId?.Invoke(null, new object?[] { card }) is string groupId && currentGroups.Contains(groupId))
+                {
+                    editedGroups.Add(groupId);
+                }
+                if (getFilterGroupId?.Invoke(null, new object?[] { card }) is string filterId && currentGroups.Contains(filterId))
+                {
+                    editedGroups.Add(filterId);
+                }
+            }
+        }
+
+        foreach (var groupId in editedGroups)
+        {
+            setEnabled.Invoke(null, new object?[] { groupId, SkinBridgePackId, true });
+            movePriority?.Invoke(null, new object?[] { groupId, SkinBridgePackId, -1024 });
+        }
+    }
+
+    private static bool InstallSkinChangerOwnershipHooks()
+    {
+        if (_skinChangerOwnershipHooksInstalled)
+        {
+            return true;
+        }
+        var assembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(candidate =>
+            string.Equals(candidate.GetName().Name, SkinChangerAssemblyName, StringComparison.OrdinalIgnoreCase));
+        var bridge = assembly?.GetType("STS2SkinChanger.Core.ExternalCardVisualBridge");
+        const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+        var ownership = bridge?.GetMethod("GetScriptedManagerOwnership", flags);
+        var synchronize = bridge?.GetMethod("SynchronizeProvider", flags);
+        if (ownership is null || synchronize is null)
+        {
+            return false;
+        }
+
+        // Disable only Skin Changer's callback into THIS scripted manager, not
+        // ownership reported by other mods. A skipped struct result is default.
+        var prefix = new HarmonyMethod(typeof(Bootstrap), nameof(AllowSkinChangerEditorCallback));
+        Harmony.Patch(ownership, prefix: prefix);
+        Harmony.Patch(synchronize, prefix: prefix);
+        _skinChangerOwnershipHooksInstalled = true;
+        Log("Skin Changer visual ownership handoff installed.");
+        return true;
+    }
+
+    private static bool AllowSkinChangerEditorCallback()
+    {
+        return !_skinChangerOwnsVisuals;
+    }
+
+    private static void InvalidateSkinChangerPackResources(Type skinService)
+    {
+        const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
+        // Clearing decoded textures alone is insufficient: these aliases still
+        // point at the old bytes after a pack is edited in the same session.
+        if (skinService.GetField("IsolatedCardOverlayCache", flags)?.GetValue(null) is not IDictionary cache)
+        {
+            throw new MissingFieldException(skinService.FullName, "IsolatedCardOverlayCache");
+        }
+        var staleKeys = cache.Keys.Cast<object>().OfType<string>()
+            .Where(key => key.Split('\n').ElementAtOrDefault(1) == SkinBridgePackId).ToArray();
+        foreach (var key in staleKeys)
+        {
+            cache.Remove(key);
+        }
+    }
+
+    private static void SanitizeSkinChangerSelections(Type skinService)
+    {
+        const BindingFlags allStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+        skinService.GetMethod("SanitizeCardSelections", allStatic, null, Type.EmptyTypes, null)?.Invoke(null, null);
+    }
+
+    private static void RegisterSkinChangerPackCoverage(Assembly skinChangerAssembly, object? attachResult)
+    {
+        if (attachResult is null)
+        {
+            return;
+        }
+        var coveredTypes = attachResult.GetType().GetField("Item1")?.GetValue(attachResult);
+        if (coveredTypes is null)
+        {
+            return;
+        }
+        var bridgeType = skinChangerAssembly.GetType("STS2SkinChanger.Core.ExternalCardVisualBridge");
+        bridgeType?.GetMethod("RegisterArtPackCoverage", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, new[] { coveredTypes });
+    }
+
+    private static void ResetSkinChangerCardCaches(Type skinService)
+    {
+        const BindingFlags allStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+        var lookup = skinService.GetField("_cardLookupCache", allStatic);
+        if (lookup is not null)
+        {
+            lookup.SetValue(null, Activator.CreateInstance(lookup.FieldType));
+        }
+        var coverage = skinService.GetField("CardCoverageCache", allStatic)?.GetValue(null);
+        coverage?.GetType().GetMethod("Clear", Type.EmptyTypes)?.Invoke(coverage, null);
+        var failedRequests = skinService.GetField("FailedCardPortraitRequests", allStatic)?.GetValue(null);
+        failedRequests?.GetType().GetMethod("Clear", Type.EmptyTypes)?.Invoke(failedRequests, null);
+    }
+
+    private static void ClearSkinChangerRuntimeCaches(Type skinService, IEnumerable<string> groupIds)
+    {
+        const BindingFlags allStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+        var clearPortraits = skinService.GetMethod("ClearCardPortraitCache", allStatic, null, new[] { typeof(string) }, null);
+        var clearRuntimeResources = skinService.GetMethod("ClearRuntimeResourceCache", allStatic, null, new[] { typeof(string) }, null);
+        foreach (var groupId in groupIds.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            clearPortraits?.Invoke(null, new object?[] { groupId });
+            clearRuntimeResources?.Invoke(null, new object?[] { groupId });
+        }
+    }
+
+
+    private static bool EnumerableHasItems(object value)
+    {
+        if (value is not IEnumerable enumerable)
+        {
+            return false;
+        }
+        var enumerator = enumerable.GetEnumerator();
+        try
+        {
+            return enumerator.MoveNext();
+        }
+        finally
+        {
+            (enumerator as IDisposable)?.Dispose();
+        }
+    }
+
+    private static void RefreshVisibleCardsAfterSkinChangerCatalogUpdate()
+    {
+        var root = (Engine.GetMainLoop() as SceneTree)?.Root;
+        if (root is null)
+        {
+            return;
+        }
+        var pending = new Stack<Node>();
+        pending.Push(root);
+        var visited = 0;
+        while (pending.Count > 0 && visited < 8192)
+        {
+            var node = pending.Pop();
+            visited++;
+            if (!GodotObject.IsInstanceValid(node))
+            {
+                continue;
+            }
+            if (node is NCard card && card.IsVisibleInTree())
+            {
+                ClearCachedPortraitPath(card);
+                try
+                {
+                    NCardReloadMethod?.Invoke(card, null);
+                }
+                catch (Exception ex)
+                {
+                    Log("Visible card refresh after Skin Changer update failed: " + ex.GetBaseException().Message);
+                }
+            }
+            foreach (var child in node.GetChildren())
+            {
+                pending.Push(child);
+            }
+        }
+    }
+
+    private static string ResolveLoadedModRoot(string assemblyName, string expectedFileName)
+    {
+        if (string.IsNullOrWhiteSpace(assemblyName))
+        {
+            return string.Empty;
+        }
+
+        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            try
+            {
+                if (!string.Equals(assembly.GetName().Name, assemblyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                var location = assembly.Location;
+                if (string.IsNullOrWhiteSpace(location) || !File.Exists(location))
+                {
+                    continue;
+                }
+                if (!string.Equals(Path.GetFileName(location), expectedFileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                return Path.GetDirectoryName(location) ?? string.Empty;
+            }
+            catch
+            {
+            }
+        }
+        return string.Empty;
     }
 
     private static void TryAttachToOpenInspectScreens()
@@ -712,6 +1299,10 @@ public static class Bootstrap
 
     private static bool TryReloadBrokenNativeAncientLayout(NCard card)
     {
+        if (_skinChangerOwnsVisuals)
+        {
+            return false;
+        }
         try
         {
             if (card is null || !GodotObject.IsInstanceValid(card) ||
@@ -771,7 +1362,7 @@ public static class Bootstrap
     private static void RegisterCardProviderSource(CardModel model, string sourcePath, string cardId)
     {
         var manager = TryEnsureManager();
-        if (manager is null)
+        if (manager is null || _skinChangerOwnsVisuals)
         {
             return;
         }
@@ -1089,7 +1680,7 @@ public static class Bootstrap
         TryReloadBrokenNativeAncientLayout(cardNode);
         UpdateInspectCardMetadataFromCard(cardNode);
         var manager = TryEnsureManager();
-        if (manager is null)
+        if (manager is null || _skinChangerOwnsVisuals)
         {
             return;
         }

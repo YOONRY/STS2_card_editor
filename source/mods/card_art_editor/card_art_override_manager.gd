@@ -12,6 +12,10 @@ const STORAGE_ART_PACK_REGISTRY_PATH := STORAGE_ROOT + "/art_pack_registry.json"
 const STORAGE_UI_SETTINGS_PATH := STORAGE_ROOT + "/ui_settings.json"
 const STEAM_WORKSHOP_APP_ID := "2868840"
 const WORKSHOP_ART_PACK_SUFFIX := ".cardartpack.json"
+const SKIN_CHANGER_BRIDGE = preload("res://mods/card_art_editor/skin_changer_bridge.gd")
+const SKIN_BRIDGE_RUNTIME_CHECK_META := "_card_art_bridge_runtime_checked"
+const SKIN_BRIDGE_SKIN_ROOT_META := "_card_art_bridge_skin_root"
+const SKIN_BRIDGE_CAE_ROOT_META := "_card_art_bridge_cae_root"
 const GIF_PRELOAD_PROGRESS = preload("res://mods/card_art_editor/gif_preload_progress.gd")
 const GIF_TOOL_RES_PATH := "res://mods/card_art_editor/extract_gif_frames.ps1"
 const GIF_TOOL_USER_PATH := STORAGE_ROOT + "/tools/extract_gif_frames.ps1"
@@ -109,6 +113,7 @@ const GIF_PLAYBACK_MOUSE_MOVE_DISTANCE := 2.0
 
 signal overrides_changed(source_path)
 signal art_packs_changed()
+signal skin_changer_pack_published(pack_directory: String)
 
 var _portrait_refs: Dictionary = {}
 var _portrait_ref_ids := []
@@ -198,6 +203,7 @@ var _gif_last_active_card_root: Node = null
 var _gif_last_active_source_path := ""
 var _hover_tips_container_cache: Node = null
 var _full_art_fire_shader = null
+var _skin_changer_bridge = null
 
 
 func _ready() -> void:
@@ -209,6 +215,9 @@ func _ready() -> void:
 	_load_persistent_preferences()
 	_load_manifest()
 	_load_art_pack_registry()
+	_configure_skin_changer_bridge_from_meta()
+	if is_skin_changer_bridge_active():
+		_skin_changer_bridge.schedule_sync(_manifest)
 	get_tree().node_added.connect(_on_node_added)
 	_register_existing(get_tree().root, true)
 	request_gif_preload()
@@ -330,6 +339,10 @@ func _is_last_gif_active_root_stale() -> bool:
 
 
 func _process(delta: float) -> void:
+	if _skin_changer_bridge != null:
+		_skin_changer_bridge.process(delta)
+	if is_skin_changer_bridge_active():
+		return
 	if _gif_preload_requested or _gif_preload_active:
 		_process_gif_preload()
 	_refresh_inspect_provider_pins(delta)
@@ -395,6 +408,8 @@ func _process(delta: float) -> void:
 
 
 func _input(event) -> void:
+	if is_skin_changer_bridge_active():
+		return
 	if event is InputEventMouseMotion:
 		var motion_event = event as InputEventMouseMotion
 		var motion_position = _get_current_mouse_position(motion_event.position)
@@ -628,6 +643,10 @@ func set_gif_hover_playback_only_enabled_for_source(source_path: String, enabled
 func has_override(source_path: String) -> bool:
 	source_path = _canonicalize_source_key(source_path)
 	return _manifest.has(source_path)
+
+
+func _should_render_override(source_path: String) -> bool:
+	return !is_skin_changer_bridge_active() and has_override(source_path)
 
 
 func can_toggle_full_art(source_path: String) -> bool:
@@ -4577,6 +4596,8 @@ func build_full_art_preview(source_path: String, source_image, target_size_overr
 
 
 func refresh_all_portraits() -> void:
+	if is_skin_changer_bridge_active():
+		return
 	if _batch_update_depth > 0:
 		_batch_refresh_requested = true
 		return
@@ -4679,6 +4700,8 @@ func apply_override_to_texture_rect(texture_rect) -> void:
 
 
 func queue_card_override_refresh(card_node, invalidate_model_cache := false) -> void:
+	if is_skin_changer_bridge_active():
+		return
 	if card_node == null or !is_instance_valid(card_node):
 		return
 	_queue_native_ancient_layout_stabilization(card_node)
@@ -4718,6 +4741,8 @@ func set_external_provider_capture_enabled(enabled: bool) -> void:
 
 
 func capture_card_provider_after_visual_update(card_node, cache_external_provider := false) -> bool:
+	if is_skin_changer_bridge_active():
+		return false
 	set_external_provider_capture_enabled(true)
 	var card_root = _get_card_refresh_root(card_node)
 	if card_root == null:
@@ -4749,6 +4774,8 @@ func capture_card_provider_after_visual_update(card_node, cache_external_provide
 
 
 func apply_card_override_after_visual_update(card_node) -> bool:
+	if is_skin_changer_bridge_active():
+		return false
 	var card_root = _get_card_refresh_root(card_node)
 	if card_root == null:
 		return false
@@ -4765,6 +4792,8 @@ func apply_card_override_after_visual_update(card_node) -> bool:
 
 
 func queue_card_provider_capture(card_node) -> void:
+	if is_skin_changer_bridge_active():
+		return
 	if card_node == null or !is_instance_valid(card_node):
 		return
 	if bool(card_node.get_meta(META_PROVIDER_CAPTURE_PENDING, false)):
@@ -4774,6 +4803,8 @@ func queue_card_provider_capture(card_node) -> void:
 
 
 func queue_inspect_card_provider_stabilization(card_node) -> void:
+	if is_skin_changer_bridge_active():
+		return
 	if card_node == null or !is_instance_valid(card_node):
 		return
 	if bool(card_node.get_meta(META_INSPECT_PROVIDER_STABILIZATION_PENDING, false)):
@@ -4783,6 +4814,8 @@ func queue_inspect_card_provider_stabilization(card_node) -> void:
 
 
 func register_inspect_card_provider_pin(card_node) -> void:
+	if is_skin_changer_bridge_active():
+		return
 	if card_node == null or !is_instance_valid(card_node):
 		return
 	_inspect_provider_card_refs[int(card_node.get_instance_id())] = weakref(card_node)
@@ -4877,6 +4910,8 @@ func _get_card_refresh_root(card_node):
 
 
 func card_needs_override_refresh(card_node) -> bool:
+	if is_skin_changer_bridge_active():
+		return false
 	var card_root = _get_card_refresh_root(card_node)
 	if card_root == null:
 		return false
@@ -4898,6 +4933,8 @@ func card_needs_override_refresh(card_node) -> bool:
 		var stored_source_key = _canonicalize_source_key(String(portrait.get_meta(META_SOURCE_PATH, "")))
 		if source_key != "" and (portrait as CanvasItem).visible and stored_source_key != source_key:
 			return true
+	if is_skin_changer_bridge_active():
+		return false
 	if _manifest.is_empty():
 		return false
 	if source_key != "" and _manifest.has(source_key):
@@ -4910,6 +4947,8 @@ func card_needs_override_refresh(card_node) -> bool:
 
 
 func _clear_source_overrides_from_tracked_portraits(source_path: String) -> void:
+	if is_skin_changer_bridge_active():
+		return
 	var source_key = _canonicalize_source_key(source_path)
 	for index in range(_portrait_ref_ids.size() - 1, -1, -1):
 		var texture_rect = _get_tracked_portrait_at(index)
@@ -4931,6 +4970,8 @@ func _clear_source_overrides_from_tracked_portraits(source_path: String) -> void
 
 
 func _clear_source_overrides_in_tree(node, source_path: String) -> void:
+	if is_skin_changer_bridge_active():
+		return
 	if node == null:
 		return
 	if String(node.name) == "CardContainer":
@@ -5159,6 +5200,8 @@ func _get_full_art_layer(card_root):
 func _sync_active_custom_full_art_layer(card_root) -> void:
 	if card_root == null:
 		return
+	if is_skin_changer_bridge_active():
+		return
 	var full_art_layer = _get_full_art_layer(card_root)
 	if !(full_art_layer is TextureRect):
 		return
@@ -5304,6 +5347,8 @@ func _get_current_model_ancient_layout(card_root) -> int:
 
 
 func _synchronize_native_ancient_layout(card_root) -> bool:
+	if is_skin_changer_bridge_active():
+		return false
 	if card_root == null or _get_current_model_ancient_layout(card_root) != 1:
 		return false
 	# Native Ancient cards already own the Ancient layout. A custom full-art
@@ -5463,6 +5508,8 @@ func _is_card_root_ancient_text_outside_eligible(card_root, source_path: String 
 
 
 func _apply_ancient_text_outside_layout(card_root) -> void:
+	if is_skin_changer_bridge_active():
+		return
 	if card_root == null:
 		return
 	var was_moved_outside = bool(card_root.get_meta(META_ANCIENT_TEXT_OUTSIDE_APPLIED, false))
@@ -5636,6 +5683,8 @@ func _is_hover_valid_ancient_text_card_root(card_root) -> bool:
 
 
 func _has_animated_overrides() -> bool:
+	if is_skin_changer_bridge_active():
+		return false
 	if !_animated_overrides_cache_dirty:
 		return _has_animated_overrides_cached
 	_has_animated_overrides_cached = false
@@ -5655,6 +5704,8 @@ func _is_animated_override_source(source_path: String) -> bool:
 
 
 func _get_gif_override_source_for_card_root(card_root) -> String:
+	if is_skin_changer_bridge_active():
+		return ""
 	if card_root == null or !is_instance_valid(card_root):
 		return ""
 	if !_is_node_visible_in_tree(card_root):
@@ -6876,7 +6927,7 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 			full_art_owner_card_id = String(full_art_layer.get_meta(META_FULL_ART_OWNER_CARD_ID, ""))
 	var tracked_source_path = current_path if current_path != "" else stored_source_path
 	var manifest_source_path = _canonicalize_source_key(tracked_source_path)
-	var has_override_for_path = manifest_source_path != "" and _manifest.has(manifest_source_path)
+	var has_override_for_path = manifest_source_path != "" and _should_render_override(manifest_source_path)
 	var rarity_fire_source_path = full_art_owner if full_art_owner != "" else tracked_source_path
 	var gif_hover_source_path = full_art_owner if full_art_owner != "" else tracked_source_path
 	var display_mode = DISPLAY_MODE_DEFAULT
@@ -6922,9 +6973,11 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 
 
 func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
+	var card_root = _find_card_root(texture_rect)
+	if is_skin_changer_bridge_active():
+		return
 	var current_texture = texture_rect.texture
 
-	var card_root = _find_card_root(texture_rect)
 	var node_name = String(texture_rect.name)
 	var portrait_visible := false
 	var ancient_visible := false
@@ -6987,7 +7040,7 @@ func _refresh_portrait_node(texture_rect, force_visual_sync := false) -> void:
 	var refresh_signature = _build_refresh_signature(texture_rect, current_texture, stored_source_path, current_path, card_root, portrait_visible, ancient_visible)
 	if String(texture_rect.get_meta(META_REFRESH_SIGNATURE, "")) == refresh_signature:
 		var expected_full_art_path = _canonicalize_source_key(current_path if current_path != "" else stored_source_path)
-		if node_name == "Portrait" and expected_full_art_path != "" and is_full_art_mode(expected_full_art_path) and !_is_full_art_layer_ready_for_source(card_root, expected_full_art_path):
+		if node_name == "Portrait" and expected_full_art_path != "" and _should_render_override(expected_full_art_path) and is_full_art_mode(expected_full_art_path) and !_is_full_art_layer_ready_for_source(card_root, expected_full_art_path):
 			texture_rect.set_meta(META_REFRESH_SIGNATURE, "")
 		else:
 			if force_visual_sync:
@@ -7182,6 +7235,8 @@ func _get_cached_external_provider_texture(portrait: TextureRect, source_path: S
 
 
 func _restore_external_provider_texture(card_node) -> bool:
+	if is_skin_changer_bridge_active():
+		return false
 	var card_root = _get_card_refresh_root(card_node)
 	if card_root == null:
 		return false
@@ -7381,6 +7436,8 @@ func get_gif_preload_estimate() -> Dictionary:
 
 
 func request_gif_preload(retry: bool = false, show_progress: bool = false) -> void:
+	if is_skin_changer_bridge_active():
+		return
 	if !bool(_gif_processing_settings.get("preload_enabled", false)):
 		return
 	if show_progress:
@@ -7536,7 +7593,7 @@ func _erase_override_texture_cache(source_path: String) -> void:
 
 func _get_override_texture(source_path: String, animate: bool = true):
 	source_path = _canonicalize_source_key(source_path)
-	if !_manifest.has(source_path):
+	if !_should_render_override(source_path):
 		return null
 
 	var entry = _manifest[source_path]
@@ -8101,6 +8158,8 @@ func _save_manifest_now() -> void:
 	if file == null:
 		return
 	file.store_string(JSON.stringify(_manifest, "\t"))
+	if _skin_changer_bridge != null and _skin_changer_bridge.is_active():
+		_skin_changer_bridge.schedule_sync(_manifest)
 
 
 func _save_art_pack_registry() -> void:
@@ -8118,6 +8177,8 @@ func _save_art_pack_registry_now() -> void:
 	if file == null:
 		return
 	file.store_string(JSON.stringify(_art_pack_registry, "\t"))
+	if is_skin_changer_bridge_active():
+		_skin_changer_bridge.schedule_sync(_manifest, true)
 
 
 func _safe_file_stem(source_path: String) -> String:
@@ -8128,3 +8189,97 @@ func _safe_file_stem(source_path: String) -> String:
 	stem = stem.replace(":", "_")
 	stem = stem.replace(".", "_")
 	return stem
+
+
+func is_skin_changer_bridge_active() -> bool:
+	return _skin_changer_bridge != null and _skin_changer_bridge.is_active()
+
+
+func get_skin_changer_bridge_changed_sources_csv() -> String:
+	if _skin_changer_bridge == null:
+		return ""
+	return _skin_changer_bridge.get_last_changed_sources_csv()
+
+
+
+
+func configure_skin_changer_bridge(skin_changer_root: String, card_art_editor_root: String) -> bool:
+	if _skin_changer_bridge == null:
+		_skin_changer_bridge = SKIN_CHANGER_BRIDGE.new()
+		_skin_changer_bridge.pack_published.connect(_on_skin_changer_pack_published)
+	var changed = _skin_changer_bridge.configure(skin_changer_root, card_art_editor_root, Callable(self, "build_skin_changer_full_art_image"))
+	if !is_skin_changer_bridge_active():
+		return false
+	if changed:
+		_gif_preload_requested = false
+		_gif_preload_active = false
+		# Release only CAE-owned state once. Repeated restoration would overwrite
+		# Skin Changer's current selection with a snapshot from a previous skin.
+		for index in range(_portrait_ref_ids.size()):
+			var portrait = _get_tracked_portrait_at(index)
+			if portrait != null:
+				_release_direct_override_to_skin_changer(portrait, _find_card_root(portrait))
+		_external_provider_texture_cache.clear()
+		_inspect_provider_card_refs.clear()
+		_skin_changer_bridge.schedule_sync(_manifest)
+		_needs_full_refresh = false
+	return true
+
+
+func build_skin_changer_full_art_image(source_path: String, entry: Dictionary):
+	var image_path = String(entry.get("edit_source_path", entry.get("override_path", "")))
+	var animated = _is_animated_entry(entry)
+	if animated:
+		var plan = _get_gif_frame_plan(entry)
+		if plan.is_empty():
+			return null
+		image_path = String(plan[0]["path"])
+	var source_image = load_image_from_file(image_path)
+	if animated:
+		source_image = trim_transparent_margins(source_image)
+	return build_full_art_preview(source_path, source_image, Vector2i.ZERO, FULL_ART_ANIMATED_ZOOM_BOOST if animated else FULL_ART_STATIC_ZOOM_BOOST)
+
+
+func get_skin_changer_bridge_imported_pack_paths() -> PackedStringArray:
+	var result := PackedStringArray()
+	var packs = _art_pack_registry.get("packs", {})
+	var sources = _art_pack_registry.get("workshop_sources", {})
+	if !(packs is Dictionary) or !(sources is Dictionary):
+		return result
+	for state in sources.values():
+		if !(state is Dictionary) or !packs.has(String(state.get("pack_id", ""))):
+			continue
+		var path = String(state.get("path", "")).replace("\\", "/")
+		if path != "" and !result.has(path):
+			result.append(path)
+	return result
+
+
+func _on_skin_changer_pack_published(pack_directory: String) -> void:
+	skin_changer_pack_published.emit(pack_directory)
+
+
+func _configure_skin_changer_bridge_from_meta() -> void:
+	if !has_meta(SKIN_BRIDGE_RUNTIME_CHECK_META):
+		return
+	var skin_changer_root = String(get_meta(SKIN_BRIDGE_SKIN_ROOT_META, ""))
+	var card_art_editor_root = String(get_meta(SKIN_BRIDGE_CAE_ROOT_META, ""))
+	if skin_changer_root != "":
+		configure_skin_changer_bridge(skin_changer_root, card_art_editor_root)
+
+
+func _release_direct_override_to_skin_changer(texture_rect, card_root) -> void:
+	if card_root != null:
+		_clear_custom_full_art_layer(card_root)
+	if texture_rect is TextureRect and String(texture_rect.name) != FULL_ART_LAYER_NAME:
+		var source_path = _canonicalize_source_key(_get_card_root_source_path(card_root))
+		var current_texture = texture_rect.texture
+		if _is_managed_override_texture(current_texture):
+			_restore_texture_rect_to_provider(texture_rect, source_path)
+		elif bool(texture_rect.get_meta(META_OVERRIDE_ACTIVE, false)):
+			if current_texture is Texture2D and source_path != "":
+				_remember_original_texture(texture_rect, current_texture, source_path)
+				_remember_external_provider_texture(card_root, texture_rect, current_texture, source_path)
+			texture_rect.set_meta(META_OVERRIDE_ACTIVE, false)
+			texture_rect.set_meta(META_SOURCE_PATH, source_path)
+		texture_rect.set_meta(META_REFRESH_SIGNATURE, "")

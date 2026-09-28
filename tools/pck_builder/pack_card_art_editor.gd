@@ -2,6 +2,7 @@ extends SceneTree
 
 const FILES := {
 	"mods/card_art_editor/card_art_override_manager.gd": "card_art_override_manager.gd",
+	"mods/card_art_editor/skin_changer_bridge.gd": "skin_changer_bridge.gd",
 	"mods/card_art_editor/gif_preload_progress.gd": "gif_preload_progress.gd",
 	"mods/card_art_editor/inspect_card_art_editor.gd": "inspect_card_art_editor.gd",
 	"mods/card_art_editor/inspect_card_art_editor.tscn": "inspect_card_art_editor.tscn",
@@ -21,6 +22,12 @@ func _initialize() -> void:
 	var output_pck = build_root.path_join("card_art_editor.pck")
 
 	DirAccess.make_dir_recursive_absolute(build_root)
+	if FileAccess.file_exists(output_pck):
+		var remove_error = DirAccess.remove_absolute(output_pck)
+		if remove_error != OK:
+			push_error("Could not replace existing PCK: %s" % remove_error)
+			quit(remove_error)
+			return
 
 	var packer = PCKPacker.new()
 	var start_error = packer.pck_start(output_pck)
