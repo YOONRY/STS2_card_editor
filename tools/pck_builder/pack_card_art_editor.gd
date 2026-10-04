@@ -3,6 +3,7 @@ extends SceneTree
 const FILES := {
 	"mods/card_art_editor/card_art_override_manager.gd": "card_art_override_manager.gd",
 	"mods/card_art_editor/skin_changer_bridge.gd": "skin_changer_bridge.gd",
+	"mods/card_art_editor/skin_changer_gif_player.gd": "skin_changer_gif_player.gd",
 	"mods/card_art_editor/gif_preload_progress.gd": "gif_preload_progress.gd",
 	"mods/card_art_editor/inspect_card_art_editor.gd": "inspect_card_art_editor.gd",
 	"mods/card_art_editor/inspect_card_art_editor.tscn": "inspect_card_art_editor.tscn",

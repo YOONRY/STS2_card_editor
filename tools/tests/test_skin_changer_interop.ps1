@@ -183,3 +183,46 @@ Assert-True ((Get-TestOption 'cae_saved_art' 'ancients').NormalPortraits.Contain
 Attach-TestPack 'other_mod' 'defend_ironclad' 24 18 -StartupHook
 Assert-True ((Get-TestOption 'cae_saved_art').CardPresentations['StrikeIronclad'].UseAncientLayout) 'An unrelated attach disabled CAE full art.'
 Write-Output 'Startup regression passed: early path filtering, unrelated packs, unregister restoration, duplicate refresh detection.'
+
+# Only the selected CAE provider may supply GIF playback, never base/fallback skins.
+$gif = $cae.GetType('CardArtEditorBootstrap.SkinChangerGifBridge', $true)
+$shouldAnimate = $gif.GetMethod('ShouldProvideAnimation', $static)
+Assert-True ($shouldAnimate.Invoke($null, [object[]]@('cae_saved_art', $true))) 'CAE animation provider was rejected.'
+Assert-True (!$shouldAnimate.Invoke($null, [object[]]@('cae_saved_art', $false))) 'GIF replaced a base fallback.'
+Assert-True (!$shouldAnimate.Invoke($null, [object[]]@('other_mod', $true))) 'GIF replaced another selected mod.'
+Assert-True (!$shouldAnimate.Invoke($null, [object[]]@('__base__', $false))) 'GIF replaced a restored card.'
+$requestMethod = $service.GetMethod('ResolveCardPortraitRequest', $static)
+Assert-True ($null -ne $requestMethod.CreateDelegate([Func[MegaCrit.Sts2.Core.Models.CardModel,object]])) 'Card request delegate could not bind to the installed API.'
+foreach ($property in @('Selection','ResourcePath','UseSelectedProvider')) {
+    Assert-True ($null -ne $requestMethod.ReturnType.GetProperty($property)) "GIF request is missing $property."
+}
+$controls = $sc.GetType('STS2SkinChanger.Ui.CardSkinControls', $true)
+foreach ($method in @('ApplySelectedPortraitToNode','ReleasePresentationForReuse')) {
+    $hook = $controls.GetMethod($method, $static)
+    Assert-True ($null -ne $hook) "GIF lifecycle hook missing: $method."
+    $cardParameter = $hook.GetParameters() | Where-Object Name -eq 'card'
+    Assert-True ($cardParameter.ParameterType.FullName -eq 'MegaCrit.Sts2.Core.Nodes.Cards.NCard') "GIF lifecycle card parameter changed: $method."
+}
+$loadPortrait = $service.GetMethod('LoadIsolatedCardPortrait', $static)
+Assert-True ($loadPortrait.ReturnType.FullName -eq 'Godot.Texture2D') 'Portrait hook no longer returns a texture.'
+foreach ($parameter in @('selection','resourcePath','useSelectedProvider')) {
+    Assert-True ($loadPortrait.GetParameters().Name -contains $parameter) "Portrait hook parameter changed: $parameter."
+}
+$tagResult = $gif.GetMethod('TagAnimation', $static).GetParameters() | Where-Object Name -eq '__result'
+Assert-True (!$tagResult.ParameterType.IsByRef) 'GIF tagging is allowed to replace the cached static result.'
+Write-Output 'GIF bridge API regression passed: selection isolation, immutable cached result, request delegate, lifecycle hook signatures.'
+
+# Test the real CLR boundary, not a GDScript fixture exposing a fake Model.
+$cardModelType = [MegaCrit.Sts2.Core.Nodes.Cards.NCard].GetProperty('Model').PropertyType
+Assert-True (![Godot.GodotObject].IsAssignableFrom($cardModelType)) 'Recheck the model bridge: CardModel is now a Godot object.'
+$generatedProperties = [MegaCrit.Sts2.Core.Nodes.Cards.NCard].GetNestedType('PropertyName')
+Assert-True ($null -eq $generatedProperties.GetField('Model', $static)) 'NCard now exposes Model as a Godot property; update the boundary test.'
+$getToken = $gif.GetMethod('GetModelToken', $static)
+$firstModel = [Runtime.CompilerServices.RuntimeHelpers]::GetUninitializedObject([MegaCrit.Sts2.Core.Models.Cards.StrikeIronclad])
+$secondModel = [Runtime.CompilerServices.RuntimeHelpers]::GetUninitializedObject([MegaCrit.Sts2.Core.Models.Cards.StrikeIronclad])
+$firstToken = $getToken.Invoke($null, [object[]]@($firstModel))
+Assert-True ($firstToken -gt 0 -and $firstToken -is [long]) 'Model token is not a positive Variant-safe integer.'
+Assert-True ($getToken.Invoke($null, [object[]]@($firstModel)) -eq $firstToken) 'Repeated refreshes changed the same model identity.'
+Assert-True ($getToken.Invoke($null, [object[]]@($secondModel)) -ne $firstToken) 'Distinct copies of the same card share a model identity.'
+Assert-True ($getToken.Invoke($null, [object[]]@($null)) -eq 0) 'An empty/pool model received a valid identity.'
+Write-Output 'GIF native-model boundary regression passed: inaccessible CLR Model, stable tokens, duplicate-card isolation, null model.'

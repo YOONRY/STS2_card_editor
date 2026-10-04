@@ -31,6 +31,11 @@ var _published_fingerprints: Dictionary = {}
 var _published_pack_stamp := ""
 var _current_fingerprints: Dictionary = {}
 var _cache_index_loaded := false
+var _invalidated_sources: Dictionary = {}
+
+
+func invalidate_source(source: String) -> void:
+	_invalidated_sources[source] = true
 
 
 func configure(skin_changer_root: String, card_art_editor_root: String, full_art_renderer := Callable()) -> bool:
@@ -137,7 +142,7 @@ func _start_build() -> void:
 	_sync_pending = false
 	_sync_delay = 0.0
 	if _published_pack_stamp != "" and _published_pack_stamp == _file_fingerprint(get_pack_path()):
-		if _current_fingerprints == _published_fingerprints:
+		if _current_fingerprints == _published_fingerprints and _invalidated_sources.is_empty():
 			_write_pack_info()
 			if !_published_this_session or _catalog_refresh_pending:
 				_published_this_session = true
@@ -221,7 +226,7 @@ func _build_source(source_path: String) -> void:
 		return
 	var fingerprint = String(_current_fingerprints.get(source_path, ""))
 	var cached = _entry_cache.get(source_path, null)
-	if cached is Dictionary and String(cached.get("fingerprint", "")) == fingerprint:
+	if cached is Dictionary and String(cached.get("fingerprint", "")) == fingerprint and !_invalidated_sources.has(source_path):
 		var cached_entry = cached.get("entry", null)
 		if cached_entry is Dictionary:
 			_build_entries.append(cached_entry)
@@ -336,6 +341,7 @@ func _finish_build() -> void:
 		if FileAccess.file_exists(destination):
 			if DirAccess.remove_absolute(destination) != OK:
 				return
+		_invalidated_sources.clear()
 		if !_published_this_session or !_last_changed_sources.is_empty() or _catalog_refresh_pending:
 			_published_this_session = true
 			_catalog_refresh_pending = false
@@ -344,10 +350,12 @@ func _finish_build() -> void:
 	var content = JSON.stringify({"format": "card_art_bundle", "version": 1, "count": _build_entries.size(), "overrides": _build_entries})
 	if FileAccess.file_exists(destination) and FileAccess.get_file_as_string(destination) == content:
 		_save_cache_index()
-		if !_published_this_session or _catalog_refresh_pending:
+		_invalidated_sources.clear()
+		if !_published_this_session or _catalog_refresh_pending or !_last_changed_sources.is_empty():
 			# Startup catalog registration is not an art change. Preserve the
 			# user's per-card Skin Changer selections across game launches.
-			_last_changed_sources.clear()
+			if !_published_this_session:
+				_last_changed_sources.clear()
 			_published_this_session = true
 			_catalog_refresh_pending = false
 			pack_published.emit(_pack_directory)
@@ -372,6 +380,7 @@ func _finish_build() -> void:
 	_save_cache_index()
 	_published_this_session = true
 	_catalog_refresh_pending = false
+	_invalidated_sources.clear()
 	pack_published.emit(_pack_directory)
 
 

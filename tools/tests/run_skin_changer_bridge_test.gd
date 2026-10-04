@@ -206,6 +206,29 @@ func _run() -> void:
 	manager._skin_changer_bridge.flush_for_test()
 	_expect(published_directories.size() == 5 and !FileAccess.file_exists(pack_path), "Removing every override did not announce removal of the unified Skin Changer pack.")
 
+	# GIF changes after the first PNG still need to evict Skin Changer's cached
+	# preview tags, even though the bridge's static pack bytes are unchanged.
+	manager._manifest[SOURCE] = {"type": "animated_gif", "display_mode": "default",
+		"frame_paths": [image_path, edit_source_path], "frame_delays": [0.1, 0.2]}
+	manager._skin_changer_bridge.schedule_sync(manager._manifest)
+	manager._skin_changer_bridge.flush_for_test()
+	var gif_static_pack = FileAccess.get_file_as_string(pack_path)
+	var publications_before_edit = published_directories.size()
+	manager._manifest[SOURCE]["frame_delays"] = [0.2, 0.3]
+	manager._skin_changer_bridge.schedule_sync(manager._manifest)
+	manager._skin_changer_bridge.flush_for_test()
+	_expect(FileAccess.get_file_as_string(pack_path) == gif_static_pack, "Timing changes altered Skin Changer's static preview export.")
+	_expect(published_directories.size() == publications_before_edit + 1 and manager.get_skin_changer_bridge_changed_sources_csv() == SOURCE, "Same-preview GIF edits failed to invalidate Skin Changer's cache.")
+	manager._erase_override_texture_cache(SOURCE)
+	manager._skin_changer_bridge.schedule_sync(manager._manifest)
+	manager._skin_changer_bridge.flush_for_test()
+	_expect(published_directories.size() == publications_before_edit + 2, "An in-place frame rewrite hit the unchanged fingerprint fast path.")
+	manager._skin_changer_bridge.schedule_sync(manager._manifest)
+	manager._skin_changer_bridge.flush_for_test()
+	_expect(published_directories.size() == publications_before_edit + 2, "GIF invalidation caused repeated catalog rebuilds.")
+	manager._skin_changer_bridge.schedule_sync({})
+	manager._skin_changer_bridge.flush_for_test()
+
 	# Missing or invalid cache data must rebuild rather than suppress current art.
 	var cold_bridge = load("res://mods/card_art_editor/skin_changer_bridge.gd").new()
 	cold_bridge.configure(skin_root, cae_root, Callable(manager, "build_skin_changer_full_art_image"))

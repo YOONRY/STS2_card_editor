@@ -13,6 +13,7 @@ const STORAGE_UI_SETTINGS_PATH := STORAGE_ROOT + "/ui_settings.json"
 const STEAM_WORKSHOP_APP_ID := "2868840"
 const WORKSHOP_ART_PACK_SUFFIX := ".cardartpack.json"
 const SKIN_CHANGER_BRIDGE = preload("res://mods/card_art_editor/skin_changer_bridge.gd")
+const SKIN_CHANGER_GIF_PLAYER = preload("res://mods/card_art_editor/skin_changer_gif_player.gd")
 const SKIN_BRIDGE_RUNTIME_CHECK_META := "_card_art_bridge_runtime_checked"
 const SKIN_BRIDGE_SKIN_ROOT_META := "_card_art_bridge_skin_root"
 const SKIN_BRIDGE_CAE_ROOT_META := "_card_art_bridge_cae_root"
@@ -204,6 +205,12 @@ var _gif_last_active_source_path := ""
 var _hover_tips_container_cache: Node = null
 var _full_art_fire_shader = null
 var _skin_changer_bridge = null
+var _skin_changer_gifs = null
+
+
+func _exit_tree() -> void:
+	if _skin_changer_gifs != null:
+		_skin_changer_gifs.dispose()
 
 
 func _ready() -> void:
@@ -342,6 +349,8 @@ func _process(delta: float) -> void:
 	if _skin_changer_bridge != null:
 		_skin_changer_bridge.process(delta)
 	if is_skin_changer_bridge_active():
+		if _skin_changer_gifs != null:
+			_skin_changer_gifs.process()
 		return
 	if _gif_preload_requested or _gif_preload_active:
 		_process_gif_preload()
@@ -582,6 +591,8 @@ func set_gif_processing_settings(settings: Dictionary) -> void:
 	if previous_hover_rules != _has_gif_hover_playback_rules():
 		_refresh_gif_playback_state()
 		_needs_full_refresh = true
+	if _skin_changer_gifs != null:
+		_skin_changer_gifs.refresh_settings()
 
 
 func _load_gif_processing_settings_from_dictionary(settings: Dictionary) -> void:
@@ -5862,6 +5873,10 @@ func _sync_gif_texture_for_portrait(texture_rect, active_root) -> void:
 
 
 func _refresh_gif_playback_state() -> void:
+	if is_skin_changer_bridge_active():
+		if _skin_changer_gifs != null:
+			_skin_changer_gifs.refresh_settings()
+		return
 	if !_has_animated_overrides():
 		_gif_last_active_card_root = null
 		_gif_last_active_source_path = ""
@@ -7453,6 +7468,8 @@ func get_gif_preload_estimate() -> Dictionary:
 
 func request_gif_preload(retry: bool = false, show_progress: bool = false) -> void:
 	if is_skin_changer_bridge_active():
+		if _skin_changer_gifs != null and bool(_gif_processing_settings.get("preload_enabled", false)):
+			_skin_changer_gifs.request_preload(retry, show_progress)
 		return
 	if !bool(_gif_processing_settings.get("preload_enabled", false)):
 		return
@@ -7476,6 +7493,8 @@ func request_gif_preload(retry: bool = false, show_progress: bool = false) -> vo
 
 
 func cancel_gif_preload() -> void:
+	if _skin_changer_gifs != null:
+		_skin_changer_gifs.cancel_preload()
 	_gif_preload_session_cancelled = true
 	_gif_preload_requested = false
 	_gif_preload_active = false
@@ -7600,6 +7619,10 @@ func _get_override_texture_cache_key(source_path: String, animate: bool = true) 
 
 
 func _erase_override_texture_cache(source_path: String) -> void:
+	if _skin_changer_gifs != null:
+		_skin_changer_gifs.invalidate(source_path)
+	if is_skin_changer_bridge_active():
+		_skin_changer_bridge.invalidate_source(source_path)
 	_override_texture_cache.erase(source_path)
 	_override_texture_cache.erase(_get_override_texture_cache_key(source_path, false))
 	_gif_preload_failed_sources.erase(source_path)
@@ -8172,6 +8195,8 @@ func _save_manifest() -> void:
 
 func _save_manifest_now() -> void:
 	_mark_animated_overrides_cache_dirty()
+	if _skin_changer_gifs != null:
+		_skin_changer_gifs.synchronize_manifest()
 	var absolute_manifest_path = ProjectSettings.globalize_path(STORAGE_MANIFEST_PATH)
 	var file = FileAccess.open(absolute_manifest_path, FileAccess.WRITE)
 	if file == null:
@@ -8229,6 +8254,9 @@ func configure_skin_changer_bridge(skin_changer_root: String, card_art_editor_ro
 	var changed = _skin_changer_bridge.configure(skin_changer_root, card_art_editor_root, Callable(self, "build_skin_changer_full_art_image"))
 	if !is_skin_changer_bridge_active():
 		return false
+	if _skin_changer_gifs == null:
+		_skin_changer_gifs = SKIN_CHANGER_GIF_PLAYER.new()
+		_skin_changer_gifs.configure(self)
 	if changed:
 		_gif_preload_requested = false
 		_gif_preload_active = false
@@ -8242,7 +8270,24 @@ func configure_skin_changer_bridge(skin_changer_root: String, card_art_editor_ro
 		_inspect_provider_card_refs.clear()
 		_skin_changer_bridge.schedule_sync(_manifest)
 		_needs_full_refresh = false
+		request_gif_preload()
 	return true
+
+
+func tag_skin_changer_gif_texture(source_path: String, fallback: Texture2D) -> void:
+	if is_skin_changer_bridge_active() and _skin_changer_gifs != null:
+		_skin_changer_gifs.tag_texture(_canonicalize_source_key(source_path), fallback)
+
+
+func bind_skin_changer_gif_card(card: Node, selected_source: String, model_token: int) -> bool:
+	if is_skin_changer_bridge_active() and _skin_changer_gifs != null:
+		return _skin_changer_gifs.bind_card(card, _canonicalize_source_key(selected_source) if selected_source != "" else "", model_token)
+	return false
+
+
+func release_skin_changer_gif_card(card: Node) -> void:
+	if _skin_changer_gifs != null:
+		_skin_changer_gifs.release_card(card)
 
 
 func build_skin_changer_full_art_image(source_path: String, entry: Dictionary):

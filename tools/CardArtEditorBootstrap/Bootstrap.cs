@@ -373,6 +373,19 @@ public static class Bootstrap
         }
         manager.SetMeta(SkinBridgeSkinRootMeta, _skinChangerRoot);
         _skinChangerOwnsVisuals = manager.Call("configure_skin_changer_bridge", _skinChangerRoot, _cardArtEditorRoot).AsBool();
+        if (_skinChangerOwnsVisuals)
+        {
+            try
+            {
+                var assembly = AppDomain.CurrentDomain.GetAssemblies().First(candidate =>
+                    candidate.GetName().Name == SkinChangerAssemblyName);
+                SkinChangerGifBridge.Configure(Harmony, assembly, manager, Log);
+            }
+            catch (Exception ex)
+            {
+                Log("Skin Changer GIF playback unavailable; keeping static previews: " + ex);
+            }
+        }
         ConnectSkinChangerBridgeSignal(manager);
         TryRefreshSkinChangerCatalog(manager);
     }
