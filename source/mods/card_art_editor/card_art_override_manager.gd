@@ -3225,8 +3225,38 @@ func _notify_art_packs_changed() -> void:
 	art_packs_changed.emit()
 
 
-func export_bundle_to_file(export_path: String) -> Dictionary:
-	if _manifest.is_empty():
+func get_bundle_export_sources(source_paths = null) -> Array:
+	var allowed := {}
+	if source_paths != null:
+		for path in source_paths:
+			var key = _canonicalize_source_key(String(path))
+			if key != "":
+				allowed[key] = true
+	var sources: Array = []
+	for path in _manifest:
+		if _manifest[path] is Dictionary and (source_paths == null or allowed.has(_canonicalize_source_key(String(path)))):
+			sources.append(path)
+	return sources
+
+
+func get_library_export_sources(cards: Array) -> Array:
+	var sources: Array = []
+	for card in cards:
+		if !(card is Dictionary):
+			continue
+		var path = String(card.get("source_path", ""))
+		if bool(card.get("is_base_game_model", false)):
+			# Resolve identity without registering aliases or changing live portraits.
+			path = _resolve_base_game_provider_source(path, String(card.get("card_id", "")))
+		if path != "":
+			sources.append(path)
+	return get_bundle_export_sources(sources)
+
+
+func export_bundle_to_file(export_path: String, source_paths = null) -> Dictionary:
+	# null means all cards; an explicitly empty category must never export everything.
+	var export_sources = get_bundle_export_sources(source_paths)
+	if export_sources.is_empty():
 		return {
 			"ok": false,
 			"message": "There are no custom card images to export yet."
@@ -3248,10 +3278,8 @@ func export_bundle_to_file(export_path: String) -> Dictionary:
 		BUNDLE_VERSION,
 		JSON.stringify(Time.get_datetime_string_from_system())
 	])
-	for source_path in _manifest.keys():
+	for source_path in export_sources:
 		var entry = _manifest[source_path]
-		if !(entry is Dictionary):
-			continue
 		var bundle_entry = _build_bundle_export_entry(String(source_path), entry)
 		if bundle_entry.is_empty():
 			continue

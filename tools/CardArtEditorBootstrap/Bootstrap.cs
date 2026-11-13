@@ -1026,6 +1026,7 @@ public static class Bootstrap
         _loggedOverlayLoadFailure = false;
         var overlay = overlayScene.Instantiate<Control>();
         overlay.Name = "CardArtEditorOverlay";
+        CardLibraryExportBridge.Bind(overlay);
         screen.AddChild(overlay);
         var overlayScript = overlay.GetScript();
         var overlayScriptText = overlayScript.VariantType == Variant.Type.Nil ? "<null>" : overlayScript.ToString();
@@ -1296,7 +1297,7 @@ public static class Bootstrap
         return sourcePath;
     }
 
-    private static string GetPreferredPortraitPath(CardModel model)
+    internal static string GetPreferredPortraitPath(CardModel model)
     {
         var customPortraitPath = TryGetCustomPortraitPath(model);
         if (!string.IsNullOrEmpty(customPortraitPath))

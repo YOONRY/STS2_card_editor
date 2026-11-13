@@ -162,6 +162,11 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "Save Current Card PNG"
 
+[node name="ExportLibraryPackButton" type="Button" parent="EditorPopup/MarginContainer/RootVBox/ModeTabs/UploadImage"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Export Current Category Art Pack"
+
 [node name="SelectedFileLabel" type="Label" parent="EditorPopup/MarginContainer/RootVBox/ModeTabs/UploadImage"]
 unique_name_in_owner = true
 layout_mode = 2

@@ -1,5 +1,7 @@
 ﻿extends Control
 
+signal library_export_context_requested
+
 const GEMINI_API_URL_TEMPLATE := "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 const DEFAULT_MODEL := "gemini-2.0-flash-preview-image-generation"
 const UI_SETTINGS_PATH := "user://card_art_editor/ui_settings.json"
@@ -9,6 +11,7 @@ const FILE_DIALOG_MODE_IMPORT_PACK := "import_pack"
 const FILE_DIALOG_MODE_IMPORT_MOD := "import_mod"
 const EXPORT_DIALOG_MODE_PACK := "pack"
 const EXPORT_DIALOG_MODE_CURRENT_PNG := "current_png"
+const EXPORT_DIALOG_MODE_LIBRARY := "library"
 const IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
 const BROWSER_LIST_BATCH_SIZE := 40
 const META_INSPECT_CARD_NODE_PATH := "_card_art_inspect_card_node_path"
@@ -33,6 +36,11 @@ const TRANSLATIONS := {
 		"choose_image": "파일에서 불러오기",
 		"import_pack": "아트팩 불러오기",
 		"export_pack": "아트팩 내보내기",
+		"export_library_pack": "현재 카테고리 아트팩 내보내기",
+		"export_library_hint": "카드 백과사전에서 선택한 캐릭터/카테고리의 커스텀 이미지만 내보냅니다. 검색어, 희귀도, 카드 종류 필터는 적용하지 않습니다.",
+		"export_library_unavailable": "카드 백과사전에서 캐릭터/카테고리 탭 하나를 선택한 뒤 카드 편집기를 열어주세요.",
+		"export_library_empty": "선택한 카테고리에 내보낼 커스텀 카드 이미지가 없습니다.",
+		"choose_export_library_status": "%s: 커스텀 카드 이미지 %d개를 아트팩으로 저장할 위치를 선택하세요.",
 		"no_image_selected": "선택한 파일 없음",
 		"restore_current": "현재 카드 복원",
 		"restore_all": "전체 복원",
@@ -170,6 +178,11 @@ const TRANSLATIONS := {
 		"choose_image": "Choose From Files",
 		"import_pack": "Import Art Pack",
 		"export_pack": "Export Art Pack",
+		"export_library_pack": "Export Current Category Art Pack",
+		"export_library_hint": "Export custom images from the character/category tab selected in the card compendium. Search, rarity and card type filters are ignored.",
+		"export_library_unavailable": "Select one character/category tab in the card compendium, then open the card editor.",
+		"export_library_empty": "There are no custom card images to export in the selected category.",
+		"choose_export_library_status": "%s: choose where to save an art pack with %d custom card images.",
 		"no_image_selected": "No image selected.",
 		"restore_current": "Restore Current",
 		"restore_all": "Restore All",
@@ -307,6 +320,11 @@ const TRANSLATIONS := {
 		"choose_image": "从文件选择",
 		"import_pack": "导入美术包",
 		"export_pack": "导出美术包",
+		"export_library_pack": "导出当前分类美术包",
+		"export_library_hint": "仅导出卡牌图鉴中所选角色/分类的自定义图片。忽略搜索、稀有度和卡牌类型筛选。",
+		"export_library_unavailable": "请在卡牌图鉴中选择一个角色/分类标签，然后打开卡牌编辑器。",
+		"export_library_empty": "所选分类中没有可导出的自定义卡牌图片。",
+		"choose_export_library_status": "%s：请选择保存包含 %d 张自定义卡牌图片的美术包的位置。",
 		"no_image_selected": "未选择图片。",
 		"restore_current": "还原当前卡牌",
 		"restore_all": "全部还原",
@@ -444,6 +462,11 @@ const TRANSLATIONS := {
 		"choose_image": "ファイルから選択",
 		"import_pack": "アートパックを読み込み",
 		"export_pack": "アートパックを書き出し",
+		"export_library_pack": "現在のカテゴリのアートパックを書き出し",
+		"export_library_hint": "カード図鑑で選択したキャラクター/カテゴリのカスタム画像のみを書き出します。検索、レアリティ、カード種別のフィルタは無視されます。",
+		"export_library_unavailable": "カード図鑑でキャラクター/カテゴリのタブを1つ選び、カードエディターを開いてください。",
+		"export_library_empty": "選択したカテゴリに書き出せるカスタムカード画像がありません。",
+		"choose_export_library_status": "%s：%d 枚のカスタムカード画像を含むアートパックの保存先を選んでください。",
 		"no_image_selected": "画像が選択されていません。",
 		"restore_current": "現在のカードを復元",
 		"restore_all": "すべて復元",
@@ -588,6 +611,7 @@ const TRANSLATIONS := {
 @onready var _import_pack_button = %ImportPackButton
 @onready var _import_mod_button = %ImportModButton
 @onready var _export_pack_button = %ExportPackButton
+@onready var _export_library_pack_button = %ExportLibraryPackButton
 @onready var _export_current_png_button = %ExportCurrentPngButton
 @onready var _selected_file_label = %SelectedFileLabel
 @onready var _restore_button = %RestoreButton
@@ -616,6 +640,7 @@ var _refresh_accumulator := 0.0
 var _file_dialog_mode := FILE_DIALOG_MODE_UPLOAD
 var _import_mod_label := "Import Mod Images"
 var _export_dialog_mode := EXPORT_DIALOG_MODE_PACK
+var _export_library_sources: Array = []
 var _browser_current_dir := ""
 var _browser_selected_path := ""
 var _browser_selection_is_dir := false
@@ -917,6 +942,8 @@ func _apply_locale() -> void:
 	_import_mod_label = _tr("import_mod")
 	_import_mod_button.text = _import_mod_label
 	_export_pack_button.text = _tr("export_pack")
+	_export_library_pack_button.text = _tr("export_library_pack")
+	_export_library_pack_button.tooltip_text = _tr("export_library_hint")
 	_export_current_png_button.text = _tr("export_current_png")
 	_restore_button.text = _tr("restore_current")
 	_restore_all_button.text = _tr("restore_all")
@@ -2534,6 +2561,34 @@ func _on_export_current_png_pressed() -> void:
 	_export_file_dialog.popup_centered_ratio(0.8)
 
 
+func _on_export_library_pack_pressed() -> void:
+	_export_library_sources.clear()
+	var manager = _manager()
+	if manager == null:
+		_set_status(_tr("manager_unavailable"), true)
+		return
+	# The C# bridge snapshots the selected tab only on request, never during scrolling.
+	set_meta("_card_art_export_library_cards", [])
+	set_meta("_card_art_export_library_name", "")
+	library_export_context_requested.emit()
+	var cards = get_meta("_card_art_export_library_cards", [])
+	var category_name = String(get_meta("_card_art_export_library_name", ""))
+	if category_name == "" or !(cards is Array) or cards.is_empty():
+		_set_status(_tr("export_library_unavailable"), true)
+		return
+	_export_library_sources = manager.get_library_export_sources(cards)
+	if _export_library_sources.is_empty():
+		_set_status(_tr("export_library_empty"), true)
+		return
+	_set_status(_tr("choose_export_library_status") % [category_name, _export_library_sources.size()], false)
+	_configure_export_dialog(EXPORT_DIALOG_MODE_LIBRARY)
+	_export_file_dialog.current_file = "%s.cardartpack.json" % category_name.to_snake_case().validate_filename()
+	var export_dir = _get_saved_export_dir(EXPORT_DIALOG_MODE_LIBRARY)
+	if export_dir != "":
+		_export_file_dialog.current_dir = export_dir
+	_export_file_dialog.popup_centered_ratio(0.8)
+
+
 func _apply_import_path(path: String) -> void:
 	var manager = _manager()
 	if manager == null:
@@ -2574,9 +2629,14 @@ func _on_export_file_selected(path: String) -> void:
 		_set_status("The card art manager is not available.", true)
 		return
 	_save_export_dir(_export_dialog_mode, path.get_base_dir())
-	var result = manager.export_bundle_to_file(path)
+	var result: Dictionary
 	if _export_dialog_mode == EXPORT_DIALOG_MODE_CURRENT_PNG:
 		result = manager.export_source_image_to_png(_current_source_path, path)
+	elif _export_dialog_mode == EXPORT_DIALOG_MODE_LIBRARY:
+		result = manager.export_bundle_to_file(path, _export_library_sources)
+	else:
+		result = manager.export_bundle_to_file(path)
+	_export_library_sources.clear()
 	_set_status("%s\nFile: %s" % [String(result.get("message", "Unknown export result.")), path.get_file()], !bool(result.get("ok", false)))
 
 
@@ -2590,13 +2650,14 @@ func _configure_export_dialog(mode: String) -> void:
 			"*.png ; PNG image"
 		])
 		return
-	_export_file_dialog.title = _tr("export_pack")
+	_export_file_dialog.title = _tr("export_library_pack") if mode == EXPORT_DIALOG_MODE_LIBRARY else _tr("export_pack")
 	_export_file_dialog.filters = PackedStringArray([
 		"*.cardartpack.json ; Card art bundle"
 	])
 
 
 func _on_export_dialog_canceled() -> void:
+	_export_library_sources.clear()
 	_reopen_editor_popup()
 
 
@@ -3254,6 +3315,7 @@ func _update_context(force_refresh: bool) -> void:
 	_display_mode_button.disabled = effective_source_path == "" or !manager.has_override(effective_source_path) or !manager.can_toggle_full_art(effective_source_path)
 	_display_mode_button.text = _get_display_mode_button_text()
 	_export_pack_button.disabled = manager.get_override_count() == 0
+	_export_library_pack_button.disabled = manager.get_override_count() == 0
 	_export_current_png_button.disabled = effective_source_path == ""
 	_import_pack_button.disabled = false
 	_import_mod_button.disabled = false
@@ -3417,6 +3479,7 @@ func _bind_signals() -> void:
 	_import_pack_button.pressed.connect(_on_import_shared_pressed)
 	_import_mod_button.pressed.connect(_on_import_mod_pressed)
 	_export_pack_button.pressed.connect(_on_export_override_pressed)
+	_export_library_pack_button.pressed.connect(_on_export_library_pack_pressed)
 	_export_current_png_button.pressed.connect(_on_export_current_png_pressed)
 	_generate_button.pressed.connect(_on_generate_pressed)
 	_export_file_dialog.file_selected.connect(_on_export_file_selected)
@@ -3465,6 +3528,7 @@ func _set_busy(is_busy: bool, message: String, is_error: bool = false) -> void:
 	_import_pack_button.disabled = is_busy
 	_import_mod_button.disabled = is_busy
 	_export_pack_button.disabled = is_busy or manager == null or manager.get_override_count() == 0
+	_export_library_pack_button.disabled = is_busy or manager == null or manager.get_override_count() == 0
 	_export_current_png_button.disabled = is_busy or effective_source_path == ""
 	_restore_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.has_override(effective_source_path)
 	_adjust_button.disabled = is_busy or effective_source_path == "" or manager == null or !manager.can_adjust_override(effective_source_path)
