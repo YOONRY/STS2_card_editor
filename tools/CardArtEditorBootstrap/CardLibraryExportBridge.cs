@@ -44,12 +44,25 @@ internal static class CardLibraryExportBridge
             var cards = new Godot.Collections.Array();
             foreach (var model in models)
             {
-                cards.Add(new Godot.Collections.Dictionary
+                // State-dependent artwork and beta-only cards are not necessarily
+                // represented by the canonical model's current PortraitPath.
+                var paths = new HashSet<string>(model.AllPortraitPaths, StringComparer.Ordinal)
                 {
-                    ["source_path"] = Bootstrap.GetPreferredPortraitPath(model),
-                    ["card_id"] = model.Id.Entry ?? string.Empty,
-                    ["is_base_game_model"] = model.GetType().Assembly == typeof(CardModel).Assembly
-                });
+                    Bootstrap.GetPreferredPortraitPath(model)
+                };
+                if (model.HasBetaPortrait)
+                {
+                    paths.Add(model.BetaPortraitPath);
+                }
+                foreach (var path in paths)
+                {
+                    cards.Add(new Godot.Collections.Dictionary
+                    {
+                        ["source_path"] = path,
+                        ["card_id"] = model.Id.Entry ?? string.Empty,
+                        ["is_base_game_model"] = model.GetType().Assembly == typeof(CardModel).Assembly
+                    });
+                }
             }
 
             overlay.SetMeta(CardsMeta, cards);

@@ -30,9 +30,9 @@ const DEFAULT_LANDSCAPE_SIZE := Vector2i(1000, 760)
 const DEFAULT_PORTRAIT_SIZE := Vector2i(606, 852)
 const FULL_ART_TARGET_SIZE := Vector2i(600, 847)
 const MOD_IMPORT_IMAGE_EXTENSIONS := ["png", "jpg", "jpeg", "webp", "gif"]
-const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "defect", "colorless", "status", "token", "curse", "event", "necrobinder", "quest"]
+const CARD_PORTRAIT_FOLDERS := ["regent", "silent", "ironclad", "seeker", "defect", "fool", "colorless", "status", "token", "curse", "event", "necrobinder", "quest"]
 const MODDED_CARD_PORTRAIT_FOLDERS := ["guardian", "hermit", "champ", "snecko", "automaton", "awakened", "collector", "slimeboss", "gremlins", "hexaghost", "downfall"]
-const ART_PACK_CATEGORY_SORT_ORDER := ["ironclad", "silent", "regent", "necrobinder", "defect", "colorless", "curse", "status", "token", "event", "seeker", "guardian", "hermit", "champ", "snecko", "automaton", "awakened", "collector", "slimeboss", "gremlins", "hexaghost", "downfall", "other"]
+const ART_PACK_CATEGORY_SORT_ORDER := ["ironclad", "silent", "regent", "necrobinder", "defect", "fool", "colorless", "curse", "status", "token", "event", "quest", "seeker", "guardian", "hermit", "champ", "snecko", "automaton", "awakened", "collector", "slimeboss", "gremlins", "hexaghost", "downfall", "other"]
 const CARD_RARITY_ANCIENT := 5
 const REFRESH_INTERVAL := 0.15
 const DISPLAY_MODE_DEFAULT := "default"
@@ -168,6 +168,7 @@ var _batch_refresh_requested := false
 var _batch_art_packs_changed := false
 var _batched_override_sources := {}
 var _managed_source_index_cache: Dictionary = {}
+var _card_portrait_folders_cache: Array[String] = []
 var _model_portrait_path_cache: Dictionary = {}
 var _model_portrait_path_cache_keys_by_source: Dictionary = {}
 var _stock_reskin_source_alias_cache: Dictionary = {}
@@ -1537,9 +1538,21 @@ func _normalize_art_pack_category_id(category_id: String) -> String:
 	return _safe_file_stem(category_id).to_lower()
 
 
+func _get_card_portrait_folders() -> Array[String]:
+	if _card_portrait_folders_cache.is_empty():
+		_card_portrait_folders_cache.assign(CARD_PORTRAIT_FOLDERS)
+		# Discover new game folders once; no filesystem scan in card refresh loops.
+		var directory = DirAccess.open(MANAGED_TEXTURE_PREFIX)
+		if directory != null:
+			for folder in directory.get_directories():
+				if !folder.begins_with(".") and !_card_portrait_folders_cache.has(folder):
+					_card_portrait_folders_cache.append(folder)
+	return _card_portrait_folders_cache
+
+
 func _is_known_art_pack_category_id(category_id: String) -> bool:
 	category_id = _normalize_art_pack_category_id(category_id)
-	return CARD_PORTRAIT_FOLDERS.has(category_id) or MODDED_CARD_PORTRAIT_FOLDERS.has(category_id)
+	return _get_card_portrait_folders().has(category_id) or MODDED_CARD_PORTRAIT_FOLDERS.has(category_id)
 
 
 func _get_art_pack_category_id_for_source(source_path: String) -> String:
@@ -1547,7 +1560,7 @@ func _get_art_pack_category_id_for_source(source_path: String) -> String:
 	if normalized == "":
 		normalized = _normalize_source_path(source_path).replace("\\", "/").to_lower()
 	var parts = normalized.split("/")
-	for index in range(parts.size() - 1):
+	for index in range(parts.size() - 2):
 		if String(parts[index]) == "card_portraits":
 			var folder = _normalize_art_pack_category_id(String(parts[index + 1]))
 			if folder != "":
@@ -1606,7 +1619,8 @@ func _get_art_pack_category_display_name(category_id: String) -> String:
 		"downfall":
 			return "Downfall"
 		_:
-			return "Other"
+			var normalized = _normalize_art_pack_category_id(category_id)
+			return normalized.capitalize() if normalized != "" else "Other"
 
 
 func _get_art_pack_category_sort_index(category_id: String) -> int:
@@ -1935,10 +1949,16 @@ func get_source_image_bytes(source_path: String) -> PackedByteArray:
 func get_source_image(source_path: String):
 	if source_path == "":
 		return null
-
-	var texture = load(source_path)
+	# Native atlas pages may be compressed. Read their individual PNG instead,
+	# also resolving cards whose only available artwork is in a beta subfolder.
+	if source_path.begins_with(MANAGED_TEXTURE_PREFIX) or source_path.begins_with(CARD_ATLAS_PREFIX):
+		source_path = _normalize_source_path(source_path)
+	var texture = _load_source_texture(source_path)
 	if texture is Texture2D:
-		return texture.get_image()
+		var image = texture.get_image()
+		if image != null and image.is_compressed() and image.decompress() != OK:
+			return null
+		return image
 
 	return null
 
@@ -1949,7 +1969,10 @@ func _load_source_texture(source_path: String):
 	if source_path == "":
 		return null
 	if source_path.begins_with("res://") and !ResourceLoader.exists(source_path):
-		return null
+		if source_path.begins_with(MANAGED_TEXTURE_PREFIX) or source_path.begins_with(CARD_ATLAS_PREFIX):
+			source_path = _normalize_source_path(source_path)
+		if !ResourceLoader.exists(source_path):
+			return null
 	if source_path.begins_with("user://") and !FileAccess.file_exists(ProjectSettings.globalize_path(source_path)):
 		return null
 	var texture = load(source_path)
@@ -2165,7 +2188,7 @@ func _resolve_stock_reskin_source_alias(source_path: String) -> String:
 		return ""
 
 	var category = String(path_parts[0]).to_lower()
-	if !CARD_PORTRAIT_FOLDERS.has(category):
+	if !_get_card_portrait_folders().has(category):
 		_remember_stock_reskin_source_alias(lower_path, "")
 		return ""
 	var uses_beta_folder = path_parts.size() >= 3 and String(path_parts[1]).to_lower() == "beta"
@@ -2266,7 +2289,7 @@ func _resolve_managed_source_from_card_id(card_id: String) -> String:
 		return String(_managed_source_by_card_id_cache[cache_key])
 	var basename = _camel_to_snake_case_match_key(card_id)
 	var resolved := ""
-	for category in CARD_PORTRAIT_FOLDERS:
+	for category in _get_card_portrait_folders():
 		if basename.ends_with("_%s" % category):
 			var category_candidate = "%s%s/%s.png" % [MANAGED_TEXTURE_PREFIX, category, basename]
 			if ResourceLoader.exists(category_candidate):
@@ -2309,7 +2332,7 @@ func _resolve_unique_managed_source_from_basenames(candidate_names: Array[String
 	for candidate_name in candidate_names:
 		var standard_matches: Array[String] = []
 		var beta_matches: Array[String] = []
-		for category in CARD_PORTRAIT_FOLDERS:
+		for category in _get_card_portrait_folders():
 			var standard_candidate = "%s%s/%s.png" % [MANAGED_TEXTURE_PREFIX, category, candidate_name]
 			if ResourceLoader.exists(standard_candidate):
 				standard_matches.append(standard_candidate)
@@ -2951,7 +2974,7 @@ func _resolve_source_path_from_basename(basename: String) -> String:
 		return ""
 	var direct_candidates: Array = []
 	direct_candidates.append("%s%s.png" % [MANAGED_TEXTURE_PREFIX, basename])
-	for folder in CARD_PORTRAIT_FOLDERS:
+	for folder in _get_card_portrait_folders():
 		direct_candidates.append("%s%s/%s.png" % [MANAGED_TEXTURE_PREFIX, folder, basename])
 		direct_candidates.append("%s%s/beta/%s.png" % [MANAGED_TEXTURE_PREFIX, folder, basename])
 	for candidate in direct_candidates:

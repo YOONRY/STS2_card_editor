@@ -32,6 +32,9 @@ $loc = $filter.GetProperty('Loc', $instance).PropertyType
 Assert-True ($null -ne $loc.GetMethod('GetFormattedText', [Type[]]@())) 'Category name localization API changed.'
 Assert-True ($library.GetMethod('IsVisibleInTree', $instance).ReturnType -eq [bool]) 'Visible library API changed.'
 Assert-True ($model.GetProperty('PortraitPath', $instance).PropertyType -eq [string]) 'Card source path API changed.'
+Assert-True ([Collections.Generic.IEnumerable[string]].IsAssignableFrom($model.GetProperty('AllPortraitPaths', $instance).PropertyType)) 'State-dependent portrait API changed.'
+Assert-True ($model.GetProperty('HasBetaPortrait', $instance).PropertyType -eq [bool]) 'Beta portrait availability API changed.'
+Assert-True ($model.GetProperty('BetaPortraitPath', $instance).PropertyType -eq [string]) 'Beta portrait path API changed.'
 $bridge = $assembly.GetType('CardArtEditorBootstrap.CardLibraryExportBridge', $true)
 Assert-True ($null -ne $bridge.GetMethod('Bind', $static)) 'Export request bridge missing from DLL.'
 $select = $bridge.GetMethod('TryGetSelectedCategory', $static)
