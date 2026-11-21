@@ -6,7 +6,7 @@ const PACK_ID := "cae_saved_art"
 const PACK_FILENAME := "cae_saved_art.cardartpack.json"
 const PACK_INFO_FILENAME := "cae_pack_info.json"
 const CACHE_INDEX_FILENAME := "cae_cache_index.json"
-const CACHE_VERSION := 1
+const CACHE_VERSION := 2
 const GENERATED_PACK_DIRECTORY := "user://card_art_editor/skin_changer/CAE_Saved_Art"
 const SYNC_DELAY_SECONDS := 0.35
 const ENTRIES_PER_TICK := 6
@@ -20,7 +20,8 @@ var _sync_delay := 0.0
 var _building := false
 var _build_sources: Array = []
 var _build_cursor := 0
-var _build_entries: Array = []
+var _build_file: FileAccess
+var _previous_file: FileAccess
 var _entry_cache: Dictionary = {}
 var _next_entry_cache: Dictionary = {}
 var _last_changed_sources := PackedStringArray()
@@ -28,6 +29,7 @@ var _published_this_session := false
 var _full_art_renderer := Callable()
 var _catalog_refresh_pending := false
 var _published_fingerprints: Dictionary = {}
+var _published_entries: Dictionary = {}
 var _published_pack_stamp := ""
 var _current_fingerprints: Dictionary = {}
 var _cache_index_loaded := false
@@ -93,8 +95,9 @@ func schedule_sync(manifest: Dictionary, refresh_catalog := false) -> void:
 	_sync_pending = true
 	_sync_delay = 0.0
 	_building = false
+	_build_file = null
+	_previous_file = null
 	_build_sources.clear()
-	_build_entries.clear()
 	_next_entry_cache.clear()
 
 
@@ -121,9 +124,10 @@ func process(delta: float) -> void:
 
 
 func flush_for_test() -> void:
-	if !_active or !_sync_pending:
+	if !_active or (!_sync_pending and !_building):
 		return
-	_start_build()
+	if _sync_pending:
+		_start_build()
 	while _building and _build_cursor < _build_sources.size():
 		_build_source(String(_build_sources[_build_cursor]))
 		_build_cursor += 1
@@ -149,14 +153,23 @@ func _start_build() -> void:
 				_catalog_refresh_pending = false
 				pack_published.emit(_pack_directory)
 			return
-		# Only hydrate image data if an edit actually needs a new export. Launches
-		# compare the small index and file metadata, not the large base64 bundle.
-		if _entry_cache.is_empty():
-			_load_cached_entries()
+		# The index contains byte ranges, not image payloads. Unchanged cards are
+		# copied one at a time without parsing the old multi-hundred-MB bundle.
+		_entry_cache = _published_entries.duplicate(true)
+		_previous_file = FileAccess.open(get_pack_path(), FileAccess.READ)
+	else:
+		_entry_cache.clear()
+		_previous_file = null
+	if DirAccess.make_dir_recursive_absolute(_pack_directory) != OK:
+		return
+	_build_file = FileAccess.open(get_pack_path() + ".tmp", FileAccess.WRITE)
+	if _build_file == null:
+		push_warning("Card Art Editor: could not stage the Skin Changer art pack.")
+		return
+	_build_file.store_string('{"format":"card_art_bundle","version":1,"overrides":[')
 	_build_sources = _scheduled_manifest.keys()
 	_build_sources.sort()
 	_build_cursor = 0
-	_build_entries.clear()
 	_next_entry_cache.clear()
 	_building = true
 
@@ -186,21 +199,9 @@ func _load_cache_index() -> void:
 	if fingerprints is Dictionary:
 		_published_fingerprints = fingerprints
 		_published_pack_stamp = String(index.get("pack_stamp", ""))
-
-
-func _load_cached_entries() -> void:
-	var parser = JSON.new()
-	if parser.parse(FileAccess.get_file_as_string(get_pack_path())) != OK or !(parser.data is Dictionary):
-		return
-	var entries = parser.data.get("overrides", [])
-	if !(entries is Array):
-		return
-	for entry in entries:
-		if !(entry is Dictionary):
-			continue
-		var source = String(entry.get("source_path", ""))
-		if _published_fingerprints.has(source):
-			_entry_cache[source] = {"fingerprint": _published_fingerprints[source], "entry": entry}
+	var entries = index.get("entries", {})
+	if entries is Dictionary:
+		_published_entries = entries
 
 
 func _save_cache_index() -> void:
@@ -209,10 +210,11 @@ func _save_cache_index() -> void:
 		_published_pack_stamp = ""
 		return
 	_published_fingerprints = _current_fingerprints.duplicate()
+	_published_entries = _entry_cache.duplicate(true)
 	_published_pack_stamp = _file_fingerprint(get_pack_path())
 	var file = FileAccess.open(_pack_directory.path_join(CACHE_INDEX_FILENAME), FileAccess.WRITE)
 	if file != null:
-		file.store_string(JSON.stringify({"version": CACHE_VERSION, "pack_stamp": _published_pack_stamp, "fingerprints": _published_fingerprints}))
+		file.store_string(JSON.stringify({"version": CACHE_VERSION, "pack_stamp": _published_pack_stamp, "fingerprints": _published_fingerprints, "entries": _published_entries}))
 
 
 func _build_source(source_path: String) -> void:
@@ -226,12 +228,15 @@ func _build_source(source_path: String) -> void:
 		return
 	var fingerprint = String(_current_fingerprints.get(source_path, ""))
 	var cached = _entry_cache.get(source_path, null)
-	if cached is Dictionary and String(cached.get("fingerprint", "")) == fingerprint and !_invalidated_sources.has(source_path):
-		var cached_entry = cached.get("entry", null)
-		if cached_entry is Dictionary:
-			_build_entries.append(cached_entry)
-			_next_entry_cache[source_path] = cached
-			return
+	if cached is Dictionary and _previous_file != null and String(cached.get("fingerprint", "")) == fingerprint and !_invalidated_sources.has(source_path):
+		var offset = int(cached.get("offset", -1))
+		var length = int(cached.get("length", 0))
+		if offset >= 0 and length > 0 and offset + length <= _previous_file.get_length():
+			_previous_file.seek(offset)
+			var bytes = _previous_file.get_buffer(length)
+			if bytes.size() == length:
+				_write_entry(source_path, fingerprint, bytes)
+				return
 	var override_bytes = _read_png(override_path)
 	if override_bytes.is_empty():
 		override_bytes = _read_png(edit_source_path)
@@ -262,14 +267,19 @@ func _build_source(source_path: String) -> void:
 		"adjust_offset_x": float(entry.get("adjust_offset_x", 0.0)),
 		"adjust_offset_y": float(entry.get("adjust_offset_y", 0.0)),
 		"ancient_text_outside": bool(entry.get("ancient_text_outside", false)),
-		"png_base64": Marshalls.raw_to_base64(override_bytes),
-		# Skin Changer prefers edit_source and does not apply CAE's adjustment
-		# metadata. Give it the rendered pixels, not the uncropped editor source.
-		"edit_source_png_base64": Marshalls.raw_to_base64(override_bytes)
+		# No editor source: the parser falls back to these already-rendered pixels.
+		"png_base64": Marshalls.raw_to_base64(override_bytes)
 	}
-	_build_entries.append(pack_entry)
-	_next_entry_cache[source_path] = {"fingerprint": fingerprint, "entry": pack_entry}
+	_write_entry(source_path, fingerprint, JSON.stringify(pack_entry).to_utf8_buffer())
 	_last_changed_sources.append(source_path)
+
+
+func _write_entry(source: String, fingerprint: String, bytes: PackedByteArray) -> void:
+	if !_next_entry_cache.is_empty():
+		_build_file.store_string(",")
+	var offset = _build_file.get_position()
+	_build_file.store_buffer(bytes)
+	_next_entry_cache[source] = {"fingerprint": fingerprint, "offset": offset, "length": bytes.size()}
 
 
 func _get_entry_override_path(entry: Dictionary) -> String:
@@ -325,55 +335,40 @@ func _is_png(bytes: PackedByteArray) -> bool:
 
 func _finish_build() -> void:
 	_building = false
-	for previous_source in _entry_cache.keys():
+	_previous_file = null
+	for previous_source in _published_fingerprints.keys():
 		if !_next_entry_cache.has(previous_source):
 			_last_changed_sources.append(String(previous_source))
-	_entry_cache = _next_entry_cache.duplicate(true)
-	_next_entry_cache.clear()
-	if _pack_directory == "":
-		return
-	if DirAccess.make_dir_recursive_absolute(_pack_directory) != OK:
-		push_warning("Card Art Editor: could not create the Skin Changer art pack directory.")
+	var destination = get_pack_path()
+	var temporary = destination + ".tmp"
+	_build_file.store_string('],"count":%d}' % _next_entry_cache.size())
+	_build_file.flush()
+	var write_error = _build_file.get_error()
+	_build_file = null
+	if write_error != OK:
+		push_warning("Card Art Editor: could not finish the Skin Changer art pack; keeping the previous pack.")
 		return
 	_write_pack_info()
-	var destination = get_pack_path()
-	if _build_entries.is_empty():
+	if _next_entry_cache.is_empty():
+		DirAccess.remove_absolute(temporary)
 		if FileAccess.file_exists(destination):
 			if DirAccess.remove_absolute(destination) != OK:
 				return
+		_entry_cache.clear()
+		_published_entries.clear()
+		_published_fingerprints.clear()
+		_published_pack_stamp = ""
 		_invalidated_sources.clear()
 		if !_published_this_session or !_last_changed_sources.is_empty() or _catalog_refresh_pending:
 			_published_this_session = true
 			_catalog_refresh_pending = false
 			pack_published.emit(_pack_directory)
 		return
-	var content = JSON.stringify({"format": "card_art_bundle", "version": 1, "count": _build_entries.size(), "overrides": _build_entries})
-	if FileAccess.file_exists(destination) and FileAccess.get_file_as_string(destination) == content:
-		_save_cache_index()
-		_invalidated_sources.clear()
-		if !_published_this_session or _catalog_refresh_pending or !_last_changed_sources.is_empty():
-			# Startup catalog registration is not an art change. Preserve the
-			# user's per-card Skin Changer selections across game launches.
-			if !_published_this_session:
-				_last_changed_sources.clear()
-			_published_this_session = true
-			_catalog_refresh_pending = false
-			pack_published.emit(_pack_directory)
-		return
-	var temporary = destination + ".tmp"
-	var file = FileAccess.open(temporary, FileAccess.WRITE)
-	if file == null:
-		push_warning("Card Art Editor: could not write the Skin Changer art pack.")
-		return
-	file.store_string(content)
-	file.flush()
-	file = null
-	if FileAccess.file_exists(destination):
-		DirAccess.remove_absolute(destination)
 	if DirAccess.rename_absolute(temporary, destination) != OK:
-		DirAccess.remove_absolute(temporary)
-		push_warning("Card Art Editor: could not publish the Skin Changer art pack.")
+		push_warning("Card Art Editor: could not publish the Skin Changer art pack; keeping the previous pack.")
 		return
+	_entry_cache = _next_entry_cache.duplicate(true)
+	_next_entry_cache.clear()
 	if !_published_this_session:
 		# Rebuilding an old bridge format at startup must not reset skin choices.
 		_last_changed_sources.clear()

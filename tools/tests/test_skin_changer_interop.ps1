@@ -49,10 +49,13 @@ Assert-True ($bootstrap.GetMethod('AllowSkinChangerEditorCallback', $static).Inv
 $cache = $service.GetField('IsolatedCardOverlayCache', $static).GetValue($null)
 $stateType = $service.GetNestedType('IsolatedCardOverlayState', [Reflection.BindingFlags]'NonPublic')
 foreach ($key in @("ironclad`ncae_saved_art`nprovider", "silent`ncae_saved_art`nprovider", "ironclad`nother_mod`nprovider", "__base__`nbase")) {
-    $state = [Activator]::CreateInstance($stateType, [object[]]@($key))
+    $state = if ($null -ne $stateType.GetConstructor([Type[]]@([string]))) {
+        [Activator]::CreateInstance($stateType, [object[]]@($key))
+    } else { [Activator]::CreateInstance($stateType, $true) }
     $cache.Add($key, $state)
 }
-$bootstrap.GetMethod('InvalidateSkinChangerPackResources', $static).Invoke($null, [object[]]@($service))
+$runtime = $cae.GetType('CardArtEditorBootstrap.SkinChangerRuntimeBridge', $true)
+$runtime.GetMethod('InvalidateTextures', $static).Invoke($null, [object[]]@($service))
 Assert-True ($cache.Count -eq 2) 'Pack refresh invalidated the wrong resource aliases.'
 Assert-True ($cache.ContainsKey("ironclad`nother_mod`nprovider") -and $cache.ContainsKey("__base__`nbase")) 'Unrelated providers were evicted.'
 
@@ -83,8 +86,9 @@ function Attach-TestPack([string]$Id, [string]$CardStem, [int]$Width, [int]$Heig
     $w.CopyTo($png, 16)
     $h.CopyTo($png, 20)
     $encoded = [Convert]::ToBase64String($png)
-    $json = @{overrides=@(@{source_path="res://images/packed/card_portraits/ironclad/$CardStem.png"; png_base64=$encoded; edit_source_png_base64=$encoded; display_mode=$Mode; type='static'})} | ConvertTo-Json -Depth 5
+    $json = @{overrides=@(@{source_path="res://images/packed/card_portraits/ironclad/$CardStem.png"; png_base64=$encoded; display_mode=$Mode; type='static'})} | ConvertTo-Json -Depth 5
     $cards = $policy.GetMethod('ParseCards', $static).Invoke($null, [object[]]@([string]$json))
+    Assert-True ($cards.Count -eq 1 -and !$cards[0].UsesEditSource) 'The compact rendered-only pack was not parsed.'
     $pack = [Activator]::CreateInstance($packType, [object[]]@($Id, $Id, "$Id.cardartpack.json", $Root, $cards))
     $packs = [Array]::CreateInstance($packType, 1)
     $packs[0] = $pack
@@ -205,9 +209,9 @@ foreach ($method in @('ApplySelectedPortraitToNode','ReleasePresentationForReuse
 }
 $loadPortrait = $service.GetMethod('LoadIsolatedCardPortrait', $static)
 Assert-True ($loadPortrait.ReturnType.FullName -eq 'Godot.Texture2D') 'Portrait hook no longer returns a texture.'
-foreach ($parameter in @('selection','resourcePath','useSelectedProvider')) {
-    Assert-True ($loadPortrait.GetParameters().Name -contains $parameter) "Portrait hook parameter changed: $parameter."
-}
+$postfix = $gif.GetMethod('SelectPortraitPostfix', $static).Invoke($null, [object[]]@($loadPortrait))
+$expectedPostfix = if ($loadPortrait.GetParameters().Count -eq 1) { 'TagRequestAnimation' } else { 'TagAnimation' }
+Assert-True ($postfix.Name -eq $expectedPostfix) 'The installed portrait API selected an incompatible postfix.'
 $tagResult = $gif.GetMethod('TagAnimation', $static).GetParameters() | Where-Object Name -eq '__result'
 Assert-True (!$tagResult.ParameterType.IsByRef) 'GIF tagging is allowed to replace the cached static result.'
 Write-Output 'GIF bridge API regression passed: selection isolation, immutable cached result, request delegate, lifecycle hook signatures.'

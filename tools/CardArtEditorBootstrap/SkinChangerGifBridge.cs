@@ -56,7 +56,7 @@ internal static class SkinChangerGifBridge
         _requestUsesProvider = request.ReturnType.GetProperty("UseSelectedProvider") ?? throw new MissingMemberException("UseSelectedProvider");
         try
         {
-            harmony.Patch(load, postfix: new HarmonyMethod(typeof(SkinChangerGifBridge), nameof(TagAnimation)));
+            harmony.Patch(load, postfix: new HarmonyMethod(SelectPortraitPostfix(load)));
             harmony.Patch(apply, postfix: new HarmonyMethod(typeof(SkinChangerGifBridge), nameof(BindCard)));
             harmony.Patch(release, postfix: new HarmonyMethod(typeof(SkinChangerGifBridge), nameof(ReleaseCard)));
             log("Skin Changer visible-card GIF playback installed.");
@@ -73,6 +73,38 @@ internal static class SkinChangerGifBridge
 
     internal static bool ShouldProvideAnimation(string selection, bool useSelectedProvider) =>
         useSelectedProvider && selection.Equals(SkinChangerCatalogBridge.PackId, StringComparison.OrdinalIgnoreCase);
+
+    internal static MethodInfo SelectPortraitPostfix(MethodInfo load)
+    {
+        var parameters = load.GetParameters();
+        string name;
+        if (parameters.Length == 1 && new[] { "Selection", "ResourcePath", "UseSelectedProvider" }
+            .All(property => parameters[0].ParameterType.GetProperty(property) is not null))
+        {
+            name = nameof(TagRequestAnimation);
+        }
+        else if (new[] { "selection", "resourcePath", "useSelectedProvider" }
+            .All(parameter => parameters.Any(candidate => candidate.Name == parameter)))
+        {
+            name = nameof(TagAnimation);
+        }
+        else
+        {
+            throw new NotSupportedException("Unsupported Skin Changer portrait request signature: " + load);
+        }
+        return typeof(SkinChangerGifBridge).GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)!;
+    }
+
+    private static void TagRequestAnimation(object __0, Texture2D? __result)
+    {
+        try
+        {
+            TagAnimation(_requestSelection?.GetValue(__0) as string ?? string.Empty,
+                _requestSource?.GetValue(__0) as string ?? string.Empty,
+                _requestUsesProvider?.GetValue(__0) is true, __result);
+        }
+        catch (Exception ex) { Report(ex); }
+    }
 
     // CardModel is a plain CLR object and is not exposed by NCard.Get("Model").
     // Pass reference identity across the C#/GDScript boundary as a Variant-safe token.

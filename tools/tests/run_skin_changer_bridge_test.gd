@@ -165,7 +165,7 @@ func _run() -> void:
 		_expect(entries[0].get("source_path", "") == SOURCE, "The generated pack lost the canonical source path.")
 		_expect(entries[0].get("display_mode", "") == "full_art", "The generated pack lost its full-art mode.")
 		_expect(String(entries[0].get("png_base64", "")) != "", "The generated pack lost its rendered portrait image.")
-		_expect(entries[0].get("edit_source_png_base64", "") == entries[0].get("png_base64", ""), "Skin Changer would load the unadjusted editor source instead of rendered pixels.")
+		_expect(!entries[0].has("edit_source_png_base64"), "The bridge duplicated the entire PNG as an editor source.")
 		var rendered = Image.new()
 		_expect(rendered.load_png_from_buffer(Marshalls.base64_to_raw(entries[0]["png_base64"])) == OK, "Full-art output is not PNG.")
 		_expect(rendered.get_size() == manager.FULL_ART_TARGET_SIZE, "A landscape storage crop was exported as full art.")
@@ -183,7 +183,7 @@ func _run() -> void:
 	restarted_bridge.flush_for_test()
 	_expect(restart_publications.size() == 1, "A restarted bridge did not register its existing pack with Skin Changer.")
 	_expect(restarted_bridge.get_last_changed_sources_csv() == "", "Startup registration incorrectly reset user card selections.")
-	_expect(restarted_bridge._entry_cache.is_empty() and restarted_bridge._build_entries.is_empty(), "An unchanged startup decoded or rendered the entire pack instead of reusing the disk index.")
+	_expect(restarted_bridge._entry_cache.is_empty() and restarted_bridge._build_file == null, "An unchanged startup rebuilt the pack instead of reusing the disk index.")
 	manager._skin_changer_bridge.schedule_sync(manager._manifest)
 	manager._skin_changer_bridge.flush_for_test()
 	_expect(published_directories.size() == 1, "An unchanged Skin Changer pack triggered an unnecessary catalog refresh.")
@@ -257,6 +257,45 @@ func _run() -> void:
 	_expect(!recovery_bridge._entry_cache.is_empty(), "An invalid cache index prevented rebuilding the current pack.")
 	recovery_bridge.schedule_sync({})
 	recovery_bridge.flush_for_test()
+
+	# Stream many entries over multiple ticks; reuse old byte ranges on a cold
+	# single-card edit, and never publish an interrupted partial export.
+	var render_calls: Array = []
+	var streaming = load("res://mods/card_art_editor/skin_changer_bridge.gd").new()
+	var render = func(source, _entry):
+		render_calls.append(source)
+		return edit_source_image
+	streaming.configure(skin_root, cae_root, render)
+	var many: Dictionary = {}
+	for index in range(40):
+		many["res://test/card_%02d.png" % index] = {"override_path": image_path, "display_mode": "full_art"}
+	streaming.schedule_sync(many)
+	streaming.process(1.0)
+	_expect(streaming.is_sync_pending() and !FileAccess.file_exists(pack_path), "Streaming published all entries in a single tick or exposed a partial pack.")
+	streaming.flush_for_test()
+	_expect(render_calls.size() == 40, "Streaming dropped cards.")
+	var stable_pack = FileAccess.get_file_as_string(pack_path)
+	var cold_stream = load("res://mods/card_art_editor/skin_changer_bridge.gd").new()
+	cold_stream.configure(skin_root, cae_root, render)
+	cold_stream.schedule_sync(many)
+	cold_stream.flush_for_test()
+	render_calls.clear()
+	many["res://test/card_00.png"]["adjust_zoom"] = 1.3
+	cold_stream.schedule_sync(many)
+	cold_stream.process(1.0)
+	_expect(FileAccess.get_file_as_string(pack_path) == stable_pack, "A partial export replaced the live pack.")
+	# Cancel that snapshot with another edit before it can be published.
+	many["res://test/card_01.png"]["adjust_zoom"] = 1.4
+	cold_stream.schedule_sync(many)
+	cold_stream.flush_for_test()
+	_expect(!render_calls.has("res://test/card_02.png") and render_calls.size() <= 3, "A one-card edit rerendered unchanged cards after restart.")
+	parsed = JSON.parse_string(FileAccess.get_file_as_string(pack_path))
+	_expect(parsed is Dictionary and parsed["overrides"].size() == 40, "Interrupted streaming corrupted the pack envelope.")
+	_expect(float(parsed["overrides"][0]["adjust_zoom"]) == 1.3 and float(parsed["overrides"][1]["adjust_zoom"]) == 1.4, "A newer snapshot was replaced by an obsolete export.")
+	for entry in cold_stream._entry_cache.values():
+		_expect(!entry.has("entry") and entry.has("offset"), "The cache retains base64 images instead of byte ranges.")
+	cold_stream.schedule_sync({})
+	cold_stream.flush_for_test()
 
 	# Skin Changer is allowed to choose a non-native presentation. CAE must not
 	# replace that layout or restore stale provider pixels after selection/reuse.
