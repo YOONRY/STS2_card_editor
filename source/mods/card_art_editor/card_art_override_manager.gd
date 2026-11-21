@@ -59,6 +59,7 @@ const META_INSPECT_CARD_ID := "_card_art_inspect_card_id"
 const META_MODEL_IS_BASE_GAME := "_card_art_model_is_base_game"
 const META_MODEL_OWNER := "_card_art_model_owner"
 const META_MODEL_RARITY := "_card_art_model_rarity"
+const META_MODEL_TYPE := "_card_art_model_type"
 const META_PORTRAIT_GROUP_ORIGINAL_MATERIAL := "_card_art_portrait_group_original_material"
 const META_FULL_ART_ORIGINAL_VISIBLE := "_card_art_full_art_original_visible"
 const META_FULL_ART_ORIGINAL_SELF_MODULATE := "_card_art_full_art_original_self_modulate"
@@ -205,6 +206,7 @@ var _gif_last_active_card_root: Node = null
 var _gif_last_active_source_path := ""
 var _hover_tips_container_cache: Node = null
 var _full_art_fire_shader = null
+var _full_art_frame_texture_cache: Dictionary = {}
 var _skin_changer_bridge = null
 var _skin_changer_gifs = null
 
@@ -5571,6 +5573,7 @@ func _enforce_custom_full_art_layer_visibility(card_root, synchronize_layer := t
 		var visible_layer = _find_named_descendant(card_root, node_name)
 		if visible_layer is CanvasItem:
 			visible_layer.visible = true
+	_apply_full_art_card_type_style(card_root, _find_named_descendant(card_root, "AncientTextBg"))
 	_sync_full_art_fire_rarity_color(card_root)
 
 
@@ -6562,44 +6565,22 @@ func _sync_full_art_fire_rarity_color(card_root, source_path: String = "") -> vo
 func _get_effective_ancient_card_type_name(model) -> String:
 	if model == null:
 		return ""
-	var raw_type = model.get("Type")
-	if raw_type == null:
-		return ""
-	var normalized := ""
-	match typeof(raw_type):
-		TYPE_INT, TYPE_FLOAT:
-			match int(raw_type):
-				0:
-					normalized = "none"
-				1:
-					normalized = "attack"
-				2:
-					normalized = "skill"
-				3:
-					normalized = "power"
-				4:
-					normalized = "status"
-				5:
-					normalized = "curse"
-				6:
-					normalized = "quest"
-				_:
-					normalized = ""
-		_:
-			normalized = String(raw_type).to_lower()
-	if normalized == "":
-		return ""
-	match normalized:
-		"none", "status", "curse":
-			return "skill"
-		"attack", "skill", "power", "quest":
-			return normalized
-		_:
-			return normalized
+	return _normalize_card_type_name(model.get("Type"))
 
 
 func _normalize_card_type_name(raw_value) -> String:
 	if raw_value == null:
+		return ""
+	if typeof(raw_value) == TYPE_INT or typeof(raw_value) == TYPE_FLOAT:
+		match int(raw_value):
+			0, 2, 4, 5:
+				return "skill"
+			1:
+				return "attack"
+			3:
+				return "power"
+			6:
+				return "quest"
 		return ""
 	var normalized := String(raw_value).strip_edges().to_lower()
 	if normalized == "":
@@ -6623,7 +6604,7 @@ func _normalize_card_type_name(raw_value) -> String:
 		return "skill"
 	if normalized.ends_with("quest"):
 		return "quest"
-	return normalized
+	return ""
 
 
 func _get_card_type_name_from_type_label(card_root) -> String:
@@ -6641,29 +6622,79 @@ func _get_card_type_name_from_type_label(card_root) -> String:
 
 
 func _get_effective_ancient_card_type_name_for_card(card_root) -> String:
-	var type_name = _get_card_type_name_from_type_label(card_root)
+	var model = _get_card_model_from_root(card_root)
+	var model_card_id = _get_card_id_from_model(model).strip_edges().to_upper()
+	var current = card_root
+	while current != null:
+		if current.has_meta(META_MODEL_TYPE):
+			var stamped_card_id = String(current.get_meta(META_INSPECT_CARD_ID, "")).strip_edges().to_upper()
+			# Pooled slots can expose a new Model before their metadata is refreshed.
+			if model_card_id == "" or model_card_id == stamped_card_id:
+				var stamped_type = _normalize_card_type_name(current.get_meta(META_MODEL_TYPE))
+				if stamped_type != "":
+					return stamped_type
+		current = current.get_parent()
+	var type_name = _get_effective_ancient_card_type_name(model)
 	if type_name != "":
 		return type_name
-	var model = _get_card_model_from_root(card_root)
-	return _get_effective_ancient_card_type_name(model)
+	return _get_card_type_name_from_type_label(card_root)
+
+
+func _load_full_art_frame_texture(cache_key: String, candidate_paths: Array):
+	if _full_art_frame_texture_cache.has(cache_key):
+		return _full_art_frame_texture_cache[cache_key]
+	var texture = null
+	for path in candidate_paths:
+		# The game's atlas loader logs every missing sheet, even for exists().
+		var atlas_sheet = String(path).split(".sprites/")[0] + ".tpsheet"
+		if !FileAccess.file_exists(path) and !FileAccess.file_exists(atlas_sheet):
+			continue
+		if !ResourceLoader.exists(path):
+			continue
+		var candidate = load(path)
+		if candidate is Texture2D and !String(candidate.resource_path).ends_with("/missing_power.png"):
+			texture = candidate
+			break
+	_full_art_frame_texture_cache[cache_key] = texture
+	return texture
 
 
 func _get_ancient_text_bg_texture_for_type_name(type_name: String):
-	if type_name == "":
+	if type_name not in ["attack", "skill", "power", "quest"]:
 		return null
-	var texture_path = "res://images/atlases/compressed.sprites/card_template/ancient_card_text_bg_%s.tres" % type_name
-	if !ResourceLoader.exists(texture_path):
-		return null
-	var texture = load(texture_path)
-	return texture if texture is Texture2D else null
+	if !_full_art_frame_texture_cache.has(type_name):
+		_load_full_art_frame_texture(type_name, [
+			"res://images/atlases/compressed_atlas.sprites/ancient_text_bg_%s.tres" % type_name,
+			"res://images/atlases/compressed.sprites/card_template/ancient_card_text_bg_%s.tres" % type_name
+		])
+	var texture = _full_art_frame_texture_cache[type_name]
+	# Some game versions have Quest cards but no Ancient Quest background.
+	if texture == null and type_name == "quest":
+		return _get_ancient_text_bg_texture_for_type_name("skill")
+	return texture
+
+
+func _get_ancient_border_texture():
+	if _full_art_frame_texture_cache.has("border"):
+		return _full_art_frame_texture_cache["border"]
+	return _load_full_art_frame_texture("border", [
+		"res://images/atlases/compressed_atlas.sprites/ancient_card_border.tres",
+		"res://images/atlases/compressed.sprites/card_template/ancient_card_border.tres"
+	])
 
 
 func _apply_full_art_card_type_style(card_root, ancient_text_bg) -> void:
-	if !(ancient_text_bg is TextureRect):
+	if !(ancient_text_bg is TextureRect) or _is_card_root_ancient_layout(card_root):
 		return
+	# Native Ancient layouts keep their game/provider textures; only initialize
+	# the otherwise unused frame nodes when we turn a regular card into full art.
+	var ancient_border = _find_named_descendant(card_root, "AncientBorder")
+	var border_texture = _get_ancient_border_texture()
+	if ancient_border is TextureRect and ancient_border.texture != border_texture:
+		ancient_border.texture = border_texture
 	var type_name = _get_effective_ancient_card_type_name_for_card(card_root)
 	var ancient_text_bg_texture = _get_ancient_text_bg_texture_for_type_name(type_name)
-	if ancient_text_bg_texture is Texture2D:
+	if ancient_text_bg.texture != ancient_text_bg_texture:
 		(ancient_text_bg as TextureRect).texture = ancient_text_bg_texture
 
 

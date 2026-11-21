@@ -31,6 +31,7 @@ public static class Bootstrap
     internal const string InspectBaseGameModelMeta = "_card_art_model_is_base_game";
     internal const string InspectModelOwnerMeta = "_card_art_model_owner";
     internal const string InspectModelRarityMeta = "_card_art_model_rarity";
+    internal const string InspectModelTypeMeta = "_card_art_model_type";
     private const string CachedPortraitPathMeta = "_card_art_cached_portrait_path";
     private const string CachedPortraitCardIdMeta = "_card_art_cached_portrait_card_id";
     private const string CachedPortraitModelKeyMeta = "_card_art_cached_portrait_model_key";
@@ -1105,6 +1106,7 @@ public static class Bootstrap
                 card.SetMeta(InspectCardIdMeta, string.Empty);
                 card.SetMeta(InspectBaseGameModelMeta, false);
                 card.SetMeta(InspectModelOwnerMeta, string.Empty);
+                card.RemoveMeta(InspectModelTypeMeta);
                 screen.SetMeta(InspectSourcePathMeta, string.Empty);
                 screen.SetMeta(InspectCardIdMeta, string.Empty);
                 screen.SetMeta(InspectBaseGameModelMeta, false);
@@ -1431,6 +1433,7 @@ public static class Bootstrap
         var modelOwner = $"{assemblyName}:{modelType.FullName ?? modelType.Name}";
         card.SetMeta(InspectBaseGameModelMeta, isBaseGameModel);
         card.SetMeta(InspectModelOwnerMeta, modelOwner);
+        card.SetMeta(InspectModelTypeMeta, model.Type.ToString());
     }
 
     private static void RegisterCardProviderSource(CardModel model, string sourcePath, string cardId)
@@ -1462,6 +1465,7 @@ public static class Bootstrap
                 card.SetMeta(InspectBaseGameModelMeta, false);
                 card.SetMeta(InspectModelOwnerMeta, string.Empty);
                 card.RemoveMeta(InspectModelRarityMeta);
+                card.RemoveMeta(InspectModelTypeMeta);
                 return;
             }
 
