@@ -1006,7 +1006,7 @@ func set_ancient_text_outside_enabled(source_path: String, enabled: bool) -> voi
 	else:
 		_ancient_text_outside_by_source.erase(source_path)
 	_save_persistent_preferences()
-	_needs_full_refresh = true
+	_refresh_ancient_text_layouts_for_sources([source_path])
 	_request_ancient_text_hover_refresh(true)
 
 
@@ -1041,6 +1041,7 @@ func set_all_ancient_text_outside_enabled(enabled: bool) -> Dictionary:
 			"message": "There are no full-art cards that can move text outside."
 		}
 	var changed_count := 0
+	var changed_sources: Array = []
 	for source_path in sources:
 		var normalized_source = String(source_path)
 		var current_enabled = is_ancient_text_outside_enabled(normalized_source)
@@ -1051,11 +1052,12 @@ func set_all_ancient_text_outside_enabled(enabled: bool) -> Dictionary:
 		else:
 			_ancient_text_outside_by_source.erase(normalized_source)
 		changed_count += 1
+		changed_sources.append(normalized_source)
 	if changed_count > 0:
 		_save_persistent_preferences()
 		_hide_ancient_text_hover_tip()
 		_request_ancient_text_hover_refresh(true)
-		refresh_all_portraits()
+		_refresh_ancient_text_layouts_for_sources(changed_sources)
 	return {
 		"ok": true,
 		"message": "%s outside text for %d cards." % [
@@ -5442,7 +5444,7 @@ func _synchronize_native_ancient_layout(card_root) -> bool:
 		"AncientPortrait": true,
 		"AncientBorderGlassOverlay": true,
 		"AncientBorder": true,
-		"AncientTextBg": true,
+		"AncientTextBg": !is_ancient_text_outside_enabled(_get_ancient_text_layout_source_path(card_root)),
 		"AncientBanner": true,
 		"TitleBanner": false
 	}
@@ -5623,6 +5625,27 @@ func _apply_ancient_text_outside_layout(card_root) -> void:
 	if _is_card_root_ancient_text_outside_eligible(card_root, source_path, is_ancient_layout) and ancient_text_bg is CanvasItem:
 		_apply_full_art_card_type_style(card_root, ancient_text_bg)
 		ancient_text_bg.visible = true
+
+
+func _refresh_ancient_text_layouts_for_sources(sources: Array) -> void:
+	if is_skin_changer_bridge_active():
+		return
+	var wanted := {}
+	for source in sources:
+		wanted[_canonicalize_source_key(String(source))] = true
+	var visited := {}
+	# A card may have three tracked portraits. Update its layout once, including
+	# hidden library copies, without reloading images or traversing the whole UI.
+	for index in range(_portrait_ref_ids.size()):
+		var portrait = _get_tracked_portrait_at(index)
+		if portrait == null:
+			continue
+		var card_root = _find_card_root(portrait)
+		if card_root == null or visited.has(card_root.get_instance_id()):
+			continue
+		visited[card_root.get_instance_id()] = true
+		if wanted.has(_get_ancient_text_layout_source_path(card_root)):
+			_apply_ancient_text_outside_layout(card_root)
 
 
 func _get_control_rect_global(control) -> Rect2:
@@ -6197,7 +6220,7 @@ func _ensure_ancient_text_hover_tip() -> void:
 	_ancient_text_hover_tip.top_level = true
 	_ancient_text_hover_tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_ancient_text_hover_tip.z_as_relative = false
-	_ancient_text_hover_tip.z_index = 5000
+	_ancient_text_hover_tip.z_index = RenderingServer.CANVAS_ITEM_Z_MAX
 	_ancient_text_hover_tip_title = _ancient_text_hover_tip.get_node_or_null("%Title")
 	var icon = _ancient_text_hover_tip.get_node_or_null("%Icon")
 	if icon is CanvasItem:
@@ -7077,6 +7100,7 @@ func _build_refresh_signature(texture_rect, current_texture, stored_source_path:
 		"1" if _is_gif_hover_playback_only_enabled() else "0",
 		gif_hover_source_path,
 		"1" if is_gif_hover_playback_only_enabled_for_source(gif_hover_source_path) else "0",
+		"1" if is_ancient_text_outside_enabled(tracked_source_path) else "0",
 		texture_path,
 		str(texture_instance_id),
 		str(texture_size.x),

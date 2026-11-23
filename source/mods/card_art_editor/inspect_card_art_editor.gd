@@ -3039,8 +3039,6 @@ func _on_ancient_text_outside_pressed() -> void:
 	var screen = get_parent()
 	if screen != null and screen.has_method("UpdateCardDisplay"):
 		screen.call_deferred("UpdateCardDisplay")
-	if manager.has_method("refresh_all_portraits"):
-		manager.refresh_all_portraits()
 	_refresh_ancient_text_outside_button()
 	_set_status(_tr("text_outside_on") if next_enabled else _tr("text_outside_off"), false)
 
